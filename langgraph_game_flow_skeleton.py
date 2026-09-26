@@ -1,45 +1,37 @@
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import cast
 
 from langgraph.graph import END, START, StateGraph
 
-
-# ============================================================
-# State
-# - 실제 이미지/사운드/게임 파일 처리는 아직 하지 않음
-# - 각 단계가 지나갔다는 표시와 임시 데이터만 저장
-# ============================================================
-class WorkflowState(TypedDict, total=False):
-    # User input
-    image_style: str
-    genre: str
-    quality: str
-    parsed_request: dict[str, Any]
-
-    # "맨 처음" 만들어 두는 최종 검증 기준서
-    initial_final_validation_spec: dict[str, Any]
-
-    # Parallel generation outputs (temporary placeholders)
-    image_draft: dict[str, Any]
-    game_logic_draft: dict[str, Any]
-    sound_draft: dict[str, Any]
-
-    # Game validation
-    game_validation_result: dict[str, Any]
-
-    # Validation sheet for image/sound assets
-    asset_validation_spec: dict[str, Any]
-
-    # Asset validation results
-    image_validation_result: dict[str, Any]
-    sound_validation_result: dict[str, Any]
-
-    # Game after validated assets are applied
-    integrated_game: dict[str, Any]
-
-    # Final validation
-    final_validation_result: dict[str, Any]
+from contracts import (
+    CONTRACT_VERSION,
+    ApplyAssetsAgentInput,
+    ApplyAssetsAgentOutput,
+    AssetValidationSpecAgentInput,
+    AssetValidationSpecAgentOutput,
+    DesignGameLogicAgentInput,
+    DesignGameLogicAgentOutput,
+    FinalValidationAgentInput,
+    FinalValidationAgentOutput,
+    GenerateImageAgentInput,
+    GenerateImageAgentOutput,
+    GenerateSoundAgentInput,
+    GenerateSoundAgentOutput,
+    InitialValidationSpecAgentInput,
+    InitialValidationSpecAgentOutput,
+    ParseInputAgentInput,
+    ParseInputAgentOutput,
+    UserInputAgentInput,
+    UserInputAgentOutput,
+    ValidateGameAgentInput,
+    ValidateGameAgentOutput,
+    ValidateImageAgentInput,
+    ValidateImageAgentOutput,
+    ValidateSoundAgentInput,
+    ValidateSoundAgentOutput,
+    WorkflowState,
+)
 
 
 def log(message: str) -> None:
@@ -49,7 +41,7 @@ def log(message: str) -> None:
 # ============================================================
 # Nodes
 # ============================================================
-def user_input_node(state: WorkflowState) -> dict[str, Any]:
+def user_input_node(state: UserInputAgentInput) -> UserInputAgentOutput:
     """
     임시 GUI:
     - 이미지 스타일
@@ -155,15 +147,17 @@ def user_input_node(state: WorkflowState) -> dict[str, Any]:
         f"퀄리티={result['quality']})"
     )
 
-    return result
+    # Combobox values are restricted to the Literal choices in contracts.py.
+    return cast(UserInputAgentOutput, result)
 
 
-def parse_input_node(state: WorkflowState) -> dict[str, Any]:
+def parse_input_node(state: ParseInputAgentInput) -> ParseInputAgentOutput:
     log("유저 입력을 파싱합니다.")
 
     # TODO: 이후 AdviserAI / LLM을 이용한 실제 요구사항 파싱
     return {
         "parsed_request": {
+            "contract_version": CONTRACT_VERSION,
             "image_style": state["image_style"],
             "genre": state["genre"],
             "quality": state["quality"],
@@ -172,29 +166,43 @@ def parse_input_node(state: WorkflowState) -> dict[str, Any]:
 
 
 def create_initial_final_validation_spec_node(
-    state: WorkflowState,
-) -> dict[str, Any]:
+    state: InitialValidationSpecAgentInput,
+) -> InitialValidationSpecAgentOutput:
     log("최종 검증에 사용할 최초 검증서를 생성합니다.")
 
     # TODO: 실제 최종 검증 기준 작성
     return {
-        "initial_final_validation_spec": {}
+        "initial_final_validation_spec": {
+            "contract_version": CONTRACT_VERSION,
+            "spec_id": "initial-final-validation",
+            "criteria": [],
+        }
     }
 
 
 # ------------------------------------------------------------
 # 1) Image / Game / Sound generation - PARALLEL
 # ------------------------------------------------------------
-def generate_image_node(state: WorkflowState) -> dict[str, Any]:
+def generate_image_node(
+    state: GenerateImageAgentInput,
+) -> GenerateImageAgentOutput:
     log("이미지 에셋을 생성합니다. (현재는 뼈대만 실행)")
 
     # TODO: 실제 이미지 생성
     return {
-        "image_draft": {}
+        "image_draft": {
+            "contract_version": CONTRACT_VERSION,
+            "draft_id": "image-draft",
+            "status": "pending",
+            "assets": [],
+            "notes": ["이미지 생성 Agent 구현 전 placeholder"],
+        }
     }
 
 
-def design_game_logic_node(state: WorkflowState) -> dict[str, Any]:
+def design_game_logic_node(
+    state: DesignGameLogicAgentInput,
+) -> DesignGameLogicAgentOutput:
     log(
         "게임 로직을 설계합니다. "
         "(이미지/사운드는 임시 에셋으로 가정)"
@@ -202,34 +210,60 @@ def design_game_logic_node(state: WorkflowState) -> dict[str, Any]:
 
     # TODO: 실제 게임 로직 / Unity / Godot 코드 설계
     return {
-        "game_logic_draft": {}
+        "game_logic_draft": {
+            "contract_version": CONTRACT_VERSION,
+            "draft_id": "game-logic-draft",
+            "status": "pending",
+            "engine": "TBD",
+            "project_path": None,
+            "entry_scene": None,
+            "source_files": [],
+            "required_image_asset_ids": [],
+            "required_sound_asset_ids": [],
+            "notes": ["게임 로직 설계 Agent 구현 전 placeholder"],
+        }
     }
 
 
-def generate_sound_node(state: WorkflowState) -> dict[str, Any]:
+def generate_sound_node(
+    state: GenerateSoundAgentInput,
+) -> GenerateSoundAgentOutput:
     log("사운드 에셋을 생성합니다. (현재는 뼈대만 실행)")
 
     # TODO: 실제 사운드 생성
     return {
-        "sound_draft": {}
+        "sound_draft": {
+            "contract_version": CONTRACT_VERSION,
+            "draft_id": "sound-draft",
+            "status": "pending",
+            "assets": [],
+            "notes": ["사운드 생성 Agent 구현 전 placeholder"],
+        }
     }
 
 
 # ------------------------------------------------------------
 # 2) Game validation -> asset validation sheet
 # ------------------------------------------------------------
-def validate_game_node(state: WorkflowState) -> dict[str, Any]:
+def validate_game_node(
+    state: ValidateGameAgentInput,
+) -> ValidateGameAgentOutput:
     log("임시 에셋을 사용해 설계된 게임을 검증합니다.")
 
     # TODO: Unity Test Framework / build / logic validation
     return {
-        "game_validation_result": {}
+        "game_validation_result": {
+            "contract_version": CONTRACT_VERSION,
+            "status": "pending",
+            "checks": [],
+            "issues": [],
+        }
     }
 
 
 def create_asset_validation_spec_node(
-    state: WorkflowState,
-) -> dict[str, Any]:
+    state: AssetValidationSpecAgentInput,
+) -> AssetValidationSpecAgentOutput:
     log(
         "게임 검증 결과를 바탕으로 "
         "이미지/사운드 에셋 검증서를 생성합니다."
@@ -237,7 +271,12 @@ def create_asset_validation_spec_node(
 
     # TODO: game_validation_result를 이용해 실제 검증 기준 생성
     return {
-        "asset_validation_spec": {}
+        "asset_validation_spec": {
+            "contract_version": CONTRACT_VERSION,
+            "spec_id": "asset-validation",
+            "image_criteria": [],
+            "sound_criteria": [],
+        }
     }
 
 
@@ -247,7 +286,9 @@ def create_asset_validation_spec_node(
 # - its generated asset
 # - asset_validation_spec
 # ------------------------------------------------------------
-def validate_image_node(state: WorkflowState) -> dict[str, Any]:
+def validate_image_node(
+    state: ValidateImageAgentInput,
+) -> ValidateImageAgentOutput:
     log(
         "유저 입력 + 에셋 검증서를 바탕으로 "
         "이미지 에셋을 검증합니다."
@@ -255,11 +296,19 @@ def validate_image_node(state: WorkflowState) -> dict[str, Any]:
 
     # TODO: 이미지 검증
     return {
-        "image_validation_result": {}
+        "image_validation_result": {
+            "contract_version": CONTRACT_VERSION,
+            "status": "pending",
+            "checks": [],
+            "issues": [],
+            "validated_asset_ids": [],
+        }
     }
 
 
-def validate_sound_node(state: WorkflowState) -> dict[str, Any]:
+def validate_sound_node(
+    state: ValidateSoundAgentInput,
+) -> ValidateSoundAgentOutput:
     log(
         "유저 입력 + 에셋 검증서를 바탕으로 "
         "사운드 에셋을 검증합니다."
@@ -267,7 +316,13 @@ def validate_sound_node(state: WorkflowState) -> dict[str, Any]:
 
     # TODO: 사운드 검증
     return {
-        "sound_validation_result": {}
+        "sound_validation_result": {
+            "contract_version": CONTRACT_VERSION,
+            "status": "pending",
+            "checks": [],
+            "issues": [],
+            "validated_asset_ids": [],
+        }
     }
 
 
@@ -275,8 +330,8 @@ def validate_sound_node(state: WorkflowState) -> dict[str, Any]:
 # 4) Apply validated assets to the game
 # ------------------------------------------------------------
 def apply_assets_to_game_node(
-    state: WorkflowState,
-) -> dict[str, Any]:
+    state: ApplyAssetsAgentInput,
+) -> ApplyAssetsAgentOutput:
     log(
         "검증을 통과한 이미지/사운드 에셋을 "
         "게임에 적용합니다."
@@ -284,7 +339,14 @@ def apply_assets_to_game_node(
 
     # TODO: 실제 Unity/Godot 프로젝트에 에셋 적용
     return {
-        "integrated_game": {}
+        "integrated_game": {
+            "contract_version": CONTRACT_VERSION,
+            "status": "pending",
+            "project_path": None,
+            "applied_image_asset_ids": [],
+            "applied_sound_asset_ids": [],
+            "notes": ["에셋 통합 Agent 구현 전 placeholder"],
+        }
     }
 
 
@@ -292,8 +354,8 @@ def apply_assets_to_game_node(
 # 5) Final validation
 # ------------------------------------------------------------
 def final_validation_node(
-    state: WorkflowState,
-) -> dict[str, Any]:
+    state: FinalValidationAgentInput,
+) -> FinalValidationAgentOutput:
     log(
         "맨 처음 생성한 최종 검증서를 기준으로 "
         "완성된 게임을 최종 검증합니다."
@@ -301,7 +363,12 @@ def final_validation_node(
 
     # TODO: initial_final_validation_spec 기준 최종 검증
     return {
-        "final_validation_result": {}
+        "final_validation_result": {
+            "contract_version": CONTRACT_VERSION,
+            "status": "pending",
+            "checks": [],
+            "issues": [],
+        }
     }
 
 
