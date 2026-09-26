@@ -9,8 +9,8 @@ from __future__ import annotations
 from typing import Literal, TypedDict
 
 
-ContractVersion = Literal["1.0.0"]
-CONTRACT_VERSION: ContractVersion = "1.0.0"
+ContractVersion = Literal["2.0.0"]
+CONTRACT_VERSION: ContractVersion = "2.0.0"
 
 ImageStyle = Literal["Pixel Art", "Anime", "Cartoon", "Realistic", "Low Poly"]
 GameGenre = Literal["Action", "RPG", "Platformer", "Puzzle", "Simulation"]
@@ -20,6 +20,20 @@ ValidationStatus = Literal["pending", "passed", "failed", "needs_revision"]
 Severity = Literal["info", "warning", "error"]
 ValidationTarget = Literal["game", "image", "sound", "integration"]
 IntegrationStatus = Literal["pending", "integrated", "failed"]
+ArtifactCategory = Literal["image", "sound", "game", "data", "validation"]
+
+
+class ArtifactReference(TypedDict):
+    contract_version: ContractVersion
+    artifact_id: str
+    project_id: str
+    category: ArtifactCategory
+    relative_path: str
+    media_type: str
+    size_bytes: int
+    sha256: str
+    created_at: str
+    producer: str
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +78,7 @@ class InitialFinalValidationSpec(TypedDict):
 class ImageAsset(TypedDict):
     asset_id: str
     name: str
-    file_path: str | None
+    artifact: ArtifactReference
     file_format: str
     width: int
     height: int
@@ -82,7 +96,7 @@ class ImageDraft(TypedDict):
 class SoundAsset(TypedDict):
     asset_id: str
     name: str
-    file_path: str | None
+    artifact: ArtifactReference
     file_format: str
     duration_seconds: float
     prompt: str
@@ -101,9 +115,8 @@ class GameLogicDraft(TypedDict):
     draft_id: str
     status: DraftStatus
     engine: str
-    project_path: str | None
     entry_scene: str | None
-    source_files: list[str]
+    source_artifacts: list[ArtifactReference]
     required_image_asset_ids: list[str]
     required_sound_asset_ids: list[str]
     notes: list[str]
@@ -142,7 +155,8 @@ class SoundValidationResult(TypedDict):
 class IntegratedGame(TypedDict):
     contract_version: ContractVersion
     status: IntegrationStatus
-    project_path: str | None
+    entry_artifact: ArtifactReference | None
+    game_artifacts: list[ArtifactReference]
     applied_image_asset_ids: list[str]
     applied_sound_asset_ids: list[str]
     notes: list[str]
@@ -163,17 +177,18 @@ class WorkflowState(TypedDict, total=False):
     image_style: ImageStyle
     genre: GameGenre
     quality: QualityLevel
-    parsed_request: ParsedRequest
-    initial_final_validation_spec: InitialFinalValidationSpec
-    image_draft: ImageDraft
-    game_logic_draft: GameLogicDraft
-    sound_draft: SoundDraft
-    game_validation_result: GameValidationResult
-    asset_validation_spec: AssetValidationSpec
-    image_validation_result: ImageValidationResult
-    sound_validation_result: SoundValidationResult
-    integrated_game: IntegratedGame
-    final_validation_result: FinalValidationResult
+    project_id: str
+    parsed_request: ArtifactReference
+    initial_final_validation_spec: ArtifactReference
+    image_draft: ArtifactReference
+    game_logic_draft: ArtifactReference
+    sound_draft: ArtifactReference
+    game_validation_result: ArtifactReference
+    asset_validation_spec: ArtifactReference
+    image_validation_result: ArtifactReference
+    sound_validation_result: ArtifactReference
+    integrated_game: ArtifactReference
+    final_validation_result: ArtifactReference
 
 
 # ---------------------------------------------------------------------------
@@ -198,99 +213,110 @@ class ParseInputAgentInput(TypedDict):
 
 
 class ParseInputAgentOutput(TypedDict):
-    parsed_request: ParsedRequest
+    project_id: str
+    parsed_request: ArtifactReference
 
 
 class InitialValidationSpecAgentInput(TypedDict):
-    parsed_request: ParsedRequest
+    project_id: str
+    parsed_request: ArtifactReference
 
 
 class InitialValidationSpecAgentOutput(TypedDict):
-    initial_final_validation_spec: InitialFinalValidationSpec
+    initial_final_validation_spec: ArtifactReference
 
 
 class GenerateImageAgentInput(TypedDict):
-    parsed_request: ParsedRequest
-    initial_final_validation_spec: InitialFinalValidationSpec
+    project_id: str
+    parsed_request: ArtifactReference
+    initial_final_validation_spec: ArtifactReference
 
 
 class GenerateImageAgentOutput(TypedDict):
-    image_draft: ImageDraft
+    image_draft: ArtifactReference
 
 
 class DesignGameLogicAgentInput(TypedDict):
-    parsed_request: ParsedRequest
-    initial_final_validation_spec: InitialFinalValidationSpec
+    project_id: str
+    parsed_request: ArtifactReference
+    initial_final_validation_spec: ArtifactReference
 
 
 class DesignGameLogicAgentOutput(TypedDict):
-    game_logic_draft: GameLogicDraft
+    game_logic_draft: ArtifactReference
 
 
 class GenerateSoundAgentInput(TypedDict):
-    parsed_request: ParsedRequest
-    initial_final_validation_spec: InitialFinalValidationSpec
+    project_id: str
+    parsed_request: ArtifactReference
+    initial_final_validation_spec: ArtifactReference
 
 
 class GenerateSoundAgentOutput(TypedDict):
-    sound_draft: SoundDraft
+    sound_draft: ArtifactReference
 
 
 class ValidateGameAgentInput(TypedDict):
-    parsed_request: ParsedRequest
-    initial_final_validation_spec: InitialFinalValidationSpec
-    game_logic_draft: GameLogicDraft
+    project_id: str
+    parsed_request: ArtifactReference
+    initial_final_validation_spec: ArtifactReference
+    game_logic_draft: ArtifactReference
 
 
 class ValidateGameAgentOutput(TypedDict):
-    game_validation_result: GameValidationResult
+    game_validation_result: ArtifactReference
 
 
 class AssetValidationSpecAgentInput(TypedDict):
-    parsed_request: ParsedRequest
-    game_validation_result: GameValidationResult
+    project_id: str
+    parsed_request: ArtifactReference
+    game_validation_result: ArtifactReference
 
 
 class AssetValidationSpecAgentOutput(TypedDict):
-    asset_validation_spec: AssetValidationSpec
+    asset_validation_spec: ArtifactReference
 
 
 class ValidateImageAgentInput(TypedDict):
-    parsed_request: ParsedRequest
-    image_draft: ImageDraft
-    asset_validation_spec: AssetValidationSpec
+    project_id: str
+    parsed_request: ArtifactReference
+    image_draft: ArtifactReference
+    asset_validation_spec: ArtifactReference
 
 
 class ValidateImageAgentOutput(TypedDict):
-    image_validation_result: ImageValidationResult
+    image_validation_result: ArtifactReference
 
 
 class ValidateSoundAgentInput(TypedDict):
-    parsed_request: ParsedRequest
-    sound_draft: SoundDraft
-    asset_validation_spec: AssetValidationSpec
+    project_id: str
+    parsed_request: ArtifactReference
+    sound_draft: ArtifactReference
+    asset_validation_spec: ArtifactReference
 
 
 class ValidateSoundAgentOutput(TypedDict):
-    sound_validation_result: SoundValidationResult
+    sound_validation_result: ArtifactReference
 
 
 class ApplyAssetsAgentInput(TypedDict):
-    game_logic_draft: GameLogicDraft
-    image_draft: ImageDraft
-    sound_draft: SoundDraft
-    image_validation_result: ImageValidationResult
-    sound_validation_result: SoundValidationResult
+    project_id: str
+    game_logic_draft: ArtifactReference
+    image_draft: ArtifactReference
+    sound_draft: ArtifactReference
+    image_validation_result: ArtifactReference
+    sound_validation_result: ArtifactReference
 
 
 class ApplyAssetsAgentOutput(TypedDict):
-    integrated_game: IntegratedGame
+    integrated_game: ArtifactReference
 
 
 class FinalValidationAgentInput(TypedDict):
-    initial_final_validation_spec: InitialFinalValidationSpec
-    integrated_game: IntegratedGame
+    project_id: str
+    initial_final_validation_spec: ArtifactReference
+    integrated_game: ArtifactReference
 
 
 class FinalValidationAgentOutput(TypedDict):
-    final_validation_result: FinalValidationResult
+    final_validation_result: ArtifactReference

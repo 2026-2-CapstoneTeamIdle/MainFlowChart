@@ -4,24 +4,36 @@ from typing import cast
 
 from langgraph.graph import END, START, StateGraph
 
+from ArtifactManager import ArtifactManager
 from contracts import (
     CONTRACT_VERSION,
     ApplyAssetsAgentInput,
     ApplyAssetsAgentOutput,
+    AssetValidationSpec,
     AssetValidationSpecAgentInput,
     AssetValidationSpecAgentOutput,
     DesignGameLogicAgentInput,
     DesignGameLogicAgentOutput,
+    FinalValidationResult,
     FinalValidationAgentInput,
     FinalValidationAgentOutput,
     GenerateImageAgentInput,
     GenerateImageAgentOutput,
     GenerateSoundAgentInput,
     GenerateSoundAgentOutput,
+    GameLogicDraft,
+    GameValidationResult,
+    ImageDraft,
+    ImageValidationResult,
+    InitialFinalValidationSpec,
     InitialValidationSpecAgentInput,
     InitialValidationSpecAgentOutput,
     ParseInputAgentInput,
     ParseInputAgentOutput,
+    ParsedRequest,
+    SoundDraft,
+    SoundValidationResult,
+    IntegratedGame,
     UserInputAgentInput,
     UserInputAgentOutput,
     ValidateGameAgentInput,
@@ -155,13 +167,23 @@ def parse_input_node(state: ParseInputAgentInput) -> ParseInputAgentOutput:
     log("유저 입력을 파싱합니다.")
 
     # TODO: 이후 AdviserAI / LLM을 이용한 실제 요구사항 파싱
+    manager = ArtifactManager()
+    project_id = manager.create_project()
+    parsed_request: ParsedRequest = {
+        "contract_version": CONTRACT_VERSION,
+        "image_style": state["image_style"],
+        "genre": state["genre"],
+        "quality": state["quality"],
+    }
     return {
-        "parsed_request": {
-            "contract_version": CONTRACT_VERSION,
-            "image_style": state["image_style"],
-            "genre": state["genre"],
-            "quality": state["quality"],
-        }
+        "project_id": project_id,
+        "parsed_request": manager.write_json(
+            project_id,
+            "data",
+            "parsed_request.json",
+            parsed_request,
+            producer="parse_input",
+        ),
     }
 
 
@@ -170,13 +192,24 @@ def create_initial_final_validation_spec_node(
 ) -> InitialValidationSpecAgentOutput:
     log("최종 검증에 사용할 최초 검증서를 생성합니다.")
 
+    manager = ArtifactManager()
+    # Read through ArtifactManager so checksum and project boundaries are checked.
+    cast(ParsedRequest, manager.read_json(state["parsed_request"]))
+
     # TODO: 실제 최종 검증 기준 작성
+    spec: InitialFinalValidationSpec = {
+        "contract_version": CONTRACT_VERSION,
+        "spec_id": "initial-final-validation",
+        "criteria": [],
+    }
     return {
-        "initial_final_validation_spec": {
-            "contract_version": CONTRACT_VERSION,
-            "spec_id": "initial-final-validation",
-            "criteria": [],
-        }
+        "initial_final_validation_spec": manager.write_json(
+            state["project_id"],
+            "validation",
+            "initial_final_validation_spec.json",
+            spec,
+            producer="create_initial_final_validation_spec",
+        )
     }
 
 
@@ -188,15 +221,29 @@ def generate_image_node(
 ) -> GenerateImageAgentOutput:
     log("이미지 에셋을 생성합니다. (현재는 뼈대만 실행)")
 
+    manager = ArtifactManager()
+    cast(ParsedRequest, manager.read_json(state["parsed_request"]))
+    cast(
+        InitialFinalValidationSpec,
+        manager.read_json(state["initial_final_validation_spec"]),
+    )
+
     # TODO: 실제 이미지 생성
+    draft: ImageDraft = {
+        "contract_version": CONTRACT_VERSION,
+        "draft_id": "image-draft",
+        "status": "pending",
+        "assets": [],
+        "notes": ["이미지 생성 Agent 구현 전 placeholder"],
+    }
     return {
-        "image_draft": {
-            "contract_version": CONTRACT_VERSION,
-            "draft_id": "image-draft",
-            "status": "pending",
-            "assets": [],
-            "notes": ["이미지 생성 Agent 구현 전 placeholder"],
-        }
+        "image_draft": manager.write_json(
+            state["project_id"],
+            "image",
+            "image_draft.json",
+            draft,
+            producer="generate_image",
+        )
     }
 
 
@@ -208,20 +255,33 @@ def design_game_logic_node(
         "(이미지/사운드는 임시 에셋으로 가정)"
     )
 
+    manager = ArtifactManager()
+    cast(ParsedRequest, manager.read_json(state["parsed_request"]))
+    cast(
+        InitialFinalValidationSpec,
+        manager.read_json(state["initial_final_validation_spec"]),
+    )
+
     # TODO: 실제 게임 로직 / Unity / Godot 코드 설계
+    draft: GameLogicDraft = {
+        "contract_version": CONTRACT_VERSION,
+        "draft_id": "game-logic-draft",
+        "status": "pending",
+        "engine": "TBD",
+        "entry_scene": None,
+        "source_artifacts": [],
+        "required_image_asset_ids": [],
+        "required_sound_asset_ids": [],
+        "notes": ["게임 로직 설계 Agent 구현 전 placeholder"],
+    }
     return {
-        "game_logic_draft": {
-            "contract_version": CONTRACT_VERSION,
-            "draft_id": "game-logic-draft",
-            "status": "pending",
-            "engine": "TBD",
-            "project_path": None,
-            "entry_scene": None,
-            "source_files": [],
-            "required_image_asset_ids": [],
-            "required_sound_asset_ids": [],
-            "notes": ["게임 로직 설계 Agent 구현 전 placeholder"],
-        }
+        "game_logic_draft": manager.write_json(
+            state["project_id"],
+            "game",
+            "game_logic_draft.json",
+            draft,
+            producer="design_game_logic",
+        )
     }
 
 
@@ -230,15 +290,29 @@ def generate_sound_node(
 ) -> GenerateSoundAgentOutput:
     log("사운드 에셋을 생성합니다. (현재는 뼈대만 실행)")
 
+    manager = ArtifactManager()
+    cast(ParsedRequest, manager.read_json(state["parsed_request"]))
+    cast(
+        InitialFinalValidationSpec,
+        manager.read_json(state["initial_final_validation_spec"]),
+    )
+
     # TODO: 실제 사운드 생성
+    draft: SoundDraft = {
+        "contract_version": CONTRACT_VERSION,
+        "draft_id": "sound-draft",
+        "status": "pending",
+        "assets": [],
+        "notes": ["사운드 생성 Agent 구현 전 placeholder"],
+    }
     return {
-        "sound_draft": {
-            "contract_version": CONTRACT_VERSION,
-            "draft_id": "sound-draft",
-            "status": "pending",
-            "assets": [],
-            "notes": ["사운드 생성 Agent 구현 전 placeholder"],
-        }
+        "sound_draft": manager.write_json(
+            state["project_id"],
+            "sound",
+            "sound_draft.json",
+            draft,
+            producer="generate_sound",
+        )
     }
 
 
@@ -250,14 +324,29 @@ def validate_game_node(
 ) -> ValidateGameAgentOutput:
     log("임시 에셋을 사용해 설계된 게임을 검증합니다.")
 
+    manager = ArtifactManager()
+    cast(ParsedRequest, manager.read_json(state["parsed_request"]))
+    cast(
+        InitialFinalValidationSpec,
+        manager.read_json(state["initial_final_validation_spec"]),
+    )
+    cast(GameLogicDraft, manager.read_json(state["game_logic_draft"]))
+
     # TODO: Unity Test Framework / build / logic validation
+    result: GameValidationResult = {
+        "contract_version": CONTRACT_VERSION,
+        "status": "pending",
+        "checks": [],
+        "issues": [],
+    }
     return {
-        "game_validation_result": {
-            "contract_version": CONTRACT_VERSION,
-            "status": "pending",
-            "checks": [],
-            "issues": [],
-        }
+        "game_validation_result": manager.write_json(
+            state["project_id"],
+            "validation",
+            "game_validation_result.json",
+            result,
+            producer="validate_game",
+        )
     }
 
 
@@ -269,14 +358,28 @@ def create_asset_validation_spec_node(
         "이미지/사운드 에셋 검증서를 생성합니다."
     )
 
+    manager = ArtifactManager()
+    cast(ParsedRequest, manager.read_json(state["parsed_request"]))
+    cast(
+        GameValidationResult,
+        manager.read_json(state["game_validation_result"]),
+    )
+
     # TODO: game_validation_result를 이용해 실제 검증 기준 생성
+    spec: AssetValidationSpec = {
+        "contract_version": CONTRACT_VERSION,
+        "spec_id": "asset-validation",
+        "image_criteria": [],
+        "sound_criteria": [],
+    }
     return {
-        "asset_validation_spec": {
-            "contract_version": CONTRACT_VERSION,
-            "spec_id": "asset-validation",
-            "image_criteria": [],
-            "sound_criteria": [],
-        }
+        "asset_validation_spec": manager.write_json(
+            state["project_id"],
+            "validation",
+            "asset_validation_spec.json",
+            spec,
+            producer="create_asset_validation_spec",
+        )
     }
 
 
@@ -294,15 +397,27 @@ def validate_image_node(
         "이미지 에셋을 검증합니다."
     )
 
+    manager = ArtifactManager()
+    cast(ParsedRequest, manager.read_json(state["parsed_request"]))
+    cast(ImageDraft, manager.read_json(state["image_draft"]))
+    cast(AssetValidationSpec, manager.read_json(state["asset_validation_spec"]))
+
     # TODO: 이미지 검증
+    result: ImageValidationResult = {
+        "contract_version": CONTRACT_VERSION,
+        "status": "pending",
+        "checks": [],
+        "issues": [],
+        "validated_asset_ids": [],
+    }
     return {
-        "image_validation_result": {
-            "contract_version": CONTRACT_VERSION,
-            "status": "pending",
-            "checks": [],
-            "issues": [],
-            "validated_asset_ids": [],
-        }
+        "image_validation_result": manager.write_json(
+            state["project_id"],
+            "validation",
+            "image_validation_result.json",
+            result,
+            producer="validate_image",
+        )
     }
 
 
@@ -314,15 +429,27 @@ def validate_sound_node(
         "사운드 에셋을 검증합니다."
     )
 
+    manager = ArtifactManager()
+    cast(ParsedRequest, manager.read_json(state["parsed_request"]))
+    cast(SoundDraft, manager.read_json(state["sound_draft"]))
+    cast(AssetValidationSpec, manager.read_json(state["asset_validation_spec"]))
+
     # TODO: 사운드 검증
+    result: SoundValidationResult = {
+        "contract_version": CONTRACT_VERSION,
+        "status": "pending",
+        "checks": [],
+        "issues": [],
+        "validated_asset_ids": [],
+    }
     return {
-        "sound_validation_result": {
-            "contract_version": CONTRACT_VERSION,
-            "status": "pending",
-            "checks": [],
-            "issues": [],
-            "validated_asset_ids": [],
-        }
+        "sound_validation_result": manager.write_json(
+            state["project_id"],
+            "validation",
+            "sound_validation_result.json",
+            result,
+            producer="validate_sound",
+        )
     }
 
 
@@ -337,16 +464,37 @@ def apply_assets_to_game_node(
         "게임에 적용합니다."
     )
 
+    manager = ArtifactManager()
+    cast(GameLogicDraft, manager.read_json(state["game_logic_draft"]))
+    cast(ImageDraft, manager.read_json(state["image_draft"]))
+    cast(SoundDraft, manager.read_json(state["sound_draft"]))
+    cast(
+        ImageValidationResult,
+        manager.read_json(state["image_validation_result"]),
+    )
+    cast(
+        SoundValidationResult,
+        manager.read_json(state["sound_validation_result"]),
+    )
+
     # TODO: 실제 Unity/Godot 프로젝트에 에셋 적용
+    integrated_game: IntegratedGame = {
+        "contract_version": CONTRACT_VERSION,
+        "status": "pending",
+        "entry_artifact": None,
+        "game_artifacts": [],
+        "applied_image_asset_ids": [],
+        "applied_sound_asset_ids": [],
+        "notes": ["에셋 통합 Agent 구현 전 placeholder"],
+    }
     return {
-        "integrated_game": {
-            "contract_version": CONTRACT_VERSION,
-            "status": "pending",
-            "project_path": None,
-            "applied_image_asset_ids": [],
-            "applied_sound_asset_ids": [],
-            "notes": ["에셋 통합 Agent 구현 전 placeholder"],
-        }
+        "integrated_game": manager.write_json(
+            state["project_id"],
+            "game",
+            "integrated_game.json",
+            integrated_game,
+            producer="apply_assets_to_game",
+        )
     }
 
 
@@ -361,14 +509,28 @@ def final_validation_node(
         "완성된 게임을 최종 검증합니다."
     )
 
+    manager = ArtifactManager()
+    cast(
+        InitialFinalValidationSpec,
+        manager.read_json(state["initial_final_validation_spec"]),
+    )
+    cast(IntegratedGame, manager.read_json(state["integrated_game"]))
+
     # TODO: initial_final_validation_spec 기준 최종 검증
+    result: FinalValidationResult = {
+        "contract_version": CONTRACT_VERSION,
+        "status": "pending",
+        "checks": [],
+        "issues": [],
+    }
     return {
-        "final_validation_result": {
-            "contract_version": CONTRACT_VERSION,
-            "status": "pending",
-            "checks": [],
-            "issues": [],
-        }
+        "final_validation_result": manager.write_json(
+            state["project_id"],
+            "validation",
+            "final_validation_result.json",
+            result,
+            producer="final_validation",
+        )
     }
 
 
