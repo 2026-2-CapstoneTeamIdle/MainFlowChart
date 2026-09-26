@@ -197,7 +197,9 @@ class WorkflowState(TypedDict, total=False):
 # the declared patch.  Extra state keys may exist at runtime and are ignored.
 # ---------------------------------------------------------------------------
 class UserInputAgentInput(TypedDict, total=False):
-    pass
+    image_style: ImageStyle
+    genre: GameGenre
+    quality: QualityLevel
 
 
 class UserInputAgentOutput(TypedDict):

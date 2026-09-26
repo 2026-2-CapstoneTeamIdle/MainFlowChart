@@ -1,0 +1,11 @@
+[project]
+name = "main-flow-chart"
+version = "0.1.0"
+description = "LangGraph-based game asset generation workflow"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "langgraph>=1.0.0,<2.0.0",
+]
+
+[tool.uv]
+package = false

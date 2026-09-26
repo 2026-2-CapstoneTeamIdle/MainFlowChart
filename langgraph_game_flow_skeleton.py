@@ -60,6 +60,14 @@ def user_input_node(state: UserInputAgentInput) -> UserInputAgentOutput:
     - 장르
     - 퀄리티
     """
+    if all(key in state for key in ("image_style", "genre", "quality")):
+        log("초기 State의 입력값을 사용해 GUI를 건너뜁니다.")
+        return {
+            "image_style": state["image_style"],
+            "genre": state["genre"],
+            "quality": state["quality"],
+        }
+
     log("유저 입력 창을 표시합니다.")
 
     import tkinter as tk

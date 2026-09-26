@@ -1,0 +1,39 @@
+name: main-flow-chart
+
+services:
+  mainflow:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: main-flow-chart:local
+    environment:
+      MAINFLOW_WORKSPACE: /app/workspace
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - type: bind
+        source: ./workspace
+        target: /app/workspace
+    command:
+      - /app/.venv/bin/python
+      - run_flow.py
+      - --image-style
+      - Pixel Art
+      - --genre
+      - Action
+      - --quality
+      - Medium
+
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: main-flow-chart:local
+    profiles: ["test"]
+    command:
+      - /app/.venv/bin/python
+      - -m
+      - unittest
+      - discover
+      - -s
+      - tests
+      - -v

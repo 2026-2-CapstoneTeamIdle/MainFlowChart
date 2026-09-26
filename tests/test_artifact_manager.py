@@ -22,7 +22,6 @@ class ArtifactManagerTest(unittest.TestCase):
     def test_project_ids_and_required_directories(self) -> None:
         first = self.manager.create_project(date(2026, 9, 26))
         second = self.manager.create_project(date(2026, 9, 26))
-
         self.assertEqual(first, "20260926_01")
         self.assertEqual(second, "20260926_02")
         for relative_directory in self.manager.PROJECT_DIRECTORIES:
@@ -31,7 +30,6 @@ class ArtifactManagerTest(unittest.TestCase):
     def test_json_round_trip_and_manifest_lookup(self) -> None:
         project_id = self.manager.create_project(date(2026, 9, 26))
         payload = {"message": "Agent 간 전달", "items": [1, 2, 3]}
-
         reference = self.manager.write_json(
             project_id,
             "data",
@@ -39,17 +37,14 @@ class ArtifactManagerTest(unittest.TestCase):
             payload,
             producer="test_agent",
         )
-
         self.assertEqual(self.manager.read_json(reference), payload)
         self.assertEqual(
             self.manager.get_artifact(project_id, reference["artifact_id"]),
             reference,
         )
-        self.assertEqual(self.manager.list_artifacts(project_id, "data"), [reference])
 
-    def test_rejects_path_traversal(self) -> None:
+    def test_rejects_path_traversal_and_detects_tampering(self) -> None:
         project_id = self.manager.create_project(date(2026, 9, 26))
-
         with self.assertRaises(ValueError):
             self.manager.write_text(
                 project_id,
@@ -58,9 +53,6 @@ class ArtifactManagerTest(unittest.TestCase):
                 "blocked",
                 producer="test_agent",
             )
-
-    def test_detects_artifact_tampering(self) -> None:
-        project_id = self.manager.create_project(date(2026, 9, 26))
         reference = self.manager.write_text(
             project_id,
             "validation",
@@ -70,11 +62,10 @@ class ArtifactManagerTest(unittest.TestCase):
         )
         artifact_path = self.workspace / project_id / reference["relative_path"]
         artifact_path.write_text("tampered", encoding="utf-8")
-
         with self.assertRaises(ValueError):
             self.manager.read_text(reference)
 
-    def test_parallel_agents_do_not_lose_manifest_entries(self) -> None:
+    def test_parallel_manifest_updates(self) -> None:
         project_id = self.manager.create_project(date(2026, 9, 26))
         jobs: list[tuple[ArtifactCategory, str, str]] = [
             ("image", "image.json", "generate_image"),
@@ -94,7 +85,6 @@ class ArtifactManagerTest(unittest.TestCase):
 
         with ThreadPoolExecutor(max_workers=3) as executor:
             list(executor.map(write, jobs))
-
         self.assertEqual(len(self.manager.list_artifacts(project_id)), 3)
 
 

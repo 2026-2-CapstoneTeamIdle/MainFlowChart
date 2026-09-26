@@ -1,0 +1,14 @@
+{
+  "user_input": 5,
+  "parse_input": 10,
+  "create_initial_final_validation_spec": 10,
+  "generate_image": 80,
+  "design_game_logic": 60,
+  "generate_sound": 70,
+  "validate_game": 30,
+  "create_asset_validation_spec": 15,
+  "validate_image": 40,
+  "validate_sound": 40,
+  "apply_assets_to_game": 20,
+  "final_validation": 25
+}

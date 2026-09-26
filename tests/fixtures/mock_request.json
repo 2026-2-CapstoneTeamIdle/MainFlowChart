@@ -1,0 +1,18 @@
+{
+  "input": {
+    "image_style": "Pixel Art",
+    "genre": "Action",
+    "quality": "Medium"
+  },
+  "expected": {
+    "final_status": "passed",
+    "artifact_count": 15,
+    "category_counts": {
+      "data": 1,
+      "image": 2,
+      "sound": 2,
+      "game": 4,
+      "validation": 6
+    }
+  }
+}

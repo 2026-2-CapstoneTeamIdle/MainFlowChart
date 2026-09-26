@@ -30,7 +30,7 @@ LangGraph는 각 노드에 전체 State를 넘기지만, 아래 Input은 해당 
 
 | Agent(Node) | Input 계약 | 읽는 State 키 | Output 계약 | 쓰는 State 키 |
 |---|---|---|---|---|
-| `user_input` | `UserInputAgentInput` | 없음 | `UserInputAgentOutput` | `image_style`, `genre`, `quality` |
+| `user_input` | `UserInputAgentInput` | 선택적 초기 `image_style`, `genre`, `quality` | `UserInputAgentOutput` | `image_style`, `genre`, `quality` |
 | `parse_input` | `ParseInputAgentInput` | `image_style`, `genre`, `quality` | `ParseInputAgentOutput` | `project_id`, `parsed_request` |
 | `create_initial_final_validation_spec` | `InitialValidationSpecAgentInput` | `project_id`, `parsed_request` | `InitialValidationSpecAgentOutput` | `initial_final_validation_spec` |
 | `generate_image` | `GenerateImageAgentInput` | `project_id`, `parsed_request`, `initial_final_validation_spec` | `GenerateImageAgentOutput` | `image_draft` |

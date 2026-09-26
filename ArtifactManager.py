@@ -34,7 +34,10 @@ class ArtifactManager:
 
     def __init__(self, workspace_root: str | Path | None = None) -> None:
         default_root = Path(__file__).resolve().parent / "workspace"
-        self.workspace_root = Path(workspace_root or default_root).resolve()
+        environment_root = os.environ.get("MAINFLOW_WORKSPACE")
+        self.workspace_root = Path(
+            workspace_root or environment_root or default_root
+        ).resolve()
         self.workspace_root.mkdir(parents=True, exist_ok=True)
 
     def create_project(
