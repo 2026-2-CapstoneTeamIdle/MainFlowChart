@@ -1,0 +1,46 @@
+name: Require Rebase On Base Branch
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  rebase-check:
+    name: Rebase check (base commit must be ancestor of PR head)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify PR is rebased on base branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE_REF="${{ github.event.pull_request.base.ref }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+
+          git fetch --no-tags --prune origin \
+            "${BASE_REF}" \
+            "pull/${PR_NUMBER}/head:pr-head"
+
+          BASE_SHA="$(git rev-parse "origin/${BASE_REF}")"
+          HEAD_SHA="$(git rev-parse pr-head)"
+
+          echo "Base branch: ${BASE_REF}"
+          echo "Base SHA:    ${BASE_SHA}"
+          echo "PR head SHA: ${HEAD_SHA}"
+
+          if git merge-base --is-ancestor "${BASE_SHA}" "${HEAD_SHA}"; then
+            echo "PASS: PR head includes latest base commit."
+          else
+            echo "FAIL: PR head does not include latest base commit of '${BASE_REF}'."
+            echo "Please rebase this branch onto '${BASE_REF}' and push again."
+            exit 1
+          fi
