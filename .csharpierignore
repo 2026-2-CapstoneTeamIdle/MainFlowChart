@@ -1,0 +1,13 @@
+# Unity-generated and build output
+**/Library/**
+**/Temp/**
+**/Logs/**
+**/UserSettings/**
+**/obj/**
+**/bin/**
+
+# This repository standardizes C# only; do not rewrite XML project files.
+**/*.xml
+**/*.csproj
+**/*.props
+**/*.targets

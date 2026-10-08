@@ -1,0 +1,39 @@
+name: Repository Format Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  format-check:
+    name: Python and C# format check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: tools/format-requirements.txt
+
+      - name: Install Python formatter
+        run: python -m pip install -r tools/format-requirements.txt
+
+      - name: Set up .NET for C# repositories
+        if: ${{ hashFiles('**/*.cs', '**/*.csx') != '' }}
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Check repository formatting
+        run: python tools/format_repo.py --check

@@ -39,6 +39,21 @@ with open("langgraph_flow.png", "wb") as f:
 
 app.get_graph().print_ascii()
 
+코드 포맷
+
+저장소 전체의 Python과 C# 코드는 동일한 스크립트로 포맷합니다. Python은 Ruff,
+C#은 CSharpier를 사용하며, 해당 언어 파일이 없는 저장소에서는 자동으로 건너뜁니다.
+
+```powershell
+python -m pip install -r tools/format-requirements.txt
+python tools/format_repo.py --write
+python tools/format_repo.py --check
+```
+
+`.editorconfig`를 지원하는 IDE는 기본 들여쓰기와 줄바꿈 규칙을 자동으로 읽습니다.
+저장 시 완전한 자동 포맷을 원하면 IDE의 Ruff 및 CSharpier 확장을 활성화합니다.
+PR에서는 `Repository Format Check` 워크플로가 같은 규칙을 다시 검사합니다.
+
 현재 흐름의 개략적인 구조:
 
 flowchart TD

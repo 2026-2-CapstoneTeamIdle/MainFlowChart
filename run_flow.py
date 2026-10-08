@@ -54,9 +54,7 @@ def load_request(arguments: argparse.Namespace) -> WorkflowState:
     required = {"image_style", "genre", "quality"}
     missing = required - request.keys()
     if missing or any(request[key] is None for key in required):
-        raise ValueError(
-            "Provide --request-file or all of --image-style, --genre, --quality"
-        )
+        raise ValueError("Provide --request-file or all of --image-style, --genre, --quality")
     if request["image_style"] not in IMAGE_STYLES:
         raise ValueError(f"Unsupported image_style: {request['image_style']}")
     if request["genre"] not in GAME_GENRES:

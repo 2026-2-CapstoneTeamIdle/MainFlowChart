@@ -1,0 +1,18 @@
+target-version = "py311"
+line-length = 100
+respect-gitignore = true
+
+extend-exclude = [
+  "Library",
+  "Temp",
+  "Logs",
+  "UserSettings",
+  "obj",
+  "bin",
+]
+
+[format]
+indent-style = "space"
+quote-style = "double"
+line-ending = "lf"
+docstring-code-format = true
