@@ -35,9 +35,7 @@ class ArtifactManager:
     def __init__(self, workspace_root: str | Path | None = None) -> None:
         default_root = Path(__file__).resolve().parent / "workspace"
         environment_root = os.environ.get("MAINFLOW_WORKSPACE")
-        self.workspace_root = Path(
-            workspace_root or environment_root or default_root
-        ).resolve()
+        self.workspace_root = Path(workspace_root or environment_root or default_root).resolve()
         self.workspace_root.mkdir(parents=True, exist_ok=True)
 
     def create_project(
@@ -52,9 +50,7 @@ class ArtifactManager:
         same project ID.
         """
 
-        project_date = (
-            created_on.date() if isinstance(created_on, datetime) else created_on
-        )
+        project_date = created_on.date() if isinstance(created_on, datetime) else created_on
         project_date = project_date or date.today()
         prefix = project_date.strftime("%Y%m%d")
 
@@ -214,8 +210,7 @@ class ArtifactManager:
 
         if reference["contract_version"] != CONTRACT_VERSION:
             raise ValueError(
-                "Unsupported artifact contract version: "
-                f"{reference['contract_version']}"
+                f"Unsupported artifact contract version: {reference['contract_version']}"
             )
         project_root = self.ensure_project(reference["project_id"])
         expected_category_root = (
@@ -252,9 +247,7 @@ class ArtifactManager:
         *,
         verify_integrity: bool = True,
     ) -> Any:
-        return json.loads(
-            self.read_text(reference, verify_integrity=verify_integrity)
-        )
+        return json.loads(self.read_text(reference, verify_integrity=verify_integrity))
 
     def materialize(
         self,
@@ -334,9 +327,7 @@ class ArtifactManager:
                 os.write(file_descriptor, str(os.getpid()).encode("ascii"))
             except FileExistsError:
                 if time.monotonic() >= deadline:
-                    raise TimeoutError(
-                        f"Timed out waiting for artifact manifest: {project_id}"
-                    )
+                    raise TimeoutError(f"Timed out waiting for artifact manifest: {project_id}")
                 time.sleep(0.05)
 
         try:
@@ -374,9 +365,7 @@ class ArtifactManager:
 
     def _validate_project_id(self, project_id: str) -> None:
         if not self.PROJECT_ID_PATTERN.fullmatch(project_id):
-            raise ValueError(
-                "project_id must use YYYYMMDD_NN format, for example 20260926_03"
-            )
+            raise ValueError("project_id must use YYYYMMDD_NN format, for example 20260926_03")
 
     @staticmethod
     def _require_within(parent: Path, child: Path) -> None:
@@ -387,9 +376,9 @@ class ArtifactManager:
 
     @staticmethod
     def _encode_json(payload: Any) -> bytes:
-        return (
-            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-        ).encode("utf-8")
+        return (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+            "utf-8"
+        )
 
     @staticmethod
     def _atomic_write(target: Path, content: bytes, *, overwrite: bool) -> None:

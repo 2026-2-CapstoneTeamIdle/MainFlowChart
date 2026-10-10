@@ -82,9 +82,7 @@ def user_input_node(state: UserInputAgentInput) -> UserInputAgentOutput:
     frame = ttk.Frame(root, padding=20)
     frame.grid(row=0, column=0)
 
-    ttk.Label(frame, text="이미지 스타일").grid(
-        row=0, column=0, sticky="w", padx=5, pady=8
-    )
+    ttk.Label(frame, text="이미지 스타일").grid(row=0, column=0, sticky="w", padx=5, pady=8)
     image_style_var = tk.StringVar(value="Pixel Art")
     image_style_box = ttk.Combobox(
         frame,
@@ -101,9 +99,7 @@ def user_input_node(state: UserInputAgentInput) -> UserInputAgentOutput:
     )
     image_style_box.grid(row=0, column=1, padx=5, pady=8)
 
-    ttk.Label(frame, text="게임 장르").grid(
-        row=1, column=0, sticky="w", padx=5, pady=8
-    )
+    ttk.Label(frame, text="게임 장르").grid(row=1, column=0, sticky="w", padx=5, pady=8)
     genre_var = tk.StringVar(value="Action")
     genre_box = ttk.Combobox(
         frame,
@@ -120,9 +116,7 @@ def user_input_node(state: UserInputAgentInput) -> UserInputAgentOutput:
     )
     genre_box.grid(row=1, column=1, padx=5, pady=8)
 
-    ttk.Label(frame, text="퀄리티").grid(
-        row=2, column=0, sticky="w", padx=5, pady=8
-    )
+    ttk.Label(frame, text="퀄리티").grid(row=2, column=0, sticky="w", padx=5, pady=8)
     quality_var = tk.StringVar(value="Medium")
     quality_box = ttk.Combobox(
         frame,
@@ -258,10 +252,7 @@ def generate_image_node(
 def design_game_logic_node(
     state: DesignGameLogicAgentInput,
 ) -> DesignGameLogicAgentOutput:
-    log(
-        "게임 로직을 설계합니다. "
-        "(이미지/사운드는 임시 에셋으로 가정)"
-    )
+    log("게임 로직을 설계합니다. (이미지/사운드는 임시 에셋으로 가정)")
 
     manager = ArtifactManager()
     cast(ParsedRequest, manager.read_json(state["parsed_request"]))
@@ -361,10 +352,7 @@ def validate_game_node(
 def create_asset_validation_spec_node(
     state: AssetValidationSpecAgentInput,
 ) -> AssetValidationSpecAgentOutput:
-    log(
-        "게임 검증 결과를 바탕으로 "
-        "이미지/사운드 에셋 검증서를 생성합니다."
-    )
+    log("게임 검증 결과를 바탕으로 이미지/사운드 에셋 검증서를 생성합니다.")
 
     manager = ArtifactManager()
     cast(ParsedRequest, manager.read_json(state["parsed_request"]))
@@ -400,10 +388,7 @@ def create_asset_validation_spec_node(
 def validate_image_node(
     state: ValidateImageAgentInput,
 ) -> ValidateImageAgentOutput:
-    log(
-        "유저 입력 + 에셋 검증서를 바탕으로 "
-        "이미지 에셋을 검증합니다."
-    )
+    log("유저 입력 + 에셋 검증서를 바탕으로 이미지 에셋을 검증합니다.")
 
     manager = ArtifactManager()
     cast(ParsedRequest, manager.read_json(state["parsed_request"]))
@@ -432,10 +417,7 @@ def validate_image_node(
 def validate_sound_node(
     state: ValidateSoundAgentInput,
 ) -> ValidateSoundAgentOutput:
-    log(
-        "유저 입력 + 에셋 검증서를 바탕으로 "
-        "사운드 에셋을 검증합니다."
-    )
+    log("유저 입력 + 에셋 검증서를 바탕으로 사운드 에셋을 검증합니다.")
 
     manager = ArtifactManager()
     cast(ParsedRequest, manager.read_json(state["parsed_request"]))
@@ -467,10 +449,7 @@ def validate_sound_node(
 def apply_assets_to_game_node(
     state: ApplyAssetsAgentInput,
 ) -> ApplyAssetsAgentOutput:
-    log(
-        "검증을 통과한 이미지/사운드 에셋을 "
-        "게임에 적용합니다."
-    )
+    log("검증을 통과한 이미지/사운드 에셋을 게임에 적용합니다.")
 
     manager = ArtifactManager()
     cast(GameLogicDraft, manager.read_json(state["game_logic_draft"]))
@@ -512,10 +491,7 @@ def apply_assets_to_game_node(
 def final_validation_node(
     state: FinalValidationAgentInput,
 ) -> FinalValidationAgentOutput:
-    log(
-        "맨 처음 생성한 최종 검증서를 기준으로 "
-        "완성된 게임을 최종 검증합니다."
-    )
+    log("맨 처음 생성한 최종 검증서를 기준으로 완성된 게임을 최종 검증합니다.")
 
     manager = ArtifactManager()
     cast(
@@ -671,9 +647,9 @@ if __name__ == "__main__":
     print(final_state)
 
     ###
-    #app = build_graph()
+    # app = build_graph()
     #
-    #png_data = app.get_graph().draw_mermaid_png()
+    # png_data = app.get_graph().draw_mermaid_png()
     #
-    #with open("langgraph_flow.png", "wb") as f:
+    # with open("langgraph_flow.png", "wb") as f:
     #    f.write(png_data)

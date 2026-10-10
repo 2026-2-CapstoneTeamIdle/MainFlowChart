@@ -140,9 +140,7 @@ def _run_node(
     output = function(state, runtime)
     ended_ns = perf_counter_ns()
     if set(output) != expected_outputs:
-        raise AssertionError(
-            f"{node_name} outputs {sorted(output)} != {sorted(expected_outputs)}"
-        )
+        raise AssertionError(f"{node_name} outputs {sorted(output)} != {sorted(expected_outputs)}")
 
     measurement = NodeMeasurement(
         node=node_name,
@@ -161,9 +159,7 @@ def _parallel_span(
     node_names: list[str],
 ) -> float:
     selected = [measurements[name] for name in node_names]
-    return max(item.ended_ms for item in selected) - min(
-        item.started_ms for item in selected
-    )
+    return max(item.ended_ms for item in selected) - min(item.started_ms for item in selected)
 
 
 def run_mock_graph(runtime: MockRuntime) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -225,9 +221,7 @@ def run_mock_graph(runtime: MockRuntime) -> tuple[dict[str, Any], dict[str, Any]
 
         game_execution = generation_futures["design_game_logic"].result()
         state.update(game_execution.output)
-        state.update(
-            execute("validate_game", mock_validate_game_node, dict(state)).output
-        )
+        state.update(execute("validate_game", mock_validate_game_node, dict(state)).output)
         state.update(
             execute(
                 "create_asset_validation_spec",
@@ -259,12 +253,8 @@ def run_mock_graph(runtime: MockRuntime) -> tuple[dict[str, Any], dict[str, Any]
         for future in validation_futures:
             state.update(future.result().output)
 
-    state.update(
-        execute("apply_assets_to_game", mock_apply_assets_node, dict(state)).output
-    )
-    state.update(
-        execute("final_validation", mock_final_validation_node, dict(state)).output
-    )
+    state.update(execute("apply_assets_to_game", mock_apply_assets_node, dict(state)).output)
+    state.update(execute("final_validation", mock_final_validation_node, dict(state)).output)
 
     workflow_wall_ms = (perf_counter_ns() - flow_started_ns) / 1_000_000
     sequential_sum_ms = sum(item.elapsed_ms for item in measurements.values())
@@ -274,21 +264,16 @@ def run_mock_graph(runtime: MockRuntime) -> tuple[dict[str, Any], dict[str, Any]
         "workflow_wall_ms": workflow_wall_ms,
         "sequential_node_sum_ms": sequential_sum_ms,
         "estimated_parallel_speedup": sequential_sum_ms / workflow_wall_ms,
-        "generation_parallel_span_ms": _parallel_span(
-            measurements, generation_nodes
-        ),
+        "generation_parallel_span_ms": _parallel_span(measurements, generation_nodes),
         "generation_sequential_sum_ms": sum(
             measurements[name].elapsed_ms for name in generation_nodes
         ),
-        "asset_validation_parallel_span_ms": _parallel_span(
-            measurements, validation_nodes
-        ),
+        "asset_validation_parallel_span_ms": _parallel_span(measurements, validation_nodes),
         "asset_validation_sequential_sum_ms": sum(
             measurements[name].elapsed_ms for name in validation_nodes
         ),
         "nodes": [
-            asdict(item)
-            for item in sorted(measurements.values(), key=lambda item: item.started_ms)
+            asdict(item) for item in sorted(measurements.values(), key=lambda item: item.started_ms)
         ],
     }
     return state, metrics
@@ -437,8 +422,7 @@ class MockGraphTest(unittest.TestCase):
                 for name in ["generate_image", "design_game_logic", "generate_sound"]
             }
             validation_threads = {
-                node_metrics[name]["thread"]
-                for name in ["validate_image", "validate_sound"]
+                node_metrics[name]["thread"] for name in ["validate_image", "validate_sound"]
             }
             self.assertGreaterEqual(len(generation_threads), 2)
             self.assertEqual(len(validation_threads), 2)

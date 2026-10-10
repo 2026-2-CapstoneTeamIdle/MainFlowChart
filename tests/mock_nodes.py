@@ -158,7 +158,7 @@ def mock_generate_image_node(
         '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">'
         '<rect width="64" height="64" fill="#20283d"/>'
         '<circle cx="32" cy="32" r="18" fill="#62d9ff"/>'
-        f'<title>{escape(request["image_style"])} mock player</title>'
+        f"<title>{escape(request['image_style'])} mock player</title>"
         "</svg>"
     )
     image_reference = runtime.manager.write_text(
@@ -207,10 +207,7 @@ def mock_design_game_logic_node(
         InitialFinalValidationSpec,
         runtime.manager.read_json(state["initial_final_validation_spec"]),
     )
-    source = (
-        "def run_game():\n"
-        f"    return {{'genre': {request['genre']!r}, 'running': True}}\n"
-    )
+    source = f"def run_game():\n    return {{'genre': {request['genre']!r}, 'running': True}}\n"
     source_reference = runtime.manager.write_text(
         state["project_id"],
         "game",
