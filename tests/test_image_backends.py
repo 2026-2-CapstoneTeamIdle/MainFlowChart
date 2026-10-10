@@ -122,6 +122,54 @@ class OpenAIImageGeneratorTest(unittest.TestCase):
             OpenAIImageGenerator("m", client=client).generate(make_request("player"))
 
 
+class ModerationError(Exception):
+    """Mimics openai.BadRequestError for a moderation_blocked response."""
+
+    code = "moderation_blocked"
+
+
+class BlockingImagesClient(FakeImagesClient):
+    def __init__(self, blocked_attempts: int) -> None:
+        super().__init__()
+        self.blocked_attempts = blocked_attempts
+
+    def generate(self, **kwargs: Any) -> SimpleNamespace:
+        if len(self.calls) < self.blocked_attempts:
+            self.calls.append(kwargs)
+            raise ModerationError("Your request was rejected by the safety system.")
+        return super().generate(**kwargs)
+
+
+class ModerationRetryTest(unittest.TestCase):
+    def test_prompt_asks_for_original_design(self) -> None:
+        self.assertIn("not based on any existing", make_request("player").prompt)
+
+    def test_blocked_output_is_retried_with_a_changed_prompt(self) -> None:
+        client = BlockingImagesClient(blocked_attempts=1)
+        request = make_request("player")
+
+        content = OpenAIImageGenerator("m", client=client).generate(request)
+
+        self.assertEqual(len(client.calls), 2)
+        self.assertEqual(client.calls[0]["prompt"], request.prompt)
+        self.assertNotEqual(client.calls[1]["prompt"], request.prompt)
+        self.assertTrue(client.calls[1]["prompt"].startswith(request.prompt))
+        self.assertTrue(inspect_png(content).has_transparent_pixel)
+
+    def test_gives_up_after_all_prompt_variants(self) -> None:
+        client = BlockingImagesClient(blocked_attempts=99)
+        with self.assertRaisesRegex(RuntimeError, "safety system"):
+            OpenAIImageGenerator("m", client=client).generate(make_request("player"))
+        self.assertEqual(len(client.calls), 3)
+
+    def test_other_errors_are_not_retried(self) -> None:
+        client = mock.Mock()
+        client.images.generate.side_effect = ValueError("invalid size")
+        with self.assertRaises(ValueError):
+            OpenAIImageGenerator("m", client=client).generate(make_request("player"))
+        self.assertEqual(client.images.generate.call_count, 1)
+
+
 class PostprocessTest(unittest.TestCase):
     def test_sprite_is_resized_and_keeps_transparency(self) -> None:
         request = make_request("player")

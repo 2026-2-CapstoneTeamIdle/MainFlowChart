@@ -1,0 +1,132 @@
+diff --git a/image_backends.py b/image_backends.py
+index 1b500a1..9477bd8 100644
+--- a/image_backends.py
++++ b/image_backends.py
+@@ -44,6 +44,14 @@ PIXEL_ART_COLORS = 32
+ # Sprites keep this fraction of the canvas as empty margin after cropping.
+ SPRITE_MARGIN = 0.08
+ BACKGROUND_REMOVAL_THRESHOLD = 40
++# Prompt additions tried in order when the provider's safety system blocks a
++# result.  Output-stage blocks are usually false positives on a look-alike of
++# an existing character, so steering away from a generic look often passes.
++MODERATION_RETRY_SUFFIXES = (
++    "",
++    " Give it a unique silhouette and an unusual color scheme.",
++    " Use a simple, abstract, generic look with no recognizable features.",
++)
+ 
+ 
+ class OpenAIImageGenerator:
+@@ -70,10 +78,24 @@ class OpenAIImageGenerator:
+         self.client = client
+ 
+     def generate(self, request: ImageRequest) -> bytes:
++        blocked: Exception | None = None
++        for suffix in MODERATION_RETRY_SUFFIXES:
++            try:
++                return self._generate_once(request, request.prompt + suffix)
++            except Exception as error:
++                if getattr(error, "code", None) != "moderation_blocked":
++                    raise
++                blocked = error
++        raise RuntimeError(
++            f"Blocked by the safety system after "
++            f"{len(MODERATION_RETRY_SUFFIXES)} prompt variants: {blocked}"
++        ) from blocked
++
++    def _generate_once(self, request: ImageRequest, prompt: str) -> bytes:
+         transparent = request.plan.role in TRANSPARENT_ROLES
+         response = self.client.images.generate(
+             model=self.model,
+-            prompt=request.prompt,
++            prompt=prompt,
+             size="1536x1024" if request.plan.role == "background" else "1024x1024",
+             quality=OPENAI_QUALITY[request.quality],
+             background="transparent" if transparent else "opaque",
+diff --git a/image_generation.py b/image_generation.py
+index 26de5b6..28d4dc3 100644
+--- a/image_generation.py
++++ b/image_generation.py
+@@ -110,6 +110,13 @@ STYLE_PROMPTS: dict[ImageStyle, str] = {
+ }
+ 
+ 
++# Generic game subjects ("jumping hero", "gold coin") tend to drift toward
++# famous franchise characters, which the provider's output moderation blocks.
++ORIGINAL_DESIGN_PROMPT = (
++    "original design, not based on any existing game, franchise or character"
++)
++
++
+ def plan_assets(genre: GameGenre) -> tuple[ImageAssetPlan, ...]:
+     return GENRE_ASSET_PLANS[genre]
+ 
+@@ -129,7 +136,8 @@ def build_prompt(plan: ImageAssetPlan, style: ImageStyle, genre: GameGenre) -> s
+     )
+     return (
+         f"{plan.description} for a {genre} game, "
+-        f"{STYLE_PROMPTS[style]}, {background}"
++        f"{STYLE_PROMPTS[style]}, {background}, "
++        f"{ORIGINAL_DESIGN_PROMPT}"
+     )
+ 
+ 
+diff --git a/tests/test_image_backends.py b/tests/test_image_backends.py
+index fe85863..f05c53c 100644
+--- a/tests/test_image_backends.py
++++ b/tests/test_image_backends.py
+@@ -122,6 +122,54 @@ class OpenAIImageGeneratorTest(unittest.TestCase):
+             OpenAIImageGenerator("m", client=client).generate(make_request("player"))
+ 
+ 
++class ModerationError(Exception):
++    """Mimics openai.BadRequestError for a moderation_blocked response."""
++
++    code = "moderation_blocked"
++
++
++class BlockingImagesClient(FakeImagesClient):
++    def __init__(self, blocked_attempts: int) -> None:
++        super().__init__()
++        self.blocked_attempts = blocked_attempts
++
++    def generate(self, **kwargs: Any) -> SimpleNamespace:
++        if len(self.calls) < self.blocked_attempts:
++            self.calls.append(kwargs)
++            raise ModerationError("Your request was rejected by the safety system.")
++        return super().generate(**kwargs)
++
++
++class ModerationRetryTest(unittest.TestCase):
++    def test_prompt_asks_for_original_design(self) -> None:
++        self.assertIn("not based on any existing", make_request("player").prompt)
++
++    def test_blocked_output_is_retried_with_a_changed_prompt(self) -> None:
++        client = BlockingImagesClient(blocked_attempts=1)
++        request = make_request("player")
++
++        content = OpenAIImageGenerator("m", client=client).generate(request)
++
++        self.assertEqual(len(client.calls), 2)
++        self.assertEqual(client.calls[0]["prompt"], request.prompt)
++        self.assertNotEqual(client.calls[1]["prompt"], request.prompt)
++        self.assertTrue(client.calls[1]["prompt"].startswith(request.prompt))
++        self.assertTrue(inspect_png(content).has_transparent_pixel)
++
++    def test_gives_up_after_all_prompt_variants(self) -> None:
++        client = BlockingImagesClient(blocked_attempts=99)
++        with self.assertRaisesRegex(RuntimeError, "safety system"):
++            OpenAIImageGenerator("m", client=client).generate(make_request("player"))
++        self.assertEqual(len(client.calls), 3)
++
++    def test_other_errors_are_not_retried(self) -> None:
++        client = mock.Mock()
++        client.images.generate.side_effect = ValueError("invalid size")
++        with self.assertRaises(ValueError):
++            OpenAIImageGenerator("m", client=client).generate(make_request("player"))
++        self.assertEqual(client.images.generate.call_count, 1)
++
++
+ class PostprocessTest(unittest.TestCase):
+     def test_sprite_is_resized_and_keeps_transparency(self) -> None:
+         request = make_request("player")

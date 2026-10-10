@@ -110,6 +110,13 @@ STYLE_PROMPTS: dict[ImageStyle, str] = {
 }
 
 
+# Generic game subjects ("jumping hero", "gold coin") tend to drift toward
+# famous franchise characters, which the provider's output moderation blocks.
+ORIGINAL_DESIGN_PROMPT = (
+    "original design, not based on any existing game, franchise or character"
+)
+
+
 def plan_assets(genre: GameGenre) -> tuple[ImageAssetPlan, ...]:
     return GENRE_ASSET_PLANS[genre]
 
@@ -129,7 +136,8 @@ def build_prompt(plan: ImageAssetPlan, style: ImageStyle, genre: GameGenre) -> s
     )
     return (
         f"{plan.description} for a {genre} game, "
-        f"{STYLE_PROMPTS[style]}, {background}"
+        f"{STYLE_PROMPTS[style]}, {background}, "
+        f"{ORIGINAL_DESIGN_PROMPT}"
     )
 
 

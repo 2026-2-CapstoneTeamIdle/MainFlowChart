@@ -44,6 +44,14 @@ PIXEL_ART_COLORS = 32
 # Sprites keep this fraction of the canvas as empty margin after cropping.
 SPRITE_MARGIN = 0.08
 BACKGROUND_REMOVAL_THRESHOLD = 40
+# Prompt additions tried in order when the provider's safety system blocks a
+# result.  Output-stage blocks are usually false positives on a look-alike of
+# an existing character, so steering away from a generic look often passes.
+MODERATION_RETRY_SUFFIXES = (
+    "",
+    " Give it a unique silhouette and an unusual color scheme.",
+    " Use a simple, abstract, generic look with no recognizable features.",
+)
 
 
 class OpenAIImageGenerator:
@@ -70,10 +78,24 @@ class OpenAIImageGenerator:
         self.client = client
 
     def generate(self, request: ImageRequest) -> bytes:
+        blocked: Exception | None = None
+        for suffix in MODERATION_RETRY_SUFFIXES:
+            try:
+                return self._generate_once(request, request.prompt + suffix)
+            except Exception as error:
+                if getattr(error, "code", None) != "moderation_blocked":
+                    raise
+                blocked = error
+        raise RuntimeError(
+            f"Blocked by the safety system after "
+            f"{len(MODERATION_RETRY_SUFFIXES)} prompt variants: {blocked}"
+        ) from blocked
+
+    def _generate_once(self, request: ImageRequest, prompt: str) -> bytes:
         transparent = request.plan.role in TRANSPARENT_ROLES
         response = self.client.images.generate(
             model=self.model,
-            prompt=request.prompt,
+            prompt=prompt,
             size="1536x1024" if request.plan.role == "background" else "1024x1024",
             quality=OPENAI_QUALITY[request.quality],
             background="transparent" if transparent else "opaque",
