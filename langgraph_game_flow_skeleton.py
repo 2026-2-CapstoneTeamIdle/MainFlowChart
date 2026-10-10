@@ -5,6 +5,18 @@ from typing import cast
 from langgraph.graph import END, START, StateGraph
 
 from ArtifactManager import ArtifactManager
+from image_generation import (
+    PNG_MEDIA_TYPE,
+    TRANSPARENT_ROLES,
+    ImageGenerator,
+    ImageRequest,
+    PlaceholderImageGenerator,
+    asset_size,
+    build_prompt,
+    image_criteria,
+    inspect_png,
+    plan_assets,
+)
 from contracts import (
     CONTRACT_VERSION,
     ApplyAssetsAgentInput,
@@ -23,6 +35,7 @@ from contracts import (
     GenerateSoundAgentOutput,
     GameLogicDraft,
     GameValidationResult,
+    ImageAsset,
     ImageDraft,
     ImageValidationResult,
     InitialFinalValidationSpec,
@@ -42,6 +55,8 @@ from contracts import (
     ValidateImageAgentOutput,
     ValidateSoundAgentInput,
     ValidateSoundAgentOutput,
+    ValidationCheckResult,
+    ValidationIssue,
     WorkflowState,
 )
 
@@ -226,23 +241,63 @@ def create_initial_final_validation_spec_node(
 # ------------------------------------------------------------
 def generate_image_node(
     state: GenerateImageAgentInput,
+    generator: ImageGenerator | None = None,
 ) -> GenerateImageAgentOutput:
-    log("이미지 에셋을 생성합니다. (현재는 뼈대만 실행)")
+    log("이미지 에셋을 생성합니다.")
 
     manager = ArtifactManager()
-    cast(ParsedRequest, manager.read_json(state["parsed_request"]))
+    request = cast(ParsedRequest, manager.read_json(state["parsed_request"]))
     cast(
         InitialFinalValidationSpec,
         manager.read_json(state["initial_final_validation_spec"]),
     )
 
-    # TODO: 실제 이미지 생성
+    # TODO: PlaceholderImageGenerator를 실제 AI 이미지 생성기로 교체
+    generator = generator or PlaceholderImageGenerator()
+    assets: list[ImageAsset] = []
+    notes = [f"generator={generator.name}"]
+    for plan in plan_assets(request["genre"]):
+        width, height = asset_size(plan, request["quality"])
+        image_request = ImageRequest(
+            plan=plan,
+            style=request["image_style"],
+            genre=request["genre"],
+            width=width,
+            height=height,
+            prompt=build_prompt(plan, request["image_style"], request["genre"]),
+        )
+        try:
+            content = generator.generate(image_request)
+        except Exception as error:  # 개별 에셋 실패는 draft notes로 기록
+            notes.append(f"{plan.asset_id} 생성 실패: {error}")
+            continue
+        reference = manager.write_bytes(
+            state["project_id"],
+            "image",
+            plan.filename,
+            content,
+            producer="generate_image",
+            media_type=PNG_MEDIA_TYPE,
+        )
+        assets.append(
+            {
+                "asset_id": plan.asset_id,
+                "name": plan.name,
+                "artifact": reference,
+                "file_format": "png",
+                "width": width,
+                "height": height,
+                "prompt": image_request.prompt,
+            }
+        )
+        log(f"  - {plan.asset_id} ({width}x{height}) 저장")
+
     draft: ImageDraft = {
         "contract_version": CONTRACT_VERSION,
         "draft_id": "image-draft",
-        "status": "pending",
-        "assets": [],
-        "notes": ["이미지 생성 Agent 구현 전 placeholder"],
+        "status": "generated" if assets else "failed",
+        "assets": assets,
+        "notes": notes,
     }
     return {
         "image_draft": manager.write_json(
@@ -377,7 +432,7 @@ def create_asset_validation_spec_node(
     spec: AssetValidationSpec = {
         "contract_version": CONTRACT_VERSION,
         "spec_id": "asset-validation",
-        "image_criteria": [],
+        "image_criteria": image_criteria(),
         "sound_criteria": [],
     }
     return {
@@ -406,17 +461,106 @@ def validate_image_node(
     )
 
     manager = ArtifactManager()
-    cast(ParsedRequest, manager.read_json(state["parsed_request"]))
-    cast(ImageDraft, manager.read_json(state["image_draft"]))
-    cast(AssetValidationSpec, manager.read_json(state["asset_validation_spec"]))
+    request = cast(ParsedRequest, manager.read_json(state["parsed_request"]))
+    draft = cast(ImageDraft, manager.read_json(state["image_draft"]))
+    spec = cast(
+        AssetValidationSpec,
+        manager.read_json(state["asset_validation_spec"]),
+    )
 
-    # TODO: 이미지 검증
+    # TODO: 비전 모델을 이용한 스타일 일치 검증 추가
+    issues: list[ValidationIssue] = []
+    plans = {plan.asset_id: plan for plan in plan_assets(request["genre"])}
+    generated_ids = {asset["asset_id"] for asset in draft["assets"]}
+    missing_ids = sorted(plans.keys() - generated_ids)
+    for asset_id in missing_ids:
+        issues.append(
+            {
+                "code": "image-plan-complete",
+                "severity": "error",
+                "message": "계획된 이미지 에셋이 생성되지 않았습니다.",
+                "target_id": asset_id,
+            }
+        )
+
+    failed: dict[str, set[str]] = {}
+    validated_asset_ids: list[str] = []
+    for asset in draft["assets"]:
+        asset_id = asset["asset_id"]
+        errors: list[tuple[str, str]] = []
+        try:
+            info = inspect_png(manager.read_bytes(asset["artifact"]))
+        except (OSError, ValueError) as error:
+            errors.append(("image-file-valid", f"PNG를 읽을 수 없습니다: {error}"))
+        else:
+            if (info.width, info.height) != (asset["width"], asset["height"]):
+                errors.append(
+                    (
+                        "image-size-match",
+                        f"선언 {asset['width']}x{asset['height']}, "
+                        f"실제 {info.width}x{info.height}",
+                    )
+                )
+            plan = plans.get(asset_id)
+            if (
+                plan is not None
+                and plan.role in TRANSPARENT_ROLES
+                and not info.has_transparent_pixel
+            ):
+                errors.append(
+                    ("image-transparency", "투명 배경이 필요한 에셋입니다.")
+                )
+        for code, message in errors:
+            failed.setdefault(code, set()).add(asset_id)
+            issues.append(
+                {
+                    "code": code,
+                    "severity": "error",
+                    "message": message,
+                    "target_id": asset_id,
+                }
+            )
+        if not errors:
+            validated_asset_ids.append(asset_id)
+
+    checks: list[ValidationCheckResult] = []
+    for criterion in spec["image_criteria"]:
+        criterion_id = criterion["criterion_id"]
+        if criterion_id == "image-plan-complete":
+            passed = not missing_ids
+        else:
+            passed = criterion_id not in failed
+        checks.append(
+            {
+                "criterion_id": criterion_id,
+                "passed": passed,
+                "message": "통과" if passed else "실패 - issues 참고",
+            }
+        )
+
+    required_ids = {
+        criterion["criterion_id"]
+        for criterion in spec["image_criteria"]
+        if criterion["required"]
+    }
+    all_required_passed = all(
+        check["passed"] for check in checks if check["criterion_id"] in required_ids
+    )
+    status = (
+        "passed"
+        if draft["status"] == "generated" and draft["assets"] and all_required_passed
+        else "failed"
+    )
+    log(
+        f"  - 이미지 검증 {status} "
+        f"({len(validated_asset_ids)}/{len(plans)} 에셋 통과)"
+    )
     result: ImageValidationResult = {
         "contract_version": CONTRACT_VERSION,
-        "status": "pending",
-        "checks": [],
-        "issues": [],
-        "validated_asset_ids": [],
+        "status": status,
+        "checks": checks,
+        "issues": issues,
+        "validated_asset_ids": validated_asset_ids,
     }
     return {
         "image_validation_result": manager.write_json(
