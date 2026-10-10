@@ -148,6 +148,26 @@ workspace/
 
 Docker bind mount는 한 컴퓨터의 호스트와 컨테이너 사이에서만 파일을 공유한다. 서로 다른 팀원 컴퓨터가 같은 artifact를 동시에 사용해야 한다면 S3, MinIO, NAS 같은 원격 backend가 추가로 필요하다.
 
+## 7-1. 이미지 생성 백엔드 선택
+
+`generate_image` 노드는 `MAINFLOW_IMAGE_BACKEND` 환경변수로 생성기를 고른다.
+
+| 값 | 동작 | 필요 조건 |
+|---|---|---|
+| `placeholder` (기본) | 스타일별 도형 PNG를 결정적으로 생성 | 없음 |
+| `openai` | OpenAI Images API로 생성 후 리사이즈·투명화·Pixel Art 팔레트 축소 | `OPENAI_API_KEY` |
+
+모델은 `MAINFLOW_OPENAI_IMAGE_MODEL`로 바꿀 수 있으며 기본값은 `gpt-image-1`이다.
+
+```powershell
+# 로컬
+$env:MAINFLOW_IMAGE_BACKEND = "openai"
+$env:OPENAI_API_KEY = "<개인 키>"
+uv run --locked python run_flow.py --image-style "Pixel Art" --genre Platformer --quality Low
+```
+
+Docker Compose는 호스트 셸 또는 저장소 루트의 `.env`에서 위 변수를 읽는다. `.env`는 Git과 Docker 이미지에 포함되지 않는다. API 키를 코드, workspace, 로그, 커밋에 남기지 않는다. 테스트는 가짜 클라이언트를 사용하므로 API 키 없이 실행된다.
+
 ## 8. 의존성 변경 규칙
 
 의존성을 추가하거나 갱신할 때는 uv를 사용한다.
