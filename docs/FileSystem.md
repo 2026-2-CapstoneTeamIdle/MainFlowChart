@@ -1,6 +1,6 @@
 # Agent File System Rules
 
-이 문서는 Agent가 생성한 실제 파일을 저장하고 다른 Agent에 전달하는 공통 규약이다. Python 구현의 기준은 [`ArtifactManager.py`](./ArtifactManager.py), 데이터 타입의 기준은 [`contracts.py`](./contracts.py)다.
+이 문서는 Agent가 생성한 실제 파일을 저장하고 다른 Agent에 전달하는 공통 규약이다. Python 구현의 기준은 [`mainflow/ArtifactManager.py`](../mainflow/ArtifactManager.py), 데이터 타입의 기준은 [`mainflow/contracts.py`](../mainflow/contracts.py)다.
 
 ## 1. Workspace 구조
 
@@ -43,6 +43,8 @@ State에는 파일 내용이나 임의의 절대 경로 대신 `ArtifactReferenc
 6. 관리자가 프로젝트 경계, 파일 크기, SHA-256을 확인한 뒤 내용을 반환한다.
 
 ```python
+from mainflow.ArtifactManager import ArtifactManager
+
 manager = ArtifactManager()
 project_id = manager.create_project()
 
@@ -109,7 +111,7 @@ parsed_request = manager.read_json(request_ref)
 - [ ] 새 파일 종류에 맞는 `ArtifactCategory` 또는 기존 category를 선택했다.
 - [ ] 생산 Agent가 `ArtifactManager`로 저장하고 참조만 반환한다.
 - [ ] 소비 Agent가 `ArtifactManager`로 읽으며 직접 경로 접근을 하지 않는다.
-- [ ] `contracts.py`의 Input/Output 및 payload 타입을 갱신했다.
+- [ ] `mainflow/contracts.py`의 Input/Output 및 payload 타입을 갱신했다.
 - [ ] `ContractRule.md`와 이 문서를 같은 커밋에서 갱신했다.
 - [ ] Graph의 핵심 노드와 Edge가 의도치 않게 바뀌지 않았는지 확인했다.
 - [ ] 병렬 실행 시 파일명 충돌과 manifest 갱신을 검증했다.

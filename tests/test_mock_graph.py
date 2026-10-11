@@ -12,8 +12,8 @@ from typing import Any, Callable, cast
 
 from langgraph.graph import END, START, StateGraph
 
-from ArtifactManager import ArtifactManager
-from contracts import (
+from mainflow.ArtifactManager import ArtifactManager
+from mainflow.contracts import (
     ArtifactCategory,
     ArtifactReference,
     UserInputAgentOutput,

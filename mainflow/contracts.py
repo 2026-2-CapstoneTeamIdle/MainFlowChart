@@ -1,7 +1,7 @@
 """Shared data contracts for every agent in the game-generation workflow.
 
 This module is the machine-readable source of truth.  Human-readable rules and
-the agent input/output matrix live in ``ContractRule.md``.
+the agent input/output matrix live in ``docs/ContractRule.md``.
 """
 
 from __future__ import annotations

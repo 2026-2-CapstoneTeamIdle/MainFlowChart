@@ -6,8 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 
-from ArtifactManager import ArtifactManager
-from contracts import ArtifactCategory
+from mainflow.ArtifactManager import ArtifactManager
+from mainflow.contracts import ArtifactCategory
 
 
 class ArtifactManagerTest(unittest.TestCase):

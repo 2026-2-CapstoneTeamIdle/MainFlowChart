@@ -8,9 +8,9 @@ import os
 from pathlib import Path
 from typing import Any, cast, get_args
 
-from ArtifactManager import ArtifactManager
-from contracts import GameGenre, ImageStyle, QualityLevel, WorkflowState
-from langgraph_game_flow_skeleton import build_graph
+from mainflow.ArtifactManager import ArtifactManager
+from mainflow.contracts import GameGenre, ImageStyle, QualityLevel, WorkflowState
+from mainflow.langgraph_game_flow_skeleton import build_graph
 
 
 IMAGE_STYLES = cast(tuple[str, ...], get_args(ImageStyle))
