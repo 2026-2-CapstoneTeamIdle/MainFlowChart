@@ -15,7 +15,7 @@
 | `mainflow/run_flow.py` | Tkinter 없이 실행하는 headless CLI |
 | `examples/request.example.json` | JSON 요청 형식 예시 |
 
-`mainflow/langgraph_game_flow_skeleton.py`의 Graph 노드와 Edge는 유지한다. `user_input_node`는 초기 State에 입력값이 있으면 GUI를 건너뛰고, 입력이 없을 때만 기존 Tkinter GUI를 표시한다.
+`mainflow/langgraph_game_flow_skeleton.py`는 Node 등록과 Edge를 관리하고, 실제 Node 구현은 `mainflow/nodes/`에 분리한다. `user_input_node`는 초기 State에 입력값이 있으면 GUI를 건너뛰고, 입력이 없을 때만 기존 Tkinter GUI를 표시한다.
 
 ## 2. 빠른 시작: Docker
 

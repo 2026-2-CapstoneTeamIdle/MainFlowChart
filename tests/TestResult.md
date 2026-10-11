@@ -6,7 +6,7 @@
 - 실행 환경: Windows, Python 3.11.16 (`uv run --offline`)
 - 실행 명령: `uv run --offline python -m unittest discover -s tests -v`
 - 테스트 대상: 운영 코드의 `mainflow/contracts.py`, `mainflow/ArtifactManager.py`, workspace 규약
-- 교체 대상: 실제 `mainflow/langgraph_game_flow_skeleton.py`의 Node 구현만 `tests/mock_nodes.py`의 결정론적 mock으로 교체
+- 교체 대상: 실제 `mainflow/nodes/`의 Node 구현만 `tests/mock_nodes.py`의 결정론적 mock으로 교체하고 Graph 연결 구조는 동일하게 유지
 - Flow: 운영 Graph와 같은 의존 순서 및 join 조건 사용
 - 시간 측정은 `ThreadPoolExecutor`로 동일 DAG를 재현하며, 별도 테스트에서 같은 mock Node를 실제 LangGraph `StateGraph.compile().invoke()`로도 실행한다.
 
