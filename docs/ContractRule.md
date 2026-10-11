@@ -47,6 +47,19 @@
 Analysis 구현은 알려진 기능 표현을 규칙 기반으로 추출하고, 일치 항목이 없으면 조건 전체를
 `사용자 지정 조건` 기능으로 보존한다. 향후 LLM 분석기로 교체해도 이 출력 계약을 유지한다.
 
+### `GameSpec`
+
+`design_game_logic`은 분석된 기능과 장르 프리셋을 결합해 Unity 구현용 `GameSpec`을 만든다.
+
+- `title`, `genre`, `features`, `mechanics`, `controls`
+- `win_conditions`, `lose_conditions`, `target_engine`
+- `asset_requirements`: 이미지·사운드 생성 노드와 공유하는 에셋 요구사항
+- `asset_id`: 한 워크플로 안에서 중복되지 않는 불투명 ID. 문자열을 분석해 종류를 추론하지 않는다.
+- `asset_type`: `image | sound`
+- `purpose`, `description`, `required`: 용도, 생성 설명, 필수 여부
+- `asset_id`는 병렬 분기 전에 한 번 정하고 이미지·게임·사운드 노드가 그대로 사용한다.
+- 상세 JSON 규격의 기준은 [`schemas/game_spec.schema.json`](../schemas/game_spec.schema.json)이다.
+
 ### `LogicAnalysis`
 
 - `logic_analysis_id`

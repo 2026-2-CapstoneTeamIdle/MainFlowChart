@@ -44,7 +44,7 @@ namespace TeamIdle.GameTemplate.Editor
             }
 
             config.Configure(
-                "2.1.0",
+                "3.0.0",
                 "Generated 2D Game",
                 "Unassigned",
                 ScenePath,

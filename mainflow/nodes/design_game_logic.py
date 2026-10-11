@@ -72,11 +72,7 @@ def design_game_logic_node(
         "Unity 프로젝트 파일 생성은 후속 generator 구현에서 수행",
     ]
     if design["unsupported_mechanics"]:
-        notes.append(
-            "별도 구현이 필요한 mechanic: "
-            + ", ".join(design["unsupported_mechanics"])
-        )
-
+        notes.append("별도 구현이 필요한 mechanic: " + ", ".join(design["unsupported_mechanics"]))
     draft: GameLogicDraft = {
         "contract_version": CONTRACT_VERSION,
         "draft_id": f"{game_spec['genre'].lower()}-game-logic-draft",

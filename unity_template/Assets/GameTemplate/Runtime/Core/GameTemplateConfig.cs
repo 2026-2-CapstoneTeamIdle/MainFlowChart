@@ -7,7 +7,7 @@ namespace TeamIdle.GameTemplate.Core
     public sealed class GameTemplateConfig : ScriptableObject
     {
         [SerializeField]
-        private string contractVersion = "2.1.0";
+        private string contractVersion = "3.0.0";
 
         [SerializeField]
         private string gameTitle = "Generated 2D Game";
