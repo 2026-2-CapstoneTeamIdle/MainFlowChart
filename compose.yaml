@@ -15,7 +15,8 @@ services:
         target: /app/workspace
     command:
       - /app/.venv/bin/python
-      - run_flow.py
+      - -m
+      - mainflow.run_flow
       - --image-style
       - Pixel Art
       - --genre

@@ -13,8 +13,8 @@ from html import escape
 from typing import Mapping, cast
 from xml.etree import ElementTree
 
-from ArtifactManager import ArtifactManager
-from contracts import (
+from mainflow.ArtifactManager import ArtifactManager
+from mainflow.contracts import (
     CONTRACT_VERSION,
     ApplyAssetsAgentInput,
     ApplyAssetsAgentOutput,

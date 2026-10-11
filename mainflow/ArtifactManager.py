@@ -14,7 +14,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, cast
 
-from contracts import CONTRACT_VERSION, ArtifactCategory, ArtifactReference
+from mainflow.contracts import CONTRACT_VERSION, ArtifactCategory, ArtifactReference
 
 
 class ArtifactManager:
@@ -33,7 +33,7 @@ class ArtifactManager:
     MANIFEST_LOCK_RELATIVE_PATH = Path("data/.artifact_manifest.lock")
 
     def __init__(self, workspace_root: str | Path | None = None) -> None:
-        default_root = Path(__file__).resolve().parent / "workspace"
+        default_root = Path(__file__).resolve().parent.parent / "workspace"
         environment_root = os.environ.get("MAINFLOW_WORKSPACE")
         self.workspace_root = Path(
             workspace_root or environment_root or default_root
