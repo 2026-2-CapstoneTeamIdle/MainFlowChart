@@ -15,6 +15,7 @@ from mainflow.contracts import (
     ParsedRequest,
 )
 from mainflow.nodes._common import log
+from game_pipeline import build_game_logic_design, normalize_game_spec
 
 
 # Node 계약
@@ -31,21 +32,61 @@ def design_game_logic_node(
     log("게임 로직을 설계합니다. (이미지/사운드는 임시 에셋으로 가정)")
 
     manager = ArtifactManager()
-    cast(ParsedRequest, manager.read_json(state["parsed_request"]))
-    cast(AnalysisResult, manager.read_json(state["analysis"]))
+    request = cast(ParsedRequest, manager.read_json(state["parsed_request"]))
+    analysis = cast(AnalysisResult, manager.read_json(state["analysis"]))
     cast(LogicAnalysis, manager.read_json(state["logic_analysis"]))
 
-    # TODO: 실제 게임 로직 / Unity / Godot 코드 설계
+    game_spec = normalize_game_spec(
+        request["genre"],
+        {
+            "features": [
+                {
+                    "feature_id": feature["feature_id"],
+                    "description": feature["description"],
+                    "required": True,
+                }
+                for feature in analysis["features"]
+            ]
+        },
+    )
+    design = build_game_logic_design(game_spec)
+    design_reference = manager.write_json(
+        state["project_id"],
+        "game",
+        "game_logic_design.json",
+        design,
+        producer="design_game_logic",
+    )
+    image_asset_ids = [
+        asset["asset_id"]
+        for asset in game_spec["asset_requirements"]
+        if asset["asset_type"] == "image"
+    ]
+    sound_asset_ids = [
+        asset["asset_id"]
+        for asset in game_spec["asset_requirements"]
+        if asset["asset_type"] == "sound"
+    ]
+    notes = [
+        f"{game_spec['genre']} 프리셋과 공통 모듈을 조합한 Unity 설계 초안",
+        "Unity 프로젝트 파일 생성은 후속 generator 구현에서 수행",
+    ]
+    if design["unsupported_mechanics"]:
+        notes.append(
+            "별도 구현이 필요한 mechanic: "
+            + ", ".join(design["unsupported_mechanics"])
+        )
+
     draft: GameLogicDraft = {
         "contract_version": CONTRACT_VERSION,
-        "draft_id": "game-logic-draft",
-        "status": "pending",
-        "engine": "TBD",
+        "draft_id": f"{game_spec['genre'].lower()}-game-logic-draft",
+        "status": "generated",
+        "engine": "Unity",
         "entry_scene": None,
-        "source_artifacts": [],
-        "required_image_asset_ids": [],
-        "required_sound_asset_ids": [],
-        "notes": ["게임 로직 설계 Agent 구현 전 placeholder"],
+        "source_artifacts": [design_reference],
+        "required_image_asset_ids": image_asset_ids,
+        "required_sound_asset_ids": sound_asset_ids,
+        "notes": notes,
     }
     return {
         "game_logic_draft": manager.write_json(

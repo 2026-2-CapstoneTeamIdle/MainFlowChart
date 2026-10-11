@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://2026-2-capstoneteamidle.example/schemas/game_spec.schema.json",
+  "title": "GameSpec",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "title",
+    "genre",
+    "features",
+    "mechanics",
+    "controls",
+    "win_conditions",
+    "lose_conditions",
+    "target_engine",
+    "asset_requirements"
+  ],
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "genre": {
+      "enum": [
+        "SurvivorLike",
+        "Adventure",
+        "VisualNovel",
+        "RaisingSimulation",
+        "LifeSimulation"
+      ]
+    },
+    "features": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/gameFeature"
+      }
+    },
+    "mechanics": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*$"
+      }
+    },
+    "controls": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "win_conditions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "lose_conditions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "target_engine": {
+      "const": "Unity"
+    },
+    "asset_requirements": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/assetRequirement"
+      }
+    }
+  },
+  "$defs": {
+    "gameFeature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "feature_id",
+        "description",
+        "required"
+      ],
+      "properties": {
+        "feature_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required": {
+          "type": "boolean"
+        }
+      }
+    },
+    "assetRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "asset_id",
+        "asset_type",
+        "purpose",
+        "description",
+        "required"
+      ],
+      "properties": {
+        "asset_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "asset_type": {
+          "enum": [
+            "image",
+            "sound"
+          ]
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

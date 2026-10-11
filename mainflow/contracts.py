@@ -21,6 +21,14 @@ GameGenre = Literal[
     "육성 시뮬레이션",
     "뱀서류",
 ]
+GenreProfile = Literal[
+    "SurvivorLike",
+    "Adventure",
+    "VisualNovel",
+    "RaisingSimulation",
+    "LifeSimulation",
+]
+AssetType = Literal["image", "sound"]
 DraftStatus = Literal["pending", "generated", "failed"]
 ValidationStatus = Literal["pending", "passed", "failed", "needs_revision"]
 Severity = Literal["info", "warning", "error"]
@@ -45,6 +53,42 @@ class ArtifactReference(TypedDict):
 # ---------------------------------------------------------------------------
 # Domain payloads shared between agents
 # ---------------------------------------------------------------------------
+class GameFeature(TypedDict):
+    feature_id: str
+    description: str
+    required: bool
+
+
+class AssetRequirement(TypedDict):
+    asset_id: str
+    asset_type: AssetType
+    purpose: str
+    description: str
+    required: bool
+
+
+class GameSpec(TypedDict):
+    title: str
+    genre: GenreProfile
+    features: list[GameFeature]
+    mechanics: list[str]
+    controls: dict[str, str]
+    win_conditions: list[str]
+    lose_conditions: list[str]
+    target_engine: Literal["Unity"]
+    asset_requirements: list[AssetRequirement]
+
+
+class GameLogicDesign(TypedDict):
+    contract_version: ContractVersion
+    design_id: str
+    game_spec: GameSpec
+    common_modules: list[str]
+    genre_modules: list[str]
+    selected_modules: list[str]
+    unsupported_mechanics: list[str]
+
+
 class ParsedRequest(TypedDict):
     contract_version: ContractVersion
     image_style: ImageStyle
