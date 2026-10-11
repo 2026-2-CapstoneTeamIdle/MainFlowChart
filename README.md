@@ -1,48 +1,70 @@
-Game Development Agent - LangGraph Skeleton
+# MainFlowChart
 
-사용자의 이미지 스타일·게임 장르·퀄리티 입력을 바탕으로 이미지 생성, 게임 로직 설계, 사운드 생성을 병렬 처리하고 검증·에셋 적용·최종 검증으로 이어지는 LangGraph 기반 게임 제작 파이프라인의 초기 뼈대입니다.
-현재 단계에서는 실제 AI/API/게임 엔진 처리를 수행하지 않고, Node·State·Edge 흐름과 임시 GUI 및 진행 로그만 구현합니다.
+사용자의 이미지 스타일, 게임 장르, 품질 입력을 바탕으로 이미지·게임 로직·사운드 생성을 병렬 처리하고 검증과 에셋 적용으로 연결하는 LangGraph 기반 게임 제작 파이프라인이다.
 
-TODO
+현재 production Node에는 실제 AI API와 Unity 연동 대신 placeholder가 포함되어 있다. 파일 교환과 병렬 실행은 `tests/`의 mock Agent로 검증한다.
 
-AdviserAI/LLM을 연결해 사용자 입력을 실제 GameSpec 및 검증 기준으로 파싱
+## 저장소 구조
 
-이미지 생성 Agent와 이미지 결과 저장·관리 기능 구현
+```text
+MainFlowChart/
+├─ mainflow/                       # 실행 코드와 공통 데이터 계약
+│  ├─ ArtifactManager.py           # 파일 저장·조회·무결성 검증
+│  ├─ contracts.py                 # Agent 입출력 타입의 단일 기준
+│  ├─ langgraph_game_flow_skeleton.py
+│  └─ run_flow.py                  # headless CLI
+├─ docs/                           # 팀 규약과 운영 문서
+│  ├─ assets/langgraph_flow.png
+│  ├─ ContractRule.md
+│  ├─ DockerManager.md
+│  └─ FileSystem.md
+├─ examples/                       # 실행 요청 예제
+│  └─ request.example.json
+├─ tests/                          # mock Agent, fixture, 단위·통합 테스트
+├─ workspace/                      # 실행 산출물(Git 제외)
+├─ Dockerfile
+├─ compose.yaml
+├─ pyproject.toml
+└─ uv.lock
+```
 
-사운드 생성 Agent와 사운드 결과 저장·관리 기능 구현
+## 실행
 
-Unity 연동 및 임시 에셋 기반 게임 로직 생성·실행 기능 구현
+Docker로 기본 Flow를 실행한다.
 
-게임 검증 결과를 기반으로 이미지·사운드 검증서를 생성하고 각 에셋 Validator 구현
+```powershell
+docker compose build
+docker compose run --rm mainflow
+```
 
-검증 완료 에셋을 게임에 적용한 뒤 최초 최종 검증서를 기준으로 최종 Validator 구현
+로컬에서는 Python 3.11과 uv를 사용한다.
 
-LangGraph 시각화
+```powershell
+uv sync --locked
+uv run --locked python -m mainflow.run_flow `
+  --image-style "Pixel Art" `
+  --genre Action `
+  --quality Medium
+```
 
-컴파일된 LangGraph는 get_graph()를 통해 그래프 구조를 가져온 뒤 Mermaid 또는 PNG로 출력할 수 있습니다.
+JSON 요청 파일을 사용할 수도 있다.
 
-app = build_graph()
+```powershell
+uv run --locked python -m mainflow.run_flow `
+  --request-file examples/request.example.json
+```
 
-# Mermaid 문법 출력
-print(app.get_graph().draw_mermaid())
+## 테스트
 
-PNG 파일로 저장하려면 다음과 같이 사용할 수 있습니다.
+```powershell
+uv run --locked python -m unittest discover -s tests -v
+docker compose --profile test run --rm test
+```
 
-app = build_graph()
+## 코드 포맷
 
-png_data = app.get_graph().draw_mermaid_png()
-
-with open("langgraph_flow.png", "wb") as f:
-    f.write(png_data)
-
-그래프 구조를 터미널에서 간단히 확인하려면 ASCII 출력도 가능합니다.
-
-app.get_graph().print_ascii()
-
-코드 포맷
-
-저장소 전체의 Python과 C# 코드는 동일한 스크립트로 포맷합니다. Python은 Ruff,
-C#은 CSharpier를 사용하며, 해당 언어 파일이 없는 저장소에서는 자동으로 건너뜁니다.
+저장소 전체의 Python과 C# 코드는 동일한 스크립트로 포맷한다. Python은 Ruff,
+C#은 CSharpier를 사용하며, 해당 언어 파일이 없는 저장소에서는 자동으로 건너뛴다.
 
 ```powershell
 python -m pip install -r tools/format-requirements.txt
@@ -50,12 +72,20 @@ python tools/format_repo.py --write
 python tools/format_repo.py --check
 ```
 
-`.editorconfig`를 지원하는 IDE는 기본 들여쓰기와 줄바꿈 규칙을 자동으로 읽습니다.
-저장 시 완전한 자동 포맷을 원하면 IDE의 Ruff 및 CSharpier 확장을 활성화합니다.
-PR에서는 `Repository Format Check` 워크플로가 같은 규칙을 다시 검사합니다.
+`.editorconfig`를 지원하는 IDE는 기본 들여쓰기와 줄바꿈 규칙을 자동으로 읽는다.
+PR에서는 `Repository Format Check` 워크플로가 같은 규칙을 다시 검사한다.
 
-현재 흐름의 개략적인 구조:
+## 팀 규약
 
+- 데이터 계약: [ContractRule.md](docs/ContractRule.md)
+- 파일 교환 규약: [FileSystem.md](docs/FileSystem.md)
+- Docker 및 실행 환경: [DockerManager.md](docs/DockerManager.md)
+- 테스트 결과: [TestResult.md](tests/TestResult.md)
+- Graph 이미지: [langgraph_flow.png](docs/assets/langgraph_flow.png)
+
+## Workflow
+
+```mermaid
 flowchart TD
     START --> UserInput[유저 입력 GUI]
     UserInput --> Parse[입력 파싱]
@@ -79,3 +109,6 @@ flowchart TD
 
     ApplyAssets --> FinalValidate[최종 검증]
     FinalValidate --> END
+```
+
+State에는 실제 파일이나 절대 경로를 넣지 않고 `ArtifactReference`만 전달한다. 실제 파일은 `ArtifactManager`를 통해 `workspace/{project_id}`에 저장하고 읽는다.

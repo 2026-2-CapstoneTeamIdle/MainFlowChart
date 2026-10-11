@@ -17,4 +17,4 @@ RUN uv sync --locked --no-dev --no-install-project
 
 COPY . .
 
-CMD ["/app/.venv/bin/python", "run_flow.py", "--image-style", "Pixel Art", "--genre", "Action", "--quality", "Medium"]
+CMD ["/app/.venv/bin/python", "-m", "mainflow.run_flow", "--image-style", "Pixel Art", "--genre", "Action", "--quality", "Medium"]

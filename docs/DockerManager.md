@@ -12,10 +12,10 @@
 | `Dockerfile` | Python 3.11과 잠긴 의존성을 포함한 실행 이미지 |
 | `compose.yaml` | production 실행과 테스트 실행 서비스 |
 | `.dockerignore` | 이미지에 로컬 환경·workspace 결과·비밀 파일이 들어가는 것을 차단 |
-| `run_flow.py` | Tkinter 없이 실행하는 headless CLI |
-| `request.example.json` | JSON 요청 형식 예시 |
+| `mainflow/run_flow.py` | Tkinter 없이 실행하는 headless CLI |
+| `examples/request.example.json` | JSON 요청 형식 예시 |
 
-`langgraph_game_flow_skeleton.py`의 Graph 노드와 Edge는 유지한다. `user_input_node`는 초기 State에 입력값이 있으면 GUI를 건너뛰고, 입력이 없을 때만 기존 Tkinter GUI를 표시한다.
+`mainflow/langgraph_game_flow_skeleton.py`의 Graph 노드와 Edge는 유지한다. `user_input_node`는 초기 State에 입력값이 있으면 GUI를 건너뛰고, 입력이 없을 때만 기존 Tkinter GUI를 표시한다.
 
 ## 2. 빠른 시작: Docker
 
@@ -51,7 +51,7 @@ Compose의 기본 command를 원하는 명령으로 교체한다.
 
 ```powershell
 docker compose run --rm mainflow `
-  /app/.venv/bin/python run_flow.py `
+  /app/.venv/bin/python -m mainflow.run_flow `
   --image-style Anime `
   --genre RPG `
   --quality High
@@ -69,8 +69,8 @@ JSON 파일로 실행할 수도 있다.
 
 ```powershell
 docker compose run --rm mainflow `
-  /app/.venv/bin/python run_flow.py `
-  --request-file request.example.json
+  /app/.venv/bin/python -m mainflow.run_flow `
+  --request-file examples/request.example.json
 ```
 
 ## 4. 테스트 실행
@@ -99,7 +99,7 @@ Docker를 사용하지 않는 팀원은 uv만 설치하면 된다.
 
 ```powershell
 uv sync --locked
-uv run --locked python run_flow.py `
+uv run --locked python -m mainflow.run_flow `
   --image-style "Pixel Art" `
   --genre Action `
   --quality Medium
@@ -118,10 +118,10 @@ uv run --locked python -m unittest discover -s tests -v
 기존 파일을 직접 실행하면 입력 State가 없으므로 Tkinter GUI가 열린다.
 
 ```powershell
-uv run --locked python langgraph_game_flow_skeleton.py
+uv run --locked python -m mainflow.langgraph_game_flow_skeleton
 ```
 
-Docker 이미지에는 데스크톱 GUI 환경이 없으므로 반드시 `run_flow.py`를 사용한다. CLI가 초기 State를 전달하면 `user_input_node`가 Tkinter를 import하지 않고 바로 다음 단계로 진행한다.
+Docker 이미지에는 데스크톱 GUI 환경이 없으므로 반드시 `mainflow.run_flow` 모듈을 사용한다. CLI가 초기 State를 전달하면 `user_input_node`가 Tkinter를 import하지 않고 바로 다음 단계로 진행한다.
 
 ## 7. Workspace와 파일 보존
 
@@ -144,7 +144,7 @@ workspace/
    └─ validation/
 ```
 
-`workspace`의 실행 결과는 Git에 커밋하지 않는다. Agent 간 파일 전달 규칙은 `FileSystem.md`, 데이터 계약은 `ContractRule.md`를 따른다.
+`workspace`의 실행 결과는 Git에 커밋하지 않는다. Agent 간 파일 전달 규칙은 [`FileSystem.md`](./FileSystem.md), 데이터 계약은 [`ContractRule.md`](./ContractRule.md)를 따른다.
 
 Docker bind mount는 한 컴퓨터의 호스트와 컨테이너 사이에서만 파일을 공유한다. 서로 다른 팀원 컴퓨터가 같은 artifact를 동시에 사용해야 한다면 S3, MinIO, NAS 같은 원격 backend가 추가로 필요하다.
 

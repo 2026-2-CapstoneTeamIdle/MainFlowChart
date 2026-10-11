@@ -1,6 +1,6 @@
 # Agent Data Contract Rules
 
-이 문서는 `MainFlowChart` 워크플로에서 Agent 사이에 교환하는 데이터 규격의 사람용 기준서다. 실제 Python 타입의 단일 기준(source of truth)은 [`contracts.py`](./contracts.py)이며, 데이터 규격을 추가하거나 변경할 때는 **두 파일을 같은 커밋에서 함께 수정한다.**
+이 문서는 `MainFlowChart` 워크플로에서 Agent 사이에 교환하는 데이터 규격의 사람용 기준서다. 실제 Python 타입의 단일 기준(source of truth)은 [`mainflow/contracts.py`](../mainflow/contracts.py)이며, 데이터 규격을 추가하거나 변경할 때는 **두 파일을 같은 커밋에서 함께 수정한다.**
 
 ## 1. 공통 원칙
 
@@ -12,7 +12,7 @@
 6. 값이 아직 생성되지 않은 참조는 빈 문자열 대신 `null`(`None`)을 사용한다. 여러 값은 값이 없어도 빈 배열 `[]`을 사용한다.
 7. ID는 실행 중 중복되지 않는 문자열로 만든다. 권장 형식은 `<종류>-<UUID>`이며, 다른 payload에서는 ID로 참조한다.
 8. 실제 경로는 `ArtifactManager`만 조합한다. 외부 저장소를 쓸 때도 비밀키나 접근 토큰은 payload에 넣지 않는다.
-9. 상태값은 `contracts.py`에 선언된 `Literal` 값만 쓴다. 임의 문자열을 추가하지 않는다.
+9. 상태값은 `mainflow/contracts.py`에 선언된 `Literal` 값만 쓴다. 임의 문자열을 추가하지 않는다.
 10. 치명적 실패는 잘못된 형태의 payload를 반환하지 말고 예외로 전달한다. 복구 가능한 검증 실패는 `status`, `checks`, `issues`로 표현한다.
 11. 결정적인 Graph 노드와 Edge를 바꾸려면 별도의 팀 합의가 필요하다. 계약 변경만으로 Flow를 임의 변경하지 않는다.
 
@@ -98,7 +98,7 @@ LangGraph는 각 노드에 전체 State를 넘기지만, 아래 Input은 해당 
 
 ## 5. 변경 체크리스트
 
-- [ ] `contracts.py`의 도메인 payload 타입을 수정했다.
+- [ ] `mainflow/contracts.py`의 도메인 payload 타입을 수정했다.
 - [ ] 관련 Agent Input/Output 타입을 수정했다.
 - [ ] 생산 Agent와 소비 Agent 구현을 모두 수정했다.
 - [ ] `WorkflowState`에 필요한 키가 정확히 반영됐다.

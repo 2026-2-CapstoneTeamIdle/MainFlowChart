@@ -4,8 +4,8 @@ from typing import cast
 
 from langgraph.graph import END, START, StateGraph
 
-from ArtifactManager import ArtifactManager
-from contracts import (
+from mainflow.ArtifactManager import ArtifactManager
+from mainflow.contracts import (
     CONTRACT_VERSION,
     ApplyAssetsAgentInput,
     ApplyAssetsAgentOutput,
@@ -651,5 +651,5 @@ if __name__ == "__main__":
     #
     # png_data = app.get_graph().draw_mermaid_png()
     #
-    # with open("langgraph_flow.png", "wb") as f:
+    # with open("docs/assets/langgraph_flow.png", "wb") as f:
     #    f.write(png_data)
