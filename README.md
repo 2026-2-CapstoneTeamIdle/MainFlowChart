@@ -18,12 +18,25 @@ MainFlowChart/
 │     ├─ parse_input.py
 │     ├─ analysis.py
 │     ├─ logic_analysis.py
-│     └─ ...
-├─ CI/CD/LocalWeb/
-├─ docs/
-├─ examples/
-├─ tests/
-└─ workspace/                 # Git 제외 실행 산출물
+│     ├─ generate_image.py
+│     ├─ design_game_logic.py
+│     ├─ generate_sound.py
+│     └─ ...                       # 검증·통합 Node 포함
+├─ CI/CD/LocalWeb/                  # 로컬 웹 UI
+├─ docs/                           # 팀 규약과 운영 문서
+│  ├─ assets/langgraph_flow.png
+│  ├─ ContractRule.md
+│  ├─ DockerManager.md
+│  └─ FileSystem.md
+├─ examples/                       # 실행 요청 예제
+│  └─ request.example.json
+├─ unity_template/                 # 생성기가 복사할 Unity 6 2D 기본 프로젝트
+├─ tests/                          # mock Agent, fixture, 단위·통합 테스트
+├─ workspace/                      # 실행 산출물(Git 제외)
+├─ Dockerfile
+├─ compose.yaml
+├─ pyproject.toml
+└─ uv.lock
 ```
 
 ## 입력 계약 3.0.0
@@ -105,3 +118,7 @@ flowchart TD
 
 State에는 실제 파일 대신 `ArtifactReference`만 전달한다. 각 Node의 입력·출력 State와 파일은
 함수 바로 위의 Node 계약 주석에 기록한다.
+
+## Unity 2D 템플릿
+
+`unity_template/`은 게임 생성기가 프로젝트별 작업 공간으로 복사할 Unity 6 LTS 기반 템플릿이다. 공통 런타임 진입점, 모듈 생명주기 계약, 설정 에셋과 검증 이벤트 수집기를 포함한다. Unity에서 프로젝트를 연 뒤 `Tools > Team IDLE > Rebuild Bootstrap Scene`을 실행하면 기본 씬과 설정 에셋을 다시 만들 수 있다. 자세한 내용은 [`unity_template/README.md`](unity_template/README.md)를 참고한다.
