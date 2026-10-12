@@ -1,0 +1,17 @@
+name: main-flow-chart-local-web
+
+services:
+  local-web:
+    build:
+      context: ../../..
+      dockerfile: CI/CD/LocalWeb/Dockerfile
+    image: main-flow-chart-local-web:local
+    environment:
+      MAINFLOW_WORKSPACE: /app/workspace
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - type: bind
+        source: ../../../workspace
+        target: /app/workspace
