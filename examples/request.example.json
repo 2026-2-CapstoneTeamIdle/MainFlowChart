@@ -1,5 +1,6 @@
 {
   "image_style": "Pixel Art",
-  "genre": "Action",
-  "quality": "Medium"
+  "mood_style": "Fantasy",
+  "genre": "플랫포머",
+  "condition": "공격과 8방향 이동이 가능한 게임"
 }

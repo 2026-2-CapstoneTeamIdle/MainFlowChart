@@ -21,13 +21,14 @@ from mainflow.contracts import (
 )
 from tests.mock_nodes import (
     MockRuntime,
+    mock_analysis_node,
     mock_apply_assets_node,
     mock_asset_validation_spec_node,
     mock_design_game_logic_node,
     mock_final_validation_node,
     mock_generate_image_node,
     mock_generate_sound_node,
-    mock_initial_validation_spec_node,
+    mock_logic_analysis_node,
     mock_parse_input_node,
     mock_user_input_node,
     mock_validate_game_node,
@@ -35,37 +36,40 @@ from tests.mock_nodes import (
     mock_validate_sound_node,
 )
 
-
 FIXTURE_DIRECTORY = Path(__file__).parent / "fixtures"
 NodeFunction = Callable[[Any, MockRuntime], dict[str, Any]]
 
 NODE_IO: dict[str, tuple[set[str], set[str]]] = {
-    "user_input": (set(), {"image_style", "genre", "quality"}),
+    "user_input": (set(), {"image_style", "mood_style", "genre", "condition"}),
     "parse_input": (
-        {"image_style", "genre", "quality"},
+        {"image_style", "mood_style", "genre", "condition"},
         {"project_id", "parsed_request"},
     ),
-    "create_initial_final_validation_spec": (
+    "analysis": (
         {"project_id", "parsed_request"},
-        {"initial_final_validation_spec"},
+        {"analysis"},
+    ),
+    "logic_analysis": (
+        {"project_id", "parsed_request", "analysis"},
+        {"logic_analysis"},
     ),
     "generate_image": (
-        {"project_id", "parsed_request", "initial_final_validation_spec"},
+        {"project_id", "parsed_request", "analysis", "logic_analysis"},
         {"image_draft"},
     ),
     "design_game_logic": (
-        {"project_id", "parsed_request", "initial_final_validation_spec"},
+        {"project_id", "parsed_request", "analysis", "logic_analysis"},
         {"game_logic_draft"},
     ),
     "generate_sound": (
-        {"project_id", "parsed_request", "initial_final_validation_spec"},
+        {"project_id", "parsed_request", "analysis", "logic_analysis"},
         {"sound_draft"},
     ),
     "validate_game": (
         {
             "project_id",
             "parsed_request",
-            "initial_final_validation_spec",
+            "logic_analysis",
             "game_logic_draft",
         },
         {"game_validation_result"},
@@ -94,7 +98,7 @@ NODE_IO: dict[str, tuple[set[str], set[str]]] = {
         {"integrated_game"},
     ),
     "final_validation": (
-        {"project_id", "initial_final_validation_spec", "integrated_game"},
+        {"project_id", "logic_analysis", "integrated_game"},
         {"final_validation_result"},
     ),
 }
@@ -187,10 +191,8 @@ def run_mock_graph(runtime: MockRuntime) -> tuple[dict[str, Any], dict[str, Any]
     for name, function in [
         ("user_input", mock_user_input_node),
         ("parse_input", mock_parse_input_node),
-        (
-            "create_initial_final_validation_spec",
-            mock_initial_validation_spec_node,
-        ),
+        ("analysis", mock_analysis_node),
+        ("logic_analysis", mock_logic_analysis_node),
     ]:
         state.update(execute(name, function, dict(state)).output)
 
@@ -286,8 +288,12 @@ def build_mock_langgraph(runtime: MockRuntime):
     graph.add_node("user_input", lambda state: mock_user_input_node(state, runtime))
     graph.add_node("parse_input", lambda state: mock_parse_input_node(state, runtime))
     graph.add_node(
-        "create_initial_final_validation_spec",
-        lambda state: mock_initial_validation_spec_node(state, runtime),
+        "analysis",
+        lambda state: mock_analysis_node(state, runtime),
+    )
+    graph.add_node(
+        "logic_analysis",
+        lambda state: mock_logic_analysis_node(state, runtime),
     )
     graph.add_node(
         "generate_image",
@@ -328,10 +334,11 @@ def build_mock_langgraph(runtime: MockRuntime):
 
     graph.add_edge(START, "user_input")
     graph.add_edge("user_input", "parse_input")
-    graph.add_edge("parse_input", "create_initial_final_validation_spec")
-    graph.add_edge("create_initial_final_validation_spec", "generate_image")
-    graph.add_edge("create_initial_final_validation_spec", "design_game_logic")
-    graph.add_edge("create_initial_final_validation_spec", "generate_sound")
+    graph.add_edge("parse_input", "analysis")
+    graph.add_edge("analysis", "logic_analysis")
+    graph.add_edge("logic_analysis", "generate_image")
+    graph.add_edge("logic_analysis", "design_game_logic")
+    graph.add_edge("logic_analysis", "generate_sound")
     graph.add_edge("design_game_logic", "validate_game")
     graph.add_edge("validate_game", "create_asset_validation_spec")
     graph.add_edge(

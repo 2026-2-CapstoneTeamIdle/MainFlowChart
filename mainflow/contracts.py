@@ -6,15 +6,21 @@ the agent input/output matrix live in ``docs/ContractRule.md``.
 
 from __future__ import annotations
 
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
+ContractVersion = Literal["3.0.0"]
+CONTRACT_VERSION: ContractVersion = "3.0.0"
 
-ContractVersion = Literal["2.0.0"]
-CONTRACT_VERSION: ContractVersion = "2.0.0"
-
-ImageStyle = Literal["Pixel Art", "Anime", "Cartoon", "Realistic", "Low Poly"]
-GameGenre = Literal["Action", "RPG", "Platformer", "Puzzle", "Simulation"]
-QualityLevel = Literal["Low", "Medium", "High"]
+ImageStyle = Literal["Pixel Art", "Anime", "Cartoon", "Realistic", "Low Poly", "Custom"]
+MoodStyle = Literal["Cyberpunk", "Medieval", "Modern", "Fantasy", "Horror", "Cozy"]
+GameGenre = Literal[
+    "플랫포머",
+    "타워 디펜스",
+    "카드",
+    "비주얼 노벨",
+    "육성 시뮬레이션",
+    "뱀서류",
+]
 DraftStatus = Literal["pending", "generated", "failed"]
 ValidationStatus = Literal["pending", "passed", "failed", "needs_revision"]
 Severity = Literal["info", "warning", "error"]
@@ -42,8 +48,34 @@ class ArtifactReference(TypedDict):
 class ParsedRequest(TypedDict):
     contract_version: ContractVersion
     image_style: ImageStyle
+    mood_style: MoodStyle
     genre: GameGenre
-    quality: QualityLevel
+    condition: str
+    custom_image: ArtifactReference | None
+
+
+class FeatureRequirement(TypedDict):
+    feature_id: str
+    name: str
+    description: str
+    source_text: str
+
+
+class AnalysisResult(TypedDict):
+    contract_version: ContractVersion
+    analysis_id: str
+    condition_summary: str
+    features: list[FeatureRequirement]
+
+
+class LogicAnalysis(TypedDict):
+    contract_version: ContractVersion
+    logic_analysis_id: str
+    genre: GameGenre
+    mood_style: MoodStyle
+    core_loop: str
+    features: list[FeatureRequirement]
+    criteria: list[ValidationCriterion]
 
 
 class ValidationCriterion(TypedDict):
@@ -67,12 +99,6 @@ class ValidationIssueRequired(TypedDict):
 
 class ValidationIssue(ValidationIssueRequired, total=False):
     target_id: str
-
-
-class InitialFinalValidationSpec(TypedDict):
-    contract_version: ContractVersion
-    spec_id: str
-    criteria: list[ValidationCriterion]
 
 
 class ImageAsset(TypedDict):
@@ -175,11 +201,14 @@ class FinalValidationResult(TypedDict):
 # ---------------------------------------------------------------------------
 class WorkflowState(TypedDict, total=False):
     image_style: ImageStyle
+    mood_style: MoodStyle
     genre: GameGenre
-    quality: QualityLevel
+    condition: str
+    custom_image_path: str
     project_id: str
     parsed_request: ArtifactReference
-    initial_final_validation_spec: ArtifactReference
+    analysis: ArtifactReference
+    logic_analysis: ArtifactReference
     image_draft: ArtifactReference
     game_logic_draft: ArtifactReference
     sound_draft: ArtifactReference
@@ -198,20 +227,26 @@ class WorkflowState(TypedDict, total=False):
 # ---------------------------------------------------------------------------
 class UserInputAgentInput(TypedDict, total=False):
     image_style: ImageStyle
+    mood_style: MoodStyle
     genre: GameGenre
-    quality: QualityLevel
+    condition: str
+    custom_image_path: str
 
 
 class UserInputAgentOutput(TypedDict):
     image_style: ImageStyle
+    mood_style: MoodStyle
     genre: GameGenre
-    quality: QualityLevel
+    condition: str
+    custom_image_path: NotRequired[str]
 
 
 class ParseInputAgentInput(TypedDict):
     image_style: ImageStyle
+    mood_style: MoodStyle
     genre: GameGenre
-    quality: QualityLevel
+    condition: str
+    custom_image_path: NotRequired[str]
 
 
 class ParseInputAgentOutput(TypedDict):
@@ -219,19 +254,30 @@ class ParseInputAgentOutput(TypedDict):
     parsed_request: ArtifactReference
 
 
-class InitialValidationSpecAgentInput(TypedDict):
+class AnalysisAgentInput(TypedDict):
     project_id: str
     parsed_request: ArtifactReference
 
 
-class InitialValidationSpecAgentOutput(TypedDict):
-    initial_final_validation_spec: ArtifactReference
+class AnalysisAgentOutput(TypedDict):
+    analysis: ArtifactReference
+
+
+class LogicAnalysisAgentInput(TypedDict):
+    project_id: str
+    parsed_request: ArtifactReference
+    analysis: ArtifactReference
+
+
+class LogicAnalysisAgentOutput(TypedDict):
+    logic_analysis: ArtifactReference
 
 
 class GenerateImageAgentInput(TypedDict):
     project_id: str
     parsed_request: ArtifactReference
-    initial_final_validation_spec: ArtifactReference
+    analysis: ArtifactReference
+    logic_analysis: ArtifactReference
 
 
 class GenerateImageAgentOutput(TypedDict):
@@ -241,7 +287,8 @@ class GenerateImageAgentOutput(TypedDict):
 class DesignGameLogicAgentInput(TypedDict):
     project_id: str
     parsed_request: ArtifactReference
-    initial_final_validation_spec: ArtifactReference
+    analysis: ArtifactReference
+    logic_analysis: ArtifactReference
 
 
 class DesignGameLogicAgentOutput(TypedDict):
@@ -251,7 +298,8 @@ class DesignGameLogicAgentOutput(TypedDict):
 class GenerateSoundAgentInput(TypedDict):
     project_id: str
     parsed_request: ArtifactReference
-    initial_final_validation_spec: ArtifactReference
+    analysis: ArtifactReference
+    logic_analysis: ArtifactReference
 
 
 class GenerateSoundAgentOutput(TypedDict):
@@ -261,7 +309,7 @@ class GenerateSoundAgentOutput(TypedDict):
 class ValidateGameAgentInput(TypedDict):
     project_id: str
     parsed_request: ArtifactReference
-    initial_final_validation_spec: ArtifactReference
+    logic_analysis: ArtifactReference
     game_logic_draft: ArtifactReference
 
 
@@ -316,7 +364,7 @@ class ApplyAssetsAgentOutput(TypedDict):
 
 class FinalValidationAgentInput(TypedDict):
     project_id: str
-    initial_final_validation_spec: ArtifactReference
+    logic_analysis: ArtifactReference
     integrated_game: ArtifactReference
 
 

@@ -1,5 +1,20 @@
 const statusDot = document.querySelector("#status-dot");
 const statusText = document.querySelector("#status-text");
+const requestForm = document.querySelector("#request-form");
+const imageStyle = document.querySelector("#image-style");
+const customImage = document.querySelector("#custom-image");
+
+function updateCustomImageState() {
+  const customSelected = imageStyle.value === "Custom";
+  customImage.disabled = !customSelected;
+  if (!customSelected) {
+    customImage.value = "";
+  }
+}
+
+imageStyle.addEventListener("change", updateCustomImageState);
+requestForm.addEventListener("submit", (event) => event.preventDefault());
+updateCustomImageState();
 
 async function checkServerHealth() {
   try {

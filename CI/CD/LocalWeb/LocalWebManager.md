@@ -9,6 +9,8 @@
 - FastAPI 문서: `http://localhost:8000/docs`
 - 서버 상태 API: `http://localhost:8000/api/health`
 - Workflow 입력 화면 골격
+- 계약 3.0.0 입력 항목: 이미지 스타일, 분위기 스타일, 장르, 한 문장 조건
+- Custom 이미지용 PNG/JPG 파일 선택 골격
 - 호스트 `workspace/`와 컨테이너 `/app/workspace` 연결
 
 `/api/health`의 `workflow` 값이 `not_connected`인 것은 의도한 현재 상태다.
@@ -86,6 +88,11 @@ Docker 실행 시 다음 두 경로가 연결된다.
 
 현재 웹 골격은 Workspace를 읽거나 변경하지 않는다. 이후 Workflow API를 연결하면 기존
 `ArtifactManager`가 이 경로 아래에 프로젝트 파일을 생성한다.
+
+화면에 표시되는 입력 형식은 `mainflow/contracts.py`의 계약 3.0.0과 일치한다. 사용자는 각
+항목을 선택하고 조건을 입력할 수 있으며, 이미지 스타일을 `Custom`으로 고르면 PNG/JPG 파일
+선택도 활성화된다. 단, 실행 버튼은 의도적으로 비활성화돼 있어 선택한 값이나 파일을 서버로
+전송하지 않는다. 실제 MainFlow 실행은 현재 CLI 또는 JSON 요청으로만 가능하다.
 
 ## 다음 구현 단계
 

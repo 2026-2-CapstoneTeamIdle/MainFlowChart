@@ -16,6 +16,9 @@ from xml.etree import ElementTree
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
+    AnalysisAgentInput,
+    AnalysisAgentOutput,
+    AnalysisResult,
     ApplyAssetsAgentInput,
     ApplyAssetsAgentOutput,
     AssetValidationSpec,
@@ -34,13 +37,13 @@ from mainflow.contracts import (
     GenerateSoundAgentOutput,
     ImageDraft,
     ImageValidationResult,
-    InitialFinalValidationSpec,
-    InitialValidationSpecAgentInput,
-    InitialValidationSpecAgentOutput,
     IntegratedGame,
+    LogicAnalysis,
+    LogicAnalysisAgentInput,
+    LogicAnalysisAgentOutput,
+    ParsedRequest,
     ParseInputAgentInput,
     ParseInputAgentOutput,
-    ParsedRequest,
     SoundDraft,
     SoundValidationResult,
     UserInputAgentInput,
@@ -82,8 +85,10 @@ def mock_parse_input_node(
     payload: ParsedRequest = {
         "contract_version": CONTRACT_VERSION,
         "image_style": state["image_style"],
+        "mood_style": state["mood_style"],
         "genre": state["genre"],
-        "quality": state["quality"],
+        "condition": state["condition"],
+        "custom_image": None,
     }
     return {
         "project_id": project_id,
@@ -97,15 +102,50 @@ def mock_parse_input_node(
     }
 
 
-def mock_initial_validation_spec_node(
-    state: InitialValidationSpecAgentInput,
+def mock_analysis_node(
+    state: AnalysisAgentInput,
     runtime: MockRuntime,
-) -> InitialValidationSpecAgentOutput:
-    runtime.delay("create_initial_final_validation_spec")
-    cast(ParsedRequest, runtime.manager.read_json(state["parsed_request"]))
-    payload: InitialFinalValidationSpec = {
+) -> AnalysisAgentOutput:
+    runtime.delay("analysis")
+    request = cast(ParsedRequest, runtime.manager.read_json(state["parsed_request"]))
+    payload: AnalysisResult = {
         "contract_version": CONTRACT_VERSION,
-        "spec_id": "mock-final-validation",
+        "analysis_id": "mock-request-analysis",
+        "condition_summary": request["condition"],
+        "features": [
+            {
+                "feature_id": "feature-01",
+                "name": "공격",
+                "description": "플레이어가 적을 공격할 수 있다.",
+                "source_text": request["condition"],
+            },
+        ],
+    }
+    return {
+        "analysis": runtime.manager.write_json(
+            state["project_id"],
+            "data",
+            "analysis.json",
+            payload,
+            producer="analysis",
+        )
+    }
+
+
+def mock_logic_analysis_node(
+    state: LogicAnalysisAgentInput,
+    runtime: MockRuntime,
+) -> LogicAnalysisAgentOutput:
+    runtime.delay("logic_analysis")
+    request = cast(ParsedRequest, runtime.manager.read_json(state["parsed_request"]))
+    analysis = cast(AnalysisResult, runtime.manager.read_json(state["analysis"]))
+    payload: LogicAnalysis = {
+        "contract_version": CONTRACT_VERSION,
+        "logic_analysis_id": "mock-logic-analysis",
+        "genre": request["genre"],
+        "mood_style": request["mood_style"],
+        "core_loop": "Mock core loop",
+        "features": analysis["features"],
         "criteria": [
             {
                 "criterion_id": "game-runs",
@@ -134,12 +174,12 @@ def mock_initial_validation_spec_node(
         ],
     }
     return {
-        "initial_final_validation_spec": runtime.manager.write_json(
+        "logic_analysis": runtime.manager.write_json(
             state["project_id"],
-            "validation",
-            "initial_final_validation_spec.json",
+            "data",
+            "logic_analysis.json",
             payload,
-            producer="create_initial_final_validation_spec",
+            producer="logic_analysis",
         )
     }
 
@@ -150,10 +190,8 @@ def mock_generate_image_node(
 ) -> GenerateImageAgentOutput:
     runtime.delay("generate_image")
     request = cast(ParsedRequest, runtime.manager.read_json(state["parsed_request"]))
-    cast(
-        InitialFinalValidationSpec,
-        runtime.manager.read_json(state["initial_final_validation_spec"]),
-    )
+    cast(AnalysisResult, runtime.manager.read_json(state["analysis"]))
+    cast(LogicAnalysis, runtime.manager.read_json(state["logic_analysis"]))
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">'
         '<rect width="64" height="64" fill="#20283d"/>'
@@ -203,10 +241,8 @@ def mock_design_game_logic_node(
 ) -> DesignGameLogicAgentOutput:
     runtime.delay("design_game_logic")
     request = cast(ParsedRequest, runtime.manager.read_json(state["parsed_request"]))
-    cast(
-        InitialFinalValidationSpec,
-        runtime.manager.read_json(state["initial_final_validation_spec"]),
-    )
+    cast(AnalysisResult, runtime.manager.read_json(state["analysis"]))
+    cast(LogicAnalysis, runtime.manager.read_json(state["logic_analysis"]))
     source = f"def run_game():\n    return {{'genre': {request['genre']!r}, 'running': True}}\n"
     source_reference = runtime.manager.write_text(
         state["project_id"],
@@ -258,10 +294,8 @@ def mock_generate_sound_node(
 ) -> GenerateSoundAgentOutput:
     runtime.delay("generate_sound")
     request = cast(ParsedRequest, runtime.manager.read_json(state["parsed_request"]))
-    cast(
-        InitialFinalValidationSpec,
-        runtime.manager.read_json(state["initial_final_validation_spec"]),
-    )
+    cast(AnalysisResult, runtime.manager.read_json(state["analysis"]))
+    cast(LogicAnalysis, runtime.manager.read_json(state["logic_analysis"]))
     sound_reference = runtime.manager.write_bytes(
         state["project_id"],
         "sound",
@@ -524,10 +558,7 @@ def mock_final_validation_node(
     runtime: MockRuntime,
 ) -> FinalValidationAgentOutput:
     runtime.delay("final_validation")
-    spec = cast(
-        InitialFinalValidationSpec,
-        runtime.manager.read_json(state["initial_final_validation_spec"]),
-    )
+    spec = cast(LogicAnalysis, runtime.manager.read_json(state["logic_analysis"]))
     game = cast(IntegratedGame, runtime.manager.read_json(state["integrated_game"]))
     passed = (
         game["status"] == "integrated"

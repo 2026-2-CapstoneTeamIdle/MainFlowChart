@@ -9,7 +9,7 @@ from mainflow.contracts import (
     CONTRACT_VERSION,
     GameLogicDraft,
     GameValidationResult,
-    InitialFinalValidationSpec,
+    LogicAnalysis,
     ParsedRequest,
     ValidateGameAgentInput,
     ValidateGameAgentOutput,
@@ -19,10 +19,10 @@ from mainflow.nodes._common import log
 
 # Node 계약
 # - 이전 Node: design_game_logic
-# - 입력 State: project_id, parsed_request, initial_final_validation_spec,
+# - 입력 State: project_id, parsed_request, logic_analysis,
 #   game_logic_draft
 # - 입력 파일: data/parsed_request.json,
-#   validation/initial_final_validation_spec.json, game/game_logic_draft.json
+#   data/logic_analysis.json, game/game_logic_draft.json
 # - 출력 State: game_validation_result(ArtifactReference)
 # - 출력 파일: validation/game_validation_result.json
 # - 다음 Node: create_asset_validation_spec
@@ -34,10 +34,7 @@ def validate_game_node(
 
     manager = ArtifactManager()
     cast(ParsedRequest, manager.read_json(state["parsed_request"]))
-    cast(
-        InitialFinalValidationSpec,
-        manager.read_json(state["initial_final_validation_spec"]),
-    )
+    cast(LogicAnalysis, manager.read_json(state["logic_analysis"]))
     cast(GameLogicDraft, manager.read_json(state["game_logic_draft"]))
 
     # TODO: Unity Test Framework / build / logic validation

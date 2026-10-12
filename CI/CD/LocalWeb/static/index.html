@@ -28,39 +28,64 @@
             <p class="section-label">NEW PROJECT</p>
             <h2 id="request-heading">게임 생성 요청</h2>
           </div>
-          <span class="phase-badge">UI 골격</span>
+          <span class="phase-badge">입력 선택 가능 · 실행 미연결</span>
         </div>
 
         <form id="request-form" class="request-grid">
           <label>
             이미지 스타일
-            <select name="image_style" disabled>
+            <select id="image-style" name="image_style">
               <option>Pixel Art</option>
               <option>Anime</option>
               <option>Cartoon</option>
               <option>Realistic</option>
               <option>Low Poly</option>
+              <option>Custom</option>
+            </select>
+          </label>
+
+          <label>
+            분위기 스타일
+            <select name="mood_style">
+              <option>Cyberpunk</option>
+              <option>Medieval</option>
+              <option>Modern</option>
+              <option selected>Fantasy</option>
+              <option>Horror</option>
+              <option>Cozy</option>
             </select>
           </label>
 
           <label>
             게임 장르
-            <select name="genre" disabled>
-              <option>Action</option>
-              <option>RPG</option>
-              <option>Platformer</option>
-              <option>Puzzle</option>
-              <option>Simulation</option>
+            <select name="genre">
+              <option>플랫포머</option>
+              <option>타워 디펜스</option>
+              <option>카드</option>
+              <option>비주얼 노벨</option>
+              <option>육성 시뮬레이션</option>
+              <option>뱀서류</option>
             </select>
           </label>
 
-          <label>
-            품질
-            <select name="quality" disabled>
-              <option>Low</option>
-              <option selected>Medium</option>
-              <option>High</option>
-            </select>
+          <label class="wide-field">
+            조건
+            <input
+              name="condition"
+              type="text"
+              placeholder="예: 공격과 8방향 이동이 가능한 게임"
+            />
+          </label>
+
+          <label class="wide-field">
+            Custom 이미지 참고 파일 (PNG/JPG)
+            <input
+              id="custom-image"
+              name="custom_image"
+              type="file"
+              accept="image/png,image/jpeg"
+              disabled
+            />
           </label>
 
           <button type="submit" disabled>Workflow 연결 후 사용 가능</button>
