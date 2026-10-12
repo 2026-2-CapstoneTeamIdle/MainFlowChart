@@ -12,7 +12,14 @@ MainFlowChart/
 │  ├─ ArtifactManager.py           # 파일 저장·조회·무결성 검증
 │  ├─ contracts.py                 # Agent 입출력 타입의 단일 기준
 │  ├─ langgraph_game_flow_skeleton.py
-│  └─ run_flow.py                  # headless CLI
+│  ├─ run_flow.py                  # headless CLI
+│  └─ nodes/                       # Node별 독립 구현
+│     ├─ user_input.py
+│     ├─ parse_input.py
+│     ├─ generate_image.py
+│     ├─ design_game_logic.py
+│     ├─ generate_sound.py
+│     └─ ...                       # 검증·통합 Node 포함
 ├─ docs/                           # 팀 규약과 운영 문서
 │  ├─ assets/langgraph_flow.png
 │  ├─ ContractRule.md
@@ -112,3 +119,5 @@ flowchart TD
 ```
 
 State에는 실제 파일이나 절대 경로를 넣지 않고 `ArtifactReference`만 전달한다. 실제 파일은 `ArtifactManager`를 통해 `workspace/{project_id}`에 저장하고 읽는다.
+
+각 Node는 `mainflow/nodes/`의 독립 모듈에 둔다. Node 함수 바로 위에는 이전·다음 Node, 입력·출력 State, 입력·출력 파일을 기록한다. Node끼리 직접 호출하지 않으며 Graph State와 `ArtifactReference`로만 통신한다.
