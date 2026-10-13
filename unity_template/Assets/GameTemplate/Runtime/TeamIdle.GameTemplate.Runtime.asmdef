@@ -1,0 +1,14 @@
+{
+  "name": "TeamIdle.GameTemplate.Runtime",
+  "rootNamespace": "TeamIdle.GameTemplate",
+  "references": [],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

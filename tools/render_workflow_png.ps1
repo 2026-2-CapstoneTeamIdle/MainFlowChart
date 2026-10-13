@@ -25,9 +25,9 @@ $nodes = @{
     parse_input = [System.Drawing.Rectangle]::new(700, 235, 400, 70)
     analysis = [System.Drawing.Rectangle]::new(700, 345, 400, 70)
     logic_analysis = [System.Drawing.Rectangle]::new(700, 455, 400, 70)
-    generate_image = [System.Drawing.Rectangle]::new(100, 600, 400, 70)
+    generate_image = [System.Drawing.Rectangle]::new(100, 720, 400, 70)
     design_game_logic = [System.Drawing.Rectangle]::new(700, 600, 400, 70)
-    generate_sound = [System.Drawing.Rectangle]::new(1300, 600, 400, 70)
+    generate_sound = [System.Drawing.Rectangle]::new(1300, 720, 400, 70)
     validate_game = [System.Drawing.Rectangle]::new(700, 720, 400, 70)
     asset_spec = [System.Drawing.Rectangle]::new(700, 830, 400, 70)
     validate_image = [System.Drawing.Rectangle]::new(100, 950, 400, 70)
@@ -63,8 +63,8 @@ Arrow (BottomCenter $nodes.user_input) (TopCenter $nodes.parse_input)
 Arrow (BottomCenter $nodes.parse_input) (TopCenter $nodes.analysis)
 Arrow (BottomCenter $nodes.analysis) (TopCenter $nodes.logic_analysis)
 Arrow (BottomCenter $nodes.logic_analysis) (TopCenter $nodes.design_game_logic)
-Arrow (BottomCenter $nodes.logic_analysis) (TopCenter $nodes.generate_image)
-Arrow (BottomCenter $nodes.logic_analysis) (TopCenter $nodes.generate_sound)
+Arrow (BottomCenter $nodes.design_game_logic) (TopCenter $nodes.generate_image)
+Arrow (BottomCenter $nodes.design_game_logic) (TopCenter $nodes.generate_sound)
 Arrow (BottomCenter $nodes.design_game_logic) (TopCenter $nodes.validate_game)
 Arrow (BottomCenter $nodes.validate_game) (TopCenter $nodes.asset_spec)
 Arrow (BottomCenter $nodes.generate_image) (TopCenter $nodes.validate_image)
@@ -92,7 +92,7 @@ Node $nodes.apply_assets "apply_assets_to_game" $nodeBrush
 Node $nodes.final_validation "final_validation" $validationBrush
 Node $nodes.end "END" $terminalBrush
 
-$graphics.DrawString("MainFlowChart contract 3.0.0", $smallFont, $textBrush, 20, 1255)
+$graphics.DrawString("MainFlowChart contract 3.1.0", $smallFont, $textBrush, 20, 1255)
 $target = Join-Path $PSScriptRoot "..\docs\assets\langgraph_flow.png"
 $bitmap.Save($target, [System.Drawing.Imaging.ImageFormat]::Png)
 

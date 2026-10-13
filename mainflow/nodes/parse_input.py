@@ -17,7 +17,7 @@ from mainflow.nodes._common import log
 
 # Node 계약
 # - 이전 Node: user_input
-# - 입력 State: image_style, mood_style, genre, condition, custom_image_path(선택)
+# - 입력 State: image_style, mood_style, genre, viewpoint, condition, custom_image_path(선택)
 # - 입력 파일: 없음
 # - 출력 State: project_id, parsed_request(ArtifactReference)
 # - 출력 파일: data/parsed_request.json
@@ -59,6 +59,7 @@ def parse_input_node(state: ParseInputAgentInput) -> ParseInputAgentOutput:
         "image_style": state["image_style"],
         "mood_style": state["mood_style"],
         "genre": state["genre"],
+        "viewpoint": state["viewpoint"],
         "condition": state["condition"].strip(),
         "custom_image": custom_image,
     }

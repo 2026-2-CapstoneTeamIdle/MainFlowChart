@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from typing import Literal, NotRequired, TypedDict
 
-ContractVersion = Literal["3.0.0"]
-CONTRACT_VERSION: ContractVersion = "3.0.0"
+ContractVersion = Literal["3.1.0"]
+CONTRACT_VERSION: ContractVersion = "3.1.0"
 
 ImageStyle = Literal["Pixel Art", "Anime", "Cartoon", "Realistic", "Low Poly", "Custom"]
 MoodStyle = Literal["Cyberpunk", "Medieval", "Modern", "Fantasy", "Horror", "Cozy"]
+Viewpoint = Literal["사이드뷰", "탑다운", "쿼터뷰", "고정 화면"]
 GameGenre = Literal[
     "플랫포머",
     "타워 디펜스",
@@ -21,6 +22,15 @@ GameGenre = Literal[
     "육성 시뮬레이션",
     "뱀서류",
 ]
+GenreProfile = Literal[
+    "Platformer",
+    "TowerDefense",
+    "CardGame",
+    "SurvivorLike",
+    "VisualNovel",
+    "RaisingSimulation",
+]
+AssetType = Literal["image", "sound"]
 DraftStatus = Literal["pending", "generated", "failed"]
 ValidationStatus = Literal["pending", "passed", "failed", "needs_revision"]
 Severity = Literal["info", "warning", "error"]
@@ -45,11 +55,69 @@ class ArtifactReference(TypedDict):
 # ---------------------------------------------------------------------------
 # Domain payloads shared between agents
 # ---------------------------------------------------------------------------
+class GameFeature(TypedDict):
+    feature_id: str
+    description: str
+    required: bool
+
+
+class AssetRequirement(TypedDict):
+    asset_id: str
+    asset_type: AssetType
+    purpose: str
+    description: str
+    required: bool
+
+
+class AssetGenerationItem(AssetRequirement):
+    suggested_filename: str
+    unity_binding_key: str
+
+
+class AssetGenerationRequest(TypedDict):
+    contract_version: ContractVersion
+    request_id: str
+    source_design_id: str
+    game_title: str
+    genre: GenreProfile
+    asset_type: AssetType
+    image_style: ImageStyle
+    mood_style: MoodStyle
+    viewpoint: Viewpoint
+    reference_image: ArtifactReference | None
+    output_directory: str
+    assets: list[AssetGenerationItem]
+
+
+class GameSpec(TypedDict):
+    title: str
+    genre: GenreProfile
+    viewpoint: Viewpoint
+    features: list[GameFeature]
+    mechanics: list[str]
+    controls: dict[str, str]
+    win_conditions: list[str]
+    lose_conditions: list[str]
+    target_engine: Literal["Unity"]
+    asset_requirements: list[AssetRequirement]
+
+
+class GameLogicDesign(TypedDict):
+    contract_version: ContractVersion
+    design_id: str
+    game_spec: GameSpec
+    common_modules: list[str]
+    genre_modules: list[str]
+    selected_modules: list[str]
+    unsupported_mechanics: list[str]
+
+
 class ParsedRequest(TypedDict):
     contract_version: ContractVersion
     image_style: ImageStyle
     mood_style: MoodStyle
     genre: GameGenre
+    viewpoint: Viewpoint
     condition: str
     custom_image: ArtifactReference | None
 
@@ -72,6 +140,7 @@ class LogicAnalysis(TypedDict):
     contract_version: ContractVersion
     logic_analysis_id: str
     genre: GameGenre
+    viewpoint: Viewpoint
     mood_style: MoodStyle
     core_loop: str
     features: list[FeatureRequirement]
@@ -203,12 +272,15 @@ class WorkflowState(TypedDict, total=False):
     image_style: ImageStyle
     mood_style: MoodStyle
     genre: GameGenre
+    viewpoint: Viewpoint
     condition: str
     custom_image_path: str
     project_id: str
     parsed_request: ArtifactReference
     analysis: ArtifactReference
     logic_analysis: ArtifactReference
+    image_asset_request: ArtifactReference
+    sound_asset_request: ArtifactReference
     image_draft: ArtifactReference
     game_logic_draft: ArtifactReference
     sound_draft: ArtifactReference
@@ -229,6 +301,7 @@ class UserInputAgentInput(TypedDict, total=False):
     image_style: ImageStyle
     mood_style: MoodStyle
     genre: GameGenre
+    viewpoint: Viewpoint
     condition: str
     custom_image_path: str
 
@@ -237,6 +310,7 @@ class UserInputAgentOutput(TypedDict):
     image_style: ImageStyle
     mood_style: MoodStyle
     genre: GameGenre
+    viewpoint: Viewpoint
     condition: str
     custom_image_path: NotRequired[str]
 
@@ -245,6 +319,7 @@ class ParseInputAgentInput(TypedDict):
     image_style: ImageStyle
     mood_style: MoodStyle
     genre: GameGenre
+    viewpoint: Viewpoint
     condition: str
     custom_image_path: NotRequired[str]
 
@@ -278,6 +353,7 @@ class GenerateImageAgentInput(TypedDict):
     parsed_request: ArtifactReference
     analysis: ArtifactReference
     logic_analysis: ArtifactReference
+    image_asset_request: ArtifactReference
 
 
 class GenerateImageAgentOutput(TypedDict):
@@ -293,6 +369,8 @@ class DesignGameLogicAgentInput(TypedDict):
 
 class DesignGameLogicAgentOutput(TypedDict):
     game_logic_draft: ArtifactReference
+    image_asset_request: ArtifactReference
+    sound_asset_request: ArtifactReference
 
 
 class GenerateSoundAgentInput(TypedDict):
@@ -300,6 +378,7 @@ class GenerateSoundAgentInput(TypedDict):
     parsed_request: ArtifactReference
     analysis: ArtifactReference
     logic_analysis: ArtifactReference
+    sound_asset_request: ArtifactReference
 
 
 class GenerateSoundAgentOutput(TypedDict):

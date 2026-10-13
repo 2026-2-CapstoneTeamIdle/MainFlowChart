@@ -3,16 +3,17 @@
     "image_style": "Pixel Art",
     "mood_style": "Fantasy",
     "genre": "플랫포머",
+    "viewpoint": "사이드뷰",
     "condition": "공격과 8방향 이동이 가능한 게임"
   },
   "expected": {
     "final_status": "passed",
-    "artifact_count": 16,
+    "artifact_count": 18,
     "category_counts": {
       "data": 3,
       "image": 2,
       "sound": 2,
-      "game": 4,
+      "game": 6,
       "validation": 5
     }
   }

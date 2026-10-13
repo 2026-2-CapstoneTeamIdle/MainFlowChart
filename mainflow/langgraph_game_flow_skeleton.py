@@ -67,21 +67,21 @@ def build_graph():
     graph.add_edge("parse_input", "analysis")
     graph.add_edge("analysis", "logic_analysis")
 
-    # 1. Image / Game / Sound generation in parallel
-    graph.add_edge(
-        "logic_analysis",
-        "generate_image",
-    )
+    # 1. Design the Unity project and its explicit image/sound request JSON first.
     graph.add_edge(
         "logic_analysis",
         "design_game_logic",
     )
+
+    # 2. Image / game validation / sound work can proceed from the game design.
     graph.add_edge(
-        "logic_analysis",
+        "design_game_logic",
+        "generate_image",
+    )
+    graph.add_edge(
+        "design_game_logic",
         "generate_sound",
     )
-
-    # 2. Game branch validation
     graph.add_edge(
         "design_game_logic",
         "validate_game",

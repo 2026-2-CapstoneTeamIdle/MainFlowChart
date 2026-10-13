@@ -9,12 +9,13 @@ from pathlib import Path
 from typing import Any, cast, get_args
 
 from mainflow.ArtifactManager import ArtifactManager
-from mainflow.contracts import GameGenre, ImageStyle, MoodStyle, WorkflowState
+from mainflow.contracts import GameGenre, ImageStyle, MoodStyle, Viewpoint, WorkflowState
 from mainflow.langgraph_game_flow_skeleton import build_graph
 
 IMAGE_STYLES = cast(tuple[str, ...], get_args(ImageStyle))
 GAME_GENRES = cast(tuple[str, ...], get_args(GameGenre))
 MOOD_STYLES = cast(tuple[str, ...], get_args(MoodStyle))
+VIEWPOINTS = cast(tuple[str, ...], get_args(Viewpoint))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,11 +25,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--request-file",
         type=Path,
-        help="UTF-8 JSON file containing image_style, mood_style, genre, and condition.",
+        help="UTF-8 JSON file containing image_style, mood_style, genre, viewpoint, and condition.",
     )
     parser.add_argument("--image-style", choices=IMAGE_STYLES)
     parser.add_argument("--mood-style", choices=MOOD_STYLES)
     parser.add_argument("--genre", choices=GAME_GENRES)
+    parser.add_argument("--viewpoint", choices=VIEWPOINTS)
     parser.add_argument("--condition")
     parser.add_argument(
         "--custom-image",
@@ -54,16 +56,18 @@ def load_request(arguments: argparse.Namespace) -> WorkflowState:
             "image_style": arguments.image_style,
             "mood_style": arguments.mood_style,
             "genre": arguments.genre,
+            "viewpoint": arguments.viewpoint,
             "condition": arguments.condition,
         }
         if arguments.custom_image:
             request["custom_image_path"] = str(arguments.custom_image.resolve())
 
-    required = {"image_style", "mood_style", "genre", "condition"}
+    required = {"image_style", "mood_style", "genre", "viewpoint", "condition"}
     missing = required - request.keys()
     if missing or any(request[key] is None for key in required):
         raise ValueError(
-            "Provide --request-file or all of --image-style, --mood-style, --genre, --condition"
+            "Provide --request-file or all of --image-style, --mood-style, --genre, "
+            "--viewpoint, --condition"
         )
     if request["image_style"] not in IMAGE_STYLES:
         raise ValueError(f"Unsupported image_style: {request['image_style']}")
@@ -71,6 +75,8 @@ def load_request(arguments: argparse.Namespace) -> WorkflowState:
         raise ValueError(f"Unsupported genre: {request['genre']}")
     if request["mood_style"] not in MOOD_STYLES:
         raise ValueError(f"Unsupported mood_style: {request['mood_style']}")
+    if request["viewpoint"] not in VIEWPOINTS:
+        raise ValueError(f"Unsupported viewpoint: {request['viewpoint']}")
     if not isinstance(request["condition"], str) or not request["condition"].strip():
         raise ValueError("condition must be one non-empty sentence")
     if request["image_style"] == "Custom":

@@ -26,3 +26,13 @@ env/
 # OS-generated files
 .DS_Store
 Thumbs.db
+
+# Unity template generated state
+unity_template/[Ll]ibrary/
+unity_template/[Tt]emp/
+unity_template/[Oo]bj/
+unity_template/[Ll]ogs/
+unity_template/[Uu]ser[Ss]ettings/
+unity_template/[Mm]emoryCaptures/
+unity_template/[Rr]ecordings/
+unity_template/[Bb]uilds/

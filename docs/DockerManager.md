@@ -18,6 +18,7 @@ docker compose run --rm mainflow
 image_style = Pixel Art
 mood_style  = Fantasy
 genre       = 플랫포머
+viewpoint   = 사이드뷰
 condition   = 공격과 8방향 이동이 가능한 게임
 ```
 
@@ -29,6 +30,7 @@ docker compose run --rm mainflow `
   --image-style Anime `
   --mood-style Cyberpunk `
   --genre "뱀서류" `
+  --viewpoint "탑다운" `
   --condition "자동 공격과 성장 기능이 있는 게임"
 ```
 
@@ -41,6 +43,7 @@ docker compose run --rm mainflow `
   --custom-image /app/examples/reference.png `
   --mood-style Medieval `
   --genre "타워 디펜스" `
+  --viewpoint "탑다운" `
   --condition "타워를 배치해 적을 막는 게임"
 ```
 

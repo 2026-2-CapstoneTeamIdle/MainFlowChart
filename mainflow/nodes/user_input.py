@@ -10,14 +10,14 @@ from mainflow.nodes._common import log
 
 # Node 계약
 # - 이전 Node: START
-# - 입력 State: image_style, mood_style, genre, condition, custom_image_path(선택)
+# - 입력 State: image_style, mood_style, genre, viewpoint, condition, custom_image_path(선택)
 # - 입력 파일: 없음
-# - 출력 State: image_style, mood_style, genre, condition, custom_image_path(선택)
+# - 출력 State: image_style, mood_style, genre, viewpoint, condition, custom_image_path(선택)
 # - 출력 파일: 없음
 # - 다음 Node: parse_input
 def user_input_node(state: UserInputAgentInput) -> UserInputAgentOutput:
     """Use supplied values or collect them through the temporary desktop GUI."""
-    required = ("image_style", "mood_style", "genre", "condition")
+    required = ("image_style", "mood_style", "genre", "viewpoint", "condition")
     if all(key in state for key in required):
         if state["image_style"] == "Custom" and not state.get("custom_image_path"):
             raise ValueError("Custom image style requires custom_image_path")
@@ -26,6 +26,7 @@ def user_input_node(state: UserInputAgentInput) -> UserInputAgentOutput:
             "image_style": state["image_style"],
             "mood_style": state["mood_style"],
             "genre": state["genre"],
+            "viewpoint": state["viewpoint"],
             "condition": state["condition"],
         }
         if "custom_image_path" in state:
@@ -79,9 +80,20 @@ def user_input_node(state: UserInputAgentInput) -> UserInputAgentOutput:
     )
     genre_box.grid(row=2, column=1, padx=5, pady=8)
 
-    ttk.Label(frame, text="조건").grid(row=3, column=0, sticky="w", padx=5, pady=8)
+    ttk.Label(frame, text="시점").grid(row=3, column=0, sticky="w", padx=5, pady=8)
+    viewpoint_var = tk.StringVar(value="사이드뷰")
+    viewpoint_box = ttk.Combobox(
+        frame,
+        textvariable=viewpoint_var,
+        state="readonly",
+        width=24,
+        values=["사이드뷰", "탑다운", "쿼터뷰", "고정 화면"],
+    )
+    viewpoint_box.grid(row=3, column=1, padx=5, pady=8)
+
+    ttk.Label(frame, text="조건").grid(row=4, column=0, sticky="w", padx=5, pady=8)
     condition_var = tk.StringVar(value="공격과 8방향 이동이 가능한 게임")
-    ttk.Entry(frame, textvariable=condition_var, width=27).grid(row=3, column=1, padx=5, pady=8)
+    ttk.Entry(frame, textvariable=condition_var, width=27).grid(row=4, column=1, padx=5, pady=8)
 
     custom_image_var = tk.StringVar()
 
@@ -92,15 +104,16 @@ def user_input_node(state: UserInputAgentInput) -> UserInputAgentOutput:
         if selected:
             custom_image_var.set(selected)
 
-    ttk.Label(frame, text="Custom 이미지").grid(row=4, column=0, sticky="w", padx=5, pady=8)
+    ttk.Label(frame, text="Custom 이미지").grid(row=5, column=0, sticky="w", padx=5, pady=8)
     ttk.Button(frame, text="PNG/JPG 선택", command=choose_custom_image).grid(
-        row=4, column=1, sticky="ew", padx=5, pady=8
+        row=5, column=1, sticky="ew", padx=5, pady=8
     )
 
     def submit() -> None:
         result["image_style"] = image_style_var.get()
         result["mood_style"] = mood_style_var.get()
         result["genre"] = genre_var.get()
+        result["viewpoint"] = viewpoint_var.get()
         result["condition"] = condition_var.get().strip()
         if image_style_var.get() == "Custom":
             if not custom_image_var.get():
@@ -110,7 +123,7 @@ def user_input_node(state: UserInputAgentInput) -> UserInputAgentOutput:
 
     start_button = ttk.Button(frame, text="START", command=submit)
     start_button.grid(
-        row=5,
+        row=6,
         column=0,
         columnspan=2,
         sticky="ew",
@@ -126,6 +139,7 @@ def user_input_node(state: UserInputAgentInput) -> UserInputAgentOutput:
         f"(스타일={result['image_style']}, "
         f"분위기={result['mood_style']}, "
         f"장르={result['genre']}, "
+        f"시점={result['viewpoint']}, "
         f"조건={result['condition']})"
     )
 
