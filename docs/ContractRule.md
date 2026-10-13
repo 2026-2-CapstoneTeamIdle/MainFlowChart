@@ -1,7 +1,7 @@
 # Agent 데이터 계약 규칙
 
 이 문서는 Agent 사이에서 교환하는 State와 파일 payload 규격을 정의한다. 기계 판독 기준은
-`mainflow/contracts.py`이며, 현재 계약 버전은 **3.0.0**이다.
+`mainflow/contracts.py`이며, 현재 계약 버전은 **3.1.0**이다.
 
 ## 공통 원칙
 
@@ -9,7 +9,7 @@
 2. 실제 파일 내용이나 임의 경로 대신 `ArtifactReference`를 State로 전달한다.
 3. 파일은 반드시 `ArtifactManager`로 저장하고 읽는다.
 4. payload와 `ArtifactReference`에는 `contract_version`을 기록한다.
-5. 계약 `3.0.0`은 `quality`를 제거하고 필수 사용자 입력 및 분석 흐름을 변경한 Major 버전이다.
+5. 계약 `3.1.0`은 팀의 Input/Output 합의에 따라 시점과 에셋 생성 공통 문맥을 추가했다.
 6. `condition`은 비어 있지 않은 한 문장으로 보관하며, Analysis가 기능 요구사항으로 변환한다.
 7. `image_style`이 `Custom`이면 PNG/JPG 파일을 함께 제공해야 한다.
 
@@ -20,6 +20,7 @@
 | `image_style` | `ImageStyle` | `Pixel Art`, `Anime`, `Cartoon`, `Realistic`, `Low Poly`, `Custom` |
 | `mood_style` | `MoodStyle` | `Cyberpunk`, `Medieval`, `Modern`, `Fantasy`, `Horror`, `Cozy` |
 | `genre` | `GameGenre` | `플랫포머`, `타워 디펜스`, `카드`, `비주얼 노벨`, `육성 시뮬레이션`, `뱀서류` |
+| `viewpoint` | `Viewpoint` | `사이드뷰`, `탑다운`, `쿼터뷰`, `고정 화면` |
 | `condition` | `str` | 사용자의 요구를 담은 비어 있지 않은 한 문장 |
 | `custom_image_path` | `str` | `image_style=Custom`일 때만 필요한 PNG/JPG 원본 경로 |
 
@@ -34,6 +35,7 @@
 - `image_style`
 - `mood_style`
 - `genre`
+- `viewpoint`
 - `condition`
 - `custom_image`: Custom 참고 이미지의 `ArtifactReference`, 없으면 `null`
 
@@ -51,7 +53,7 @@ Analysis 구현은 알려진 기능 표현을 규칙 기반으로 추출하고, 
 
 `design_game_logic`은 분석된 기능과 장르 프리셋을 결합해 Unity 구현용 `GameSpec`을 만든다.
 
-- `title`, `genre`, `features`, `mechanics`, `controls`
+- `title`, `genre`, `viewpoint`, `features`, `mechanics`, `controls`
 - `win_conditions`, `lose_conditions`, `target_engine`
 - `asset_requirements`: 게임 설계가 이미지·사운드 요청 JSON으로 분리하는 에셋 요구사항
 - `asset_id`: 한 워크플로 안에서 중복되지 않는 불투명 ID. 문자열을 분석해 종류를 추론하지 않는다.
@@ -65,17 +67,22 @@ Analysis 구현은 알려진 기능 표현을 규칙 기반으로 추출하고, 
 `design_game_logic`은 Unity 프로젝트에 필요한 에셋을 이미지와 사운드 요청으로 분리한다.
 
 - 공통: `request_id`, `source_design_id`, `game_title`, `genre`, `asset_type`
-- 생성 문맥: `creative_style`, `mood_style`, `output_directory`
+- 생성 문맥: `image_style`, `mood_style`, `viewpoint`, `reference_image`, `output_directory`
 - `assets`: `asset_id`, 용도, 설명, 필수 여부, 권장 파일명, `unity_binding_key`
 - 생성 Flow는 `asset_id`와 `unity_binding_key`를 변경하지 않고 결과 draft에 반환한다.
 - 같은 JSON은 workspace와 생성된 Unity 프로젝트의 `AssetRequests/` 양쪽에 저장한다.
+- 이미지 요청의 `reference_image`에는 Custom 참고 이미지의 `ArtifactReference`가 들어가며,
+  참고 이미지가 없거나 사운드 요청이면 `null`이다.
+- 이미지·사운드 요청 모두 공통 정보인 `image_style`, `genre`를 유지한다. 이미지 생성은 여기에
+  `mood_style`, `viewpoint`, `reference_image`를 함께 사용하고, 사운드 생성은 `mood_style`을
+  우선적인 생성 문맥으로 사용한다.
 - 기계 판독 스키마는
   [`schemas/asset_generation_request.schema.json`](../schemas/asset_generation_request.schema.json)이다.
 
 ### `LogicAnalysis`
 
 - `logic_analysis_id`
-- `genre`, `mood_style`
+- `genre`, `viewpoint`, `mood_style`
 - `core_loop`: 장르에 따른 핵심 플레이 반복 구조
 - `features`: Analysis가 전달한 기능 목록
 - `criteria`: 게임·이미지·사운드·통합 최종 검증에 사용하는 기준
@@ -86,7 +93,7 @@ Analysis 구현은 알려진 기능 표현을 규칙 기반으로 추출하고, 
 
 | Node | 입력 State | 출력 State | 출력 파일 |
 |---|---|---|---|
-| `user_input` | 선택적 사용자 입력 | 네 가지 필수 입력, 조건부 `custom_image_path` | 없음 |
+| `user_input` | 선택적 사용자 입력 | 다섯 가지 필수 입력, 조건부 `custom_image_path` | 없음 |
 | `parse_input` | 사용자 입력 | `project_id`, `parsed_request` | `data/parsed_request.json`, 조건부 Custom 이미지 |
 | `analysis` | `project_id`, `parsed_request` | `analysis` | `data/analysis.json` |
 | `logic_analysis` | `project_id`, `parsed_request`, `analysis` | `logic_analysis` | `data/logic_analysis.json` |

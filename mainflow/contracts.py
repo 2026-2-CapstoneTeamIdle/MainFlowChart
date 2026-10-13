@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from typing import Literal, NotRequired, TypedDict
 
-ContractVersion = Literal["3.0.0"]
-CONTRACT_VERSION: ContractVersion = "3.0.0"
+ContractVersion = Literal["3.1.0"]
+CONTRACT_VERSION: ContractVersion = "3.1.0"
 
 ImageStyle = Literal["Pixel Art", "Anime", "Cartoon", "Realistic", "Low Poly", "Custom"]
 MoodStyle = Literal["Cyberpunk", "Medieval", "Modern", "Fantasy", "Horror", "Cozy"]
+Viewpoint = Literal["사이드뷰", "탑다운", "쿼터뷰", "고정 화면"]
 GameGenre = Literal[
     "플랫포머",
     "타워 디펜스",
@@ -80,8 +81,10 @@ class AssetGenerationRequest(TypedDict):
     game_title: str
     genre: GenreProfile
     asset_type: AssetType
-    creative_style: str
+    image_style: ImageStyle
     mood_style: MoodStyle
+    viewpoint: Viewpoint
+    reference_image: ArtifactReference | None
     output_directory: str
     assets: list[AssetGenerationItem]
 
@@ -89,6 +92,7 @@ class AssetGenerationRequest(TypedDict):
 class GameSpec(TypedDict):
     title: str
     genre: GenreProfile
+    viewpoint: Viewpoint
     features: list[GameFeature]
     mechanics: list[str]
     controls: dict[str, str]
@@ -113,6 +117,7 @@ class ParsedRequest(TypedDict):
     image_style: ImageStyle
     mood_style: MoodStyle
     genre: GameGenre
+    viewpoint: Viewpoint
     condition: str
     custom_image: ArtifactReference | None
 
@@ -135,6 +140,7 @@ class LogicAnalysis(TypedDict):
     contract_version: ContractVersion
     logic_analysis_id: str
     genre: GameGenre
+    viewpoint: Viewpoint
     mood_style: MoodStyle
     core_loop: str
     features: list[FeatureRequirement]
@@ -266,6 +272,7 @@ class WorkflowState(TypedDict, total=False):
     image_style: ImageStyle
     mood_style: MoodStyle
     genre: GameGenre
+    viewpoint: Viewpoint
     condition: str
     custom_image_path: str
     project_id: str
@@ -294,6 +301,7 @@ class UserInputAgentInput(TypedDict, total=False):
     image_style: ImageStyle
     mood_style: MoodStyle
     genre: GameGenre
+    viewpoint: Viewpoint
     condition: str
     custom_image_path: str
 
@@ -302,6 +310,7 @@ class UserInputAgentOutput(TypedDict):
     image_style: ImageStyle
     mood_style: MoodStyle
     genre: GameGenre
+    viewpoint: Viewpoint
     condition: str
     custom_image_path: NotRequired[str]
 
@@ -310,6 +319,7 @@ class ParseInputAgentInput(TypedDict):
     image_style: ImageStyle
     mood_style: MoodStyle
     genre: GameGenre
+    viewpoint: Viewpoint
     condition: str
     custom_image_path: NotRequired[str]
 

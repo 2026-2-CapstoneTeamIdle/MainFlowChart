@@ -7,6 +7,7 @@
   "required": [
     "title",
     "genre",
+    "viewpoint",
     "features",
     "mechanics",
     "controls",
@@ -28,6 +29,14 @@
         "SurvivorLike",
         "VisualNovel",
         "RaisingSimulation"
+      ]
+    },
+    "viewpoint": {
+      "enum": [
+        "사이드뷰",
+        "탑다운",
+        "쿼터뷰",
+        "고정 화면"
       ]
     },
     "features": {

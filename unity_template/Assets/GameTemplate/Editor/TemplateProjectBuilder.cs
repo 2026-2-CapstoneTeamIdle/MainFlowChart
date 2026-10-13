@@ -71,7 +71,14 @@ namespace TeamIdle.GameTemplate.Editor
                 config.SelectedModules.Count > 0
                     ? config.SelectedModules
                     : new[] { "game_bootstrap", "validation_probe" };
-            config.Configure("3.0.0", config.GameTitle, config.Genre, ScenePath, configuredModules);
+            config.Configure(
+                "3.1.0",
+                config.GameTitle,
+                config.Genre,
+                config.Viewpoint,
+                ScenePath,
+                configuredModules
+            );
             EditorUtility.SetDirty(config);
 
             var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);

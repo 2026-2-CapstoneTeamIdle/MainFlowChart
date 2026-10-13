@@ -45,6 +45,7 @@ def design_game_logic_node(
     game_spec = normalize_game_spec(
         request["genre"],
         {
+            "viewpoint": request["viewpoint"],
             "features": [
                 {
                     "feature_id": feature["feature_id"],
@@ -52,7 +53,7 @@ def design_game_logic_node(
                     "required": True,
                 }
                 for feature in analysis["features"]
-            ]
+            ],
         },
     )
     design = build_game_logic_design(game_spec)
@@ -71,6 +72,8 @@ def design_game_logic_node(
         unity_project_root,
         image_style=request["image_style"],
         mood_style=request["mood_style"],
+        viewpoint=request["viewpoint"],
+        reference_image=request["custom_image"],
     )
     manifest_reference = manager.import_file(
         state["project_id"],

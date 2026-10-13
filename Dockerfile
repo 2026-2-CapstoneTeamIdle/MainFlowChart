@@ -17,4 +17,4 @@ RUN uv sync --locked --no-dev --no-install-project
 
 COPY . .
 
-CMD ["/app/.venv/bin/python", "-m", "mainflow.run_flow", "--image-style", "Pixel Art", "--mood-style", "Fantasy", "--genre", "플랫포머", "--condition", "공격과 8방향 이동이 가능한 게임"]
+CMD ["/app/.venv/bin/python", "-m", "mainflow.run_flow", "--image-style", "Pixel Art", "--mood-style", "Fantasy", "--genre", "플랫포머", "--viewpoint", "사이드뷰", "--condition", "공격과 8방향 이동이 가능한 게임"]

@@ -7,13 +7,16 @@ namespace TeamIdle.GameTemplate.Core
     public sealed class GameTemplateConfig : ScriptableObject
     {
         [SerializeField]
-        private string contractVersion = "3.0.0";
+        private string contractVersion = "3.1.0";
 
         [SerializeField]
         private string gameTitle = "Generated 2D Game";
 
         [SerializeField]
         private string genre = "Unassigned";
+
+        [SerializeField]
+        private string viewpoint = "Unassigned";
 
         [SerializeField]
         private string entryScene = "Assets/Scenes/Bootstrap.unity";
@@ -27,6 +30,8 @@ namespace TeamIdle.GameTemplate.Core
 
         public string Genre => genre;
 
+        public string Viewpoint => viewpoint;
+
         public string EntryScene => entryScene;
 
         public IReadOnlyList<string> SelectedModules => selectedModules;
@@ -35,6 +40,7 @@ namespace TeamIdle.GameTemplate.Core
             string nextContractVersion,
             string nextGameTitle,
             string nextGenre,
+            string nextViewpoint,
             string nextEntryScene,
             IEnumerable<string> nextSelectedModules
         )
@@ -42,6 +48,7 @@ namespace TeamIdle.GameTemplate.Core
             contractVersion = nextContractVersion;
             gameTitle = nextGameTitle;
             genre = nextGenre;
+            viewpoint = nextViewpoint;
             entryScene = nextEntryScene;
             selectedModules = new List<string>(nextSelectedModules);
         }
@@ -63,6 +70,12 @@ namespace TeamIdle.GameTemplate.Core
             if (string.IsNullOrWhiteSpace(entryScene))
             {
                 issue = "Entry scene is required.";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(viewpoint))
+            {
+                issue = "Viewpoint is required.";
                 return false;
             }
 

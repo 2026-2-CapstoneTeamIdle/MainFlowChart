@@ -53,8 +53,9 @@ request_ref = manager.write_json(
     "data",
     "parsed_request.json",
     {
-        "contract_version": "3.0.0",
+        "contract_version": "3.1.0",
         "genre": "플랫포머",
+        "viewpoint": "사이드뷰",
         "mood_style": "Fantasy",
     },
     producer="parse_input",
@@ -70,7 +71,7 @@ parsed_request = manager.read_json(request_ref)
 
 ```json
 {
-  "contract_version": "3.0.0",
+  "contract_version": "3.1.0",
   "artifact_id": "image-<uuid>",
   "project_id": "20260926_03",
   "category": "image",
@@ -92,7 +93,8 @@ workspace/{project_id}/generated/images/references/custom_style.{png|jpg|jpeg}
 ```
 
 확장자뿐 아니라 PNG/JPEG 파일 signature를 검사한다. `parsed_request.json`에는 원본 절대 경로를
-남기지 않고 해당 파일의 `ArtifactReference`를 `custom_image` 필드에 기록한다. 이미지 Agent는
+남기지 않고 해당 파일의 `ArtifactReference`를 `custom_image` 필드에 기록한다. 게임 설계가
+만드는 `image_asset_request.json`에도 같은 참조를 `reference_image`로 전달한다. 이미지 Agent는
 이 참조를 `ArtifactManager.read_bytes()`로 읽어 생성 참고 자료로 사용한다.
 
 분석 중간 산출물은 다음 위치에 보관한다.
@@ -108,6 +110,11 @@ workspace/{project_id}/game/asset_requests/sound_asset_request.json
 `Assets/GameTemplate/Generated/AssetRequests/`에도 같은 내용으로 포함된다. 이미지·사운드 Flow는
 State로 받은 `ArtifactReference`를 통해 workspace 사본을 읽으며 Unity 프로젝트 내부 경로에 직접
 의존하지 않는다.
+
+이미지 Flow는 `image_asset_request` State 참조를, 사운드 Flow는 `sound_asset_request` State 참조를
+`ArtifactManager.read_json()`에 넘긴다. 두 요청에는 공통 `image_style`, `genre`와 게임 설계가
+유지한 `viewpoint`가 포함되고, 각 에셋의 `asset_id`와 `unity_binding_key`는 결과 draft까지
+변경하지 않는다.
 
 참조의 `relative_path`를 직접 이어 붙여 읽지 않는다. 항상 `ArtifactManager`의 읽기 메서드를 사용한다.
 

@@ -88,6 +88,7 @@ def mock_parse_input_node(
         "image_style": state["image_style"],
         "mood_style": state["mood_style"],
         "genre": state["genre"],
+        "viewpoint": state["viewpoint"],
         "condition": state["condition"],
         "custom_image": None,
     }
@@ -144,6 +145,7 @@ def mock_logic_analysis_node(
         "contract_version": CONTRACT_VERSION,
         "logic_analysis_id": "mock-logic-analysis",
         "genre": request["genre"],
+        "viewpoint": request["viewpoint"],
         "mood_style": request["mood_style"],
         "core_loop": "Mock core loop",
         "features": analysis["features"],
@@ -275,8 +277,10 @@ def mock_design_game_logic_node(
         "game_title": "Mock Game",
         "genre": "SurvivorLike",
         "asset_type": "image",
-        "creative_style": request["image_style"],
+        "image_style": request["image_style"],
         "mood_style": request["mood_style"],
+        "viewpoint": request["viewpoint"],
+        "reference_image": request["custom_image"],
         "output_directory": "generated/images",
         "assets": [
             {
@@ -297,8 +301,10 @@ def mock_design_game_logic_node(
         "game_title": "Mock Game",
         "genre": "SurvivorLike",
         "asset_type": "sound",
-        "creative_style": request["mood_style"],
+        "image_style": request["image_style"],
         "mood_style": request["mood_style"],
+        "viewpoint": request["viewpoint"],
+        "reference_image": None,
         "output_directory": "generated/sounds",
         "assets": [
             {

@@ -17,9 +17,11 @@ from mainflow.contracts import (
     AssetGenerationItem,
     AssetGenerationRequest,
     AssetType,
+    ArtifactReference,
     GameLogicDesign,
     ImageStyle,
     MoodStyle,
+    Viewpoint,
 )
 
 
@@ -68,6 +70,8 @@ class UnityProjectGenerator:
         *,
         image_style: ImageStyle = "Pixel Art",
         mood_style: MoodStyle = "Fantasy",
+        viewpoint: Viewpoint | None = None,
+        reference_image: ArtifactReference | None = None,
     ) -> UnityGenerationResult:
         """Generate a project atomically and return its important paths."""
 
@@ -86,7 +90,14 @@ class UnityProjectGenerator:
         )
         try:
             self._copy_template(staging_path)
-            self._configure_project(staging_path, design, image_style, mood_style)
+            self._configure_project(
+                staging_path,
+                design,
+                image_style,
+                mood_style,
+                viewpoint or design["game_spec"]["viewpoint"],
+                reference_image,
+            )
             staging_path.replace(destination_path)
         except Exception:
             shutil.rmtree(staging_path, ignore_errors=True)
@@ -165,6 +176,8 @@ class UnityProjectGenerator:
         design: GameLogicDesign,
         image_style: ImageStyle,
         mood_style: MoodStyle,
+        viewpoint: Viewpoint,
+        reference_image: ArtifactReference | None,
     ) -> None:
         game_spec = design["game_spec"]
         config_path = project_root / self.CONFIG_ASSET
@@ -173,6 +186,7 @@ class UnityProjectGenerator:
             "contractVersion": CONTRACT_VERSION,
             "gameTitle": game_spec["title"],
             "genre": game_spec["genre"],
+            "viewpoint": viewpoint,
             "entryScene": self.ENTRY_SCENE.as_posix(),
         }
         for field_name, value in replacements.items():
@@ -211,14 +225,18 @@ class UnityProjectGenerator:
         image_request = self._build_asset_request(
             design,
             "image",
-            creative_style=image_style,
+            image_style=image_style,
             mood_style=mood_style,
+            viewpoint=viewpoint,
+            reference_image=reference_image,
         )
         sound_request = self._build_asset_request(
             design,
             "sound",
-            creative_style=mood_style,
+            image_style=image_style,
             mood_style=mood_style,
+            viewpoint=viewpoint,
+            reference_image=None,
         )
         self._write_json(project_root / self.IMAGE_ASSET_REQUEST_PATH, image_request)
         self._write_json(project_root / self.SOUND_ASSET_REQUEST_PATH, sound_request)
@@ -229,6 +247,7 @@ class UnityProjectGenerator:
             "generator": "UnityProjectGenerator",
             "game_title": game_spec["title"],
             "genre": game_spec["genre"],
+            "viewpoint": viewpoint,
             "design_id": design["design_id"],
             "entry_scene": self.ENTRY_SCENE.as_posix(),
             "selected_modules": design["selected_modules"],
@@ -246,8 +265,10 @@ class UnityProjectGenerator:
         design: GameLogicDesign,
         asset_type: AssetType,
         *,
-        creative_style: str,
+        image_style: ImageStyle,
         mood_style: MoodStyle,
+        viewpoint: Viewpoint,
+        reference_image: ArtifactReference | None,
     ) -> AssetGenerationRequest:
         extension = "png" if asset_type == "image" else "wav"
         output_directory = "generated/images" if asset_type == "image" else "generated/sounds"
@@ -270,8 +291,10 @@ class UnityProjectGenerator:
             "game_title": design["game_spec"]["title"],
             "genre": design["game_spec"]["genre"],
             "asset_type": asset_type,
-            "creative_style": creative_style,
+            "image_style": image_style,
             "mood_style": mood_style,
+            "viewpoint": viewpoint,
+            "reference_image": reference_image,
             "output_directory": output_directory,
             "assets": assets,
         }

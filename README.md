@@ -1,6 +1,6 @@
 # MainFlowChart
 
-사용자의 이미지 스타일, 분위기 스타일, 게임 장르, 한 문장 조건을 분석한 뒤 게임을 먼저
+사용자의 이미지 스타일, 분위기 스타일, 게임 장르, 시점, 한 문장 조건을 분석한 뒤 게임을 먼저
 설계한다. 설계에서 만든 이미지·사운드 요청 JSON을 각 생성 Agent에 전달하고 결과를
 검증·통합하는 LangGraph 기반 게임 제작 파이프라인이다.
 게임 로직 Node는 장르별 모듈을 조합하고 prefab·씬 placeholder를 배치한 Unity 프로젝트와 ZIP을 생성한다. 이미지·사운드 생성
@@ -41,11 +41,12 @@ MainFlowChart/
 └─ uv.lock
 ```
 
-## 입력 계약 3.0.0
+## 입력 계약 3.1.0
 
 - 이미지 스타일: `Pixel Art`, `Anime`, `Cartoon`, `Realistic`, `Low Poly`, `Custom`
 - 분위기 스타일: `Cyberpunk`, `Medieval`, `Modern`, `Fantasy`, `Horror`, `Cozy`
 - 장르: `플랫포머`, `타워 디펜스`, `카드`, `비주얼 노벨`, `육성 시뮬레이션`, `뱀서류`
+- 시점: `사이드뷰`, `탑다운`, `쿼터뷰`, `고정 화면`
 - 조건: 비어 있지 않은 한 문장
 
 `Custom` 이미지 스타일은 `--custom-image` 또는 요청 JSON의 `custom_image_path`로 PNG/JPG
@@ -59,6 +60,7 @@ uv run --locked python -m mainflow.run_flow `
   --image-style "Pixel Art" `
   --mood-style Fantasy `
   --genre "플랫포머" `
+  --viewpoint "사이드뷰" `
   --condition "공격과 8방향 이동이 가능한 게임"
 ```
 

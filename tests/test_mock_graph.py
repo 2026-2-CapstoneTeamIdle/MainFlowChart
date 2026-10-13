@@ -40,9 +40,12 @@ FIXTURE_DIRECTORY = Path(__file__).parent / "fixtures"
 NodeFunction = Callable[[Any, MockRuntime], dict[str, Any]]
 
 NODE_IO: dict[str, tuple[set[str], set[str]]] = {
-    "user_input": (set(), {"image_style", "mood_style", "genre", "condition"}),
+    "user_input": (
+        set(),
+        {"image_style", "mood_style", "genre", "viewpoint", "condition"},
+    ),
     "parse_input": (
-        {"image_style", "mood_style", "genre", "condition"},
+        {"image_style", "mood_style", "genre", "viewpoint", "condition"},
         {"project_id", "parsed_request"},
     ),
     "analysis": (

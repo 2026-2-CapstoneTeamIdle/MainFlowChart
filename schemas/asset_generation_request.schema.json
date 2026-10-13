@@ -11,14 +11,16 @@
     "game_title",
     "genre",
     "asset_type",
-    "creative_style",
+    "image_style",
     "mood_style",
+    "viewpoint",
+    "reference_image",
     "output_directory",
     "assets"
   ],
   "properties": {
     "contract_version": {
-      "const": "3.0.0"
+      "const": "3.1.0"
     },
     "request_id": {
       "type": "string",
@@ -48,9 +50,15 @@
         "sound"
       ]
     },
-    "creative_style": {
-      "type": "string",
-      "minLength": 1
+    "image_style": {
+      "enum": [
+        "Pixel Art",
+        "Anime",
+        "Cartoon",
+        "Realistic",
+        "Low Poly",
+        "Custom"
+      ]
     },
     "mood_style": {
       "enum": [
@@ -60,6 +68,24 @@
         "Fantasy",
         "Horror",
         "Cozy"
+      ]
+    },
+    "viewpoint": {
+      "enum": [
+        "사이드뷰",
+        "탑다운",
+        "쿼터뷰",
+        "고정 화면"
+      ]
+    },
+    "reference_image": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/artifactReference"
+        },
+        {
+          "type": "null"
+        }
       ]
     },
     "output_directory": {
@@ -77,6 +103,62 @@
     }
   },
   "$defs": {
+    "artifactReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "artifact_id",
+        "project_id",
+        "category",
+        "relative_path",
+        "media_type",
+        "size_bytes",
+        "sha256",
+        "created_at",
+        "producer"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "3.1.0"
+        },
+        "artifact_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "project_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "enum": ["image", "sound", "game", "data", "validation"]
+        },
+        "relative_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "media_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "created_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
     "assetGenerationItem": {
       "type": "object",
       "additionalProperties": false,

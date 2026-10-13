@@ -22,6 +22,7 @@ class RequestAnalysisTest(unittest.TestCase):
                         "image_style": "Pixel Art",
                         "mood_style": "Fantasy",
                         "genre": "플랫포머",
+                        "viewpoint": "사이드뷰",
                         "condition": "8방향 공격과 점프가 가능한 게임",
                     }
                 )
@@ -37,6 +38,7 @@ class RequestAnalysisTest(unittest.TestCase):
                     ["8방향 공격", "점프"],
                 )
                 self.assertEqual(logic["genre"], "플랫포머")
+                self.assertEqual(logic["viewpoint"], "사이드뷰")
                 self.assertEqual(len(logic["criteria"]), 4)
 
     def test_custom_image_is_imported_as_artifact(self) -> None:
@@ -52,6 +54,7 @@ class RequestAnalysisTest(unittest.TestCase):
                         "image_style": "Custom",
                         "mood_style": "Cyberpunk",
                         "genre": "뱀서류",
+                        "viewpoint": "탑다운",
                         "condition": "자동 공격으로 성장하는 게임",
                         "custom_image_path": str(source),
                     }

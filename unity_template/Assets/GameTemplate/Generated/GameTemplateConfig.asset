@@ -12,9 +12,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: a0000000000000000000000000000003, type: 3}
   m_Name: GameTemplateConfig
   m_EditorClassIdentifier: TeamIdle.GameTemplate.Runtime::TeamIdle.GameTemplate.Core.GameTemplateConfig
-  contractVersion: 3.0.0
+  contractVersion: 3.1.0
   gameTitle: Generated 2D Game
   genre: Unassigned
+  viewpoint: Unassigned
   entryScene: Assets/Scenes/Bootstrap.unity
   selectedModules:
   - game_bootstrap

@@ -23,6 +23,8 @@ services:
       - 플랫포머
       - --mood-style
       - Fantasy
+      - --viewpoint
+      - 사이드뷰
       - --condition
       - 공격과 8방향 이동이 가능한 게임
 

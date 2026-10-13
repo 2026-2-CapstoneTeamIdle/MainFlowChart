@@ -70,6 +70,7 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
         "contract_version": CONTRACT_VERSION,
         "logic_analysis_id": "logic-analysis",
         "genre": request["genre"],
+        "viewpoint": request["viewpoint"],
         "mood_style": request["mood_style"],
         "core_loop": CORE_LOOPS[request["genre"]],
         "features": analysis["features"],

@@ -32,5 +32,5 @@ def health() -> dict[str, str]:
         "service": "main-flow-chart-local-web",
         "status": "ok",
         "workflow": "not_connected",
-        "contract_version": "3.0.0",
+        "contract_version": "3.1.0",
     }

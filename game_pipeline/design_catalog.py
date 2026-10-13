@@ -18,6 +18,7 @@ from mainflow.contracts import (
     GameLogicDesign,
     GameSpec,
     GenreProfile,
+    Viewpoint,
 )
 
 COMMON_MODULES = [
@@ -85,6 +86,8 @@ GENRE_ALIASES: dict[str, GenreProfile] = {
     "뱀서류": "SurvivorLike",
 }
 
+SUPPORTED_VIEWPOINTS: set[str] = {"사이드뷰", "탑다운", "쿼터뷰", "고정 화면"}
+
 
 def _feature(feature_id: str, description: str) -> GameFeature:
     return {"feature_id": feature_id, "description": description, "required": True}
@@ -112,6 +115,7 @@ GENRE_PRESETS: dict[GenreProfile, GameSpec] = {
     "SurvivorLike": {
         "title": "Survivor-like Prototype",
         "genre": "SurvivorLike",
+        "viewpoint": "탑다운",
         "features": [
             _feature("player_movement", "플레이어가 8방향으로 이동한다."),
             _feature("enemy_wave", "적이 지속적으로 생성되어 플레이어를 추적한다."),
@@ -147,6 +151,7 @@ GENRE_PRESETS: dict[GenreProfile, GameSpec] = {
     "Platformer": {
         "title": "Platformer Prototype",
         "genre": "Platformer",
+        "viewpoint": "사이드뷰",
         "features": [
             _feature("side_scroll_movement", "플레이어가 좌우로 이동하고 점프한다."),
             _feature("platform_collision", "바닥과 발판에 충돌하고 낙하를 처리한다."),
@@ -173,6 +178,7 @@ GENRE_PRESETS: dict[GenreProfile, GameSpec] = {
     "TowerDefense": {
         "title": "Tower Defense Prototype",
         "genre": "TowerDefense",
+        "viewpoint": "탑다운",
         "features": [
             _feature("enemy_waves", "적 웨이브가 경로를 따라 순차적으로 등장한다."),
             _feature("tower_attack", "타워가 범위 내 적을 자동으로 공격한다."),
@@ -201,6 +207,7 @@ GENRE_PRESETS: dict[GenreProfile, GameSpec] = {
     "CardGame": {
         "title": "Card Game Prototype",
         "genre": "CardGame",
+        "viewpoint": "고정 화면",
         "features": [
             _feature("deck_and_hand", "덱을 섞고 카드를 뽑아 손패를 구성한다."),
             _feature("turn_progression", "플레이어와 상대의 턴을 교대한다."),
@@ -222,6 +229,7 @@ GENRE_PRESETS: dict[GenreProfile, GameSpec] = {
     "VisualNovel": {
         "title": "Visual Novel Prototype",
         "genre": "VisualNovel",
+        "viewpoint": "고정 화면",
         "features": [
             _feature("dialogue_sequence", "화자와 대사를 순서대로 표시한다."),
             _feature("choice_branch", "선택에 따라 시나리오와 상태가 분기된다."),
@@ -250,6 +258,7 @@ GENRE_PRESETS: dict[GenreProfile, GameSpec] = {
     "RaisingSimulation": {
         "title": "Raising Simulation Prototype",
         "genre": "RaisingSimulation",
+        "viewpoint": "고정 화면",
         "features": [
             _feature("calendar_turn", "행동 선택 후 날짜 또는 턴이 진행된다."),
             _feature("training_stats", "훈련·공부·휴식으로 능력치와 피로도가 변한다."),
@@ -396,6 +405,10 @@ def normalize_game_spec(
     if target_engine != "Unity":
         raise ValueError("The game pipeline currently supports only Unity")
 
+    viewpoint = override.get("viewpoint", preset["viewpoint"])
+    if viewpoint not in SUPPORTED_VIEWPOINTS:
+        raise ValueError(f"Unsupported game_spec.viewpoint: {viewpoint}")
+
     controls_value = override.get("controls", {})
     if not isinstance(controls_value, Mapping) or not all(
         isinstance(key, str) and isinstance(value, str) for key, value in controls_value.items()
@@ -405,6 +418,7 @@ def normalize_game_spec(
     return {
         "title": title,
         "genre": profile,
+        "viewpoint": cast(Viewpoint, viewpoint),
         "features": _normalize_features(override.get("features"), preset["features"]),
         "mechanics": _string_list(
             override.get("mechanics"),
