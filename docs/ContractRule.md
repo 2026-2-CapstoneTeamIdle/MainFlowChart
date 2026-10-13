@@ -107,6 +107,21 @@ Analysis 구현은 알려진 기능 표현을 규칙 기반으로 추출하고, 
 | `apply_assets_to_game` | 세 draft와 이미지·사운드 검증 결과 | `integrated_game` | 통합 게임 |
 | `final_validation` | `logic_analysis`, 통합 게임 | `final_validation_result` | 최종 검증 결과 |
 
+### `validate_game` 실행 모드
+
+`validate_game`은 Unity 프로젝트 구조, 계약 버전, 장르·시점·스타일 문맥, 선택 모듈과
+이미지·사운드 `asset_id` 일관성을 항상 검사한다. Unity Editor를 사용할 수 있으면 Batch Mode로
+C# 컴파일, 전체 모듈 부착, Bootstrap 씬 조립까지 검사하고 로그를
+`validation/unity_validation.log`에 저장한다.
+
+- `MAINFLOW_UNITY_VALIDATION_MODE=auto`: 기본값. 프로젝트 버전에 맞는 Unity를 찾아 실행하고,
+  설치되지 않았으면 정적 검증 통과와 함께 경고를 기록한다.
+- `MAINFLOW_UNITY_VALIDATION_MODE=required`: Unity 실행이 불가능하거나 배치 검증이 실패하면
+  게임 검증을 실패 처리한다.
+- `MAINFLOW_UNITY_VALIDATION_MODE=static`: Unity를 실행하지 않고 정적 검사만 수행한다.
+- `UNITY_EDITOR_PATH`: 자동 탐색 대신 사용할 Unity 실행 파일 경로다.
+- `MAINFLOW_UNITY_VALIDATION_TIMEOUT_SECONDS`: Unity Batch Mode 제한 시간이며 기본값은 300초다.
+
 ## 변경 체크리스트
 
 - `contracts.py`의 payload, State, Agent I/O를 함께 수정한다.

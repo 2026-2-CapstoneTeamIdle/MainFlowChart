@@ -59,4 +59,9 @@ Play 모드의 왼쪽 테스트 HUD에서는 장르에 따라 이동·점프, �
 3. 필요하면 `Tools > Team IDLE > Rebuild Bootstrap Scene`을 실행한다.
 4. Play를 눌러 Console의 `UNITY_TEMPLATE_READY` 메시지를 확인한다.
 
+파이프라인의 `validate_game`은 Unity 버전을 `ProjectVersion.txt`에서 읽고 같은 버전의 Editor를
+찾아 `TemplateProjectBuilder.BuildForBatch`를 실행한다. 배치 검증은 모든 모듈이 실제 컴포넌트로
+부착되는지, 장르별 씬 구조가 생성되는지 확인하고 `UNITY_MODULE_CATALOG_OK`,
+`UNITY_SCENE_ASSEMBLY_OK`, `UNITY_TEMPLATE_BUILD_OK` 로그를 모두 요구한다.
+
 `Library`, `Temp`, `Logs`, 빌드 결과는 생성 파일이므로 Git에 포함하지 않는다. 파이프라인 생성기는 이 템플릿을 복사한 후 `GameTemplateConfig`와 모듈 프리팹을 요구사항에 맞게 구성한다.

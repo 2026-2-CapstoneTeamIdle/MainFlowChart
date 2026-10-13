@@ -55,6 +55,7 @@ class UnityTemplateTest(unittest.TestCase):
 
         self.assertIn("PrefabSceneAssembler.Assemble", builder)
         self.assertIn("ValidateCurrentSceneForBatch", builder)
+        self.assertIn("ModuleComponentCatalog.ValidateForBatch", builder)
         for genre in (
             "Platformer",
             "TowerDefense",
