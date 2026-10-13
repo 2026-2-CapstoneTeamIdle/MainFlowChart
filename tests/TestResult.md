@@ -12,7 +12,8 @@
 ## Workflow mock 결과
 
 입력은 `Pixel Art`, `Fantasy`, `플랫포머`, `공격과 8방향 이동이 가능한 게임`을 사용했다.
-`parse_input → analysis → logic_analysis`를 거친 뒤 이미지·게임·사운드 생성이 병렬로 실행됐다.
+`parse_input → analysis → logic_analysis → design_game_logic`에서 Unity 설계와 이미지·사운드
+요청 JSON을 만든 뒤 이미지 생성·게임 검증·사운드 생성이 병렬로 실행됐다.
 
 | 측정 항목 | 결과 |
 |---|---:|

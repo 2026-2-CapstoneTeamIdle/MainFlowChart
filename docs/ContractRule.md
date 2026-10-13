@@ -53,12 +53,24 @@ Analysis 구현은 알려진 기능 표현을 규칙 기반으로 추출하고, 
 
 - `title`, `genre`, `features`, `mechanics`, `controls`
 - `win_conditions`, `lose_conditions`, `target_engine`
-- `asset_requirements`: 이미지·사운드 생성 노드와 공유하는 에셋 요구사항
+- `asset_requirements`: 게임 설계가 이미지·사운드 요청 JSON으로 분리하는 에셋 요구사항
 - `asset_id`: 한 워크플로 안에서 중복되지 않는 불투명 ID. 문자열을 분석해 종류를 추론하지 않는다.
 - `asset_type`: `image | sound`
 - `purpose`, `description`, `required`: 용도, 생성 설명, 필수 여부
-- `asset_id`는 병렬 분기 전에 한 번 정하고 이미지·게임·사운드 노드가 그대로 사용한다.
+- `asset_id`는 게임 설계에서 한 번 정하고 이미지·사운드 생성 및 Unity 적용 단계가 그대로 사용한다.
 - 상세 JSON 규격의 기준은 [`schemas/game_spec.schema.json`](../schemas/game_spec.schema.json)이다.
+
+### `AssetGenerationRequest`
+
+`design_game_logic`은 Unity 프로젝트에 필요한 에셋을 이미지와 사운드 요청으로 분리한다.
+
+- 공통: `request_id`, `source_design_id`, `game_title`, `genre`, `asset_type`
+- 생성 문맥: `creative_style`, `mood_style`, `output_directory`
+- `assets`: `asset_id`, 용도, 설명, 필수 여부, 권장 파일명, `unity_binding_key`
+- 생성 Flow는 `asset_id`와 `unity_binding_key`를 변경하지 않고 결과 draft에 반환한다.
+- 같은 JSON은 workspace와 생성된 Unity 프로젝트의 `AssetRequests/` 양쪽에 저장한다.
+- 기계 판독 스키마는
+  [`schemas/asset_generation_request.schema.json`](../schemas/asset_generation_request.schema.json)이다.
 
 ### `LogicAnalysis`
 
@@ -78,9 +90,9 @@ Analysis 구현은 알려진 기능 표현을 규칙 기반으로 추출하고, 
 | `parse_input` | 사용자 입력 | `project_id`, `parsed_request` | `data/parsed_request.json`, 조건부 Custom 이미지 |
 | `analysis` | `project_id`, `parsed_request` | `analysis` | `data/analysis.json` |
 | `logic_analysis` | `project_id`, `parsed_request`, `analysis` | `logic_analysis` | `data/logic_analysis.json` |
-| `generate_image` | 위 세 참조와 `project_id` | `image_draft` | `generated/images/image_draft.json` |
-| `design_game_logic` | 위 세 참조와 `project_id` | `game_logic_draft` | `game/game_logic_draft.json` |
-| `generate_sound` | 위 세 참조와 `project_id` | `sound_draft` | `generated/sounds/sound_draft.json` |
+| `design_game_logic` | 위 세 참조와 `project_id` | 게임 draft, 이미지·사운드 요청 참조 | 설계 JSON, `game/asset_requests/*.json`, Unity 프로젝트, ZIP |
+| `generate_image` | 분석 참조와 `image_asset_request` | `image_draft` | `generated/images/image_draft.json` |
+| `generate_sound` | 분석 참조와 `sound_asset_request` | `sound_draft` | `generated/sounds/sound_draft.json` |
 | `validate_game` | `parsed_request`, `logic_analysis`, 게임 draft | `game_validation_result` | validation 결과 |
 | `create_asset_validation_spec` | 요청, 게임 검증 결과 | `asset_validation_spec` | validation 기준 |
 | `validate_image` | 요청, 이미지 draft, 에셋 기준 | `image_validation_result` | validation 결과 |

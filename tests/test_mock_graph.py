@@ -54,15 +54,27 @@ NODE_IO: dict[str, tuple[set[str], set[str]]] = {
         {"logic_analysis"},
     ),
     "generate_image": (
-        {"project_id", "parsed_request", "analysis", "logic_analysis"},
+        {
+            "project_id",
+            "parsed_request",
+            "analysis",
+            "logic_analysis",
+            "image_asset_request",
+        },
         {"image_draft"},
     ),
     "design_game_logic": (
         {"project_id", "parsed_request", "analysis", "logic_analysis"},
-        {"game_logic_draft"},
+        {"game_logic_draft", "image_asset_request", "sound_asset_request"},
     ),
     "generate_sound": (
-        {"project_id", "parsed_request", "analysis", "logic_analysis"},
+        {
+            "project_id",
+            "parsed_request",
+            "analysis",
+            "logic_analysis",
+            "sound_asset_request",
+        },
         {"sound_draft"},
     ),
     "validate_game": (
@@ -193,6 +205,7 @@ def run_mock_graph(runtime: MockRuntime) -> tuple[dict[str, Any], dict[str, Any]
         ("parse_input", mock_parse_input_node),
         ("analysis", mock_analysis_node),
         ("logic_analysis", mock_logic_analysis_node),
+        ("design_game_logic", mock_design_game_logic_node),
     ]:
         state.update(execute(name, function, dict(state)).output)
 
@@ -207,10 +220,10 @@ def run_mock_graph(runtime: MockRuntime) -> tuple[dict[str, Any], dict[str, Any]
                 mock_generate_image_node,
                 dict(state),
             ),
-            "design_game_logic": executor.submit(
+            "validate_game": executor.submit(
                 execute,
-                "design_game_logic",
-                mock_design_game_logic_node,
+                "validate_game",
+                mock_validate_game_node,
                 dict(state),
             ),
             "generate_sound": executor.submit(
@@ -221,9 +234,7 @@ def run_mock_graph(runtime: MockRuntime) -> tuple[dict[str, Any], dict[str, Any]
             ),
         }
 
-        game_execution = generation_futures["design_game_logic"].result()
-        state.update(game_execution.output)
-        state.update(execute("validate_game", mock_validate_game_node, dict(state)).output)
+        state.update(generation_futures["validate_game"].result().output)
         state.update(
             execute(
                 "create_asset_validation_spec",
@@ -260,7 +271,7 @@ def run_mock_graph(runtime: MockRuntime) -> tuple[dict[str, Any], dict[str, Any]
 
     workflow_wall_ms = (perf_counter_ns() - flow_started_ns) / 1_000_000
     sequential_sum_ms = sum(item.elapsed_ms for item in measurements.values())
-    generation_nodes = ["generate_image", "design_game_logic", "generate_sound"]
+    generation_nodes = ["generate_image", "validate_game", "generate_sound"]
     validation_nodes = ["validate_image", "validate_sound"]
     metrics = {
         "workflow_wall_ms": workflow_wall_ms,
@@ -336,9 +347,9 @@ def build_mock_langgraph(runtime: MockRuntime):
     graph.add_edge("user_input", "parse_input")
     graph.add_edge("parse_input", "analysis")
     graph.add_edge("analysis", "logic_analysis")
-    graph.add_edge("logic_analysis", "generate_image")
     graph.add_edge("logic_analysis", "design_game_logic")
-    graph.add_edge("logic_analysis", "generate_sound")
+    graph.add_edge("design_game_logic", "generate_image")
+    graph.add_edge("design_game_logic", "generate_sound")
     graph.add_edge("design_game_logic", "validate_game")
     graph.add_edge("validate_game", "create_asset_validation_spec")
     graph.add_edge(
@@ -426,7 +437,7 @@ class MockGraphTest(unittest.TestCase):
             }
             generation_threads = {
                 node_metrics[name]["thread"]
-                for name in ["generate_image", "design_game_logic", "generate_sound"]
+                for name in ["generate_image", "validate_game", "generate_sound"]
             }
             validation_threads = {
                 node_metrics[name]["thread"] for name in ["validate_image", "validate_sound"]
@@ -441,7 +452,9 @@ class MockGraphTest(unittest.TestCase):
                 metrics["asset_validation_parallel_span_ms"],
                 metrics["asset_validation_sequential_sum_ms"] * 0.80,
             )
-            self.assertGreater(metrics["estimated_parallel_speedup"], 1.5)
+            # Game design is intentionally sequential because it produces the two
+            # asset-request contracts consumed by the parallel branches.
+            self.assertGreater(metrics["estimated_parallel_speedup"], 1.35)
 
             print("MOCK_GRAPH_METRICS=" + json.dumps(metrics, ensure_ascii=False))
 

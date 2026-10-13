@@ -30,7 +30,7 @@ CORE_LOOPS = {
 # - 입력 파일: data/parsed_request.json, data/analysis.json
 # - 출력 State: logic_analysis(ArtifactReference)
 # - 출력 파일: data/logic_analysis.json
-# - 다음 Node: generate_image, design_game_logic, generate_sound (병렬)
+# - 다음 Node: design_game_logic
 def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOutput:
     """Create one authoritative requirement payload for downstream agents."""
     log("분석 결과를 공통 게임 로직과 최종 검증 기준으로 변환합니다.")

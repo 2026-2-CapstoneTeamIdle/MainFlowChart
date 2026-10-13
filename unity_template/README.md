@@ -17,6 +17,41 @@
 - `GameContext`: 설정과 검증 수집기를 모듈에 전달한다.
 - `ValidationProbe`: 자동 검증에서 읽을 수 있는 구조화된 실행 이벤트를 수집한다.
 
+## 제공 기능 모듈
+
+- 공통: 상태 저장소, 이벤트 규칙, 입력, 저장, 씬 전환, 에셋·오디오·UI, 체력·투사체·재화
+- 플랫포머: 좌우 이동·점프, 수집물, 스테이지 목표
+- 타워 디펜스: 웨이브 생성, 경로 이동, 타워 자동 공격, 기지 체력
+- 카드: 덱·손패·버림패, 턴, 카드 자원, 카드 효과 실행
+- 비주얼 노벨: 대화 진행, 플래그, 선택지 분기, 엔딩 판정
+- 육성 시뮬레이션: 능력치, 날짜·턴, 활동, 일정 이벤트, 결과 엔딩
+- 뱀서류: 8방향 이동, 적 생성·추적, 자동 투사체 공격, 경험치, 등급별 3개 강화 선택지
+
+`game_logic_design.json`의 `selected_modules` ID는
+`Editor/ModuleComponentCatalog.cs`에서 실제 `MonoBehaviour` 타입으로 변환된다. 프로젝트 생성기는
+게임별 프리팹·수치·에셋 참조를 주입하고, 공통 구현은 이 템플릿에서 재사용한다.
+
+## 자동 생성 프로젝트
+
+`UnityProjectGenerator`는 이 템플릿을 `workspace/{project_id}/game/unity_project`로 복사하고
+`GameTemplateConfig.asset`, `GameLogicDesign.json`, `GenerationManifest.json`을 생성한다. 생성된
+프로젝트에는 `GenerationRequest.json`이 포함되며, Unity에서 처음 열면
+`TemplateProjectBuilder`가 요청을 감지한다. 이어서 `PrefabSceneAssembler`가 선택된 모듈을
+Bootstrap 씬에 배치하고 장르별 Environment, Entities, UI 계층과 테스트용 prefab을 생성한다.
+이미지 Agent의 최종 에셋을 적용하기 전에는 자동 생성된 단색 placeholder sprite가 사용된다.
+
+Play 모드의 왼쪽 테스트 HUD에서는 장르에 따라 이동·점프, 웨이브 시작, 카드 사용, 대화 진행,
+육성 행동, 경험치 및 강화 선택을 확인할 수 있다. 생성 결과와 prefab 목록은
+`Assets/GameTemplate/Generated/SceneAssemblyReport.json`에 기록된다.
+
+이미지·사운드 담당 Flow가 읽을 요청 목록은 다음 파일에도 포함된다.
+
+- `Assets/GameTemplate/Generated/AssetRequests/image_asset_request.json`
+- `Assets/GameTemplate/Generated/AssetRequests/sound_asset_request.json`
+
+각 결과물은 요청의 `asset_id`와 `unity_binding_key`를 유지해야 후속 에셋 적용 단계에서 동일한
+씬 슬롯을 찾을 수 있다.
+
 ## 사용 방법
 
 1. Unity Hub에서 이 디렉터리를 프로젝트로 추가한다.

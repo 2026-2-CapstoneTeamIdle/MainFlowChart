@@ -22,11 +22,12 @@
     },
     "genre": {
       "enum": [
+        "Platformer",
+        "TowerDefense",
+        "CardGame",
         "SurvivorLike",
-        "Adventure",
         "VisualNovel",
-        "RaisingSimulation",
-        "LifeSimulation"
+        "RaisingSimulation"
       ]
     },
     "features": {

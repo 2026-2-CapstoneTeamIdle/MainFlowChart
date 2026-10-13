@@ -22,11 +22,12 @@ GameGenre = Literal[
     "뱀서류",
 ]
 GenreProfile = Literal[
+    "Platformer",
+    "TowerDefense",
+    "CardGame",
     "SurvivorLike",
-    "Adventure",
     "VisualNovel",
     "RaisingSimulation",
-    "LifeSimulation",
 ]
 AssetType = Literal["image", "sound"]
 DraftStatus = Literal["pending", "generated", "failed"]
@@ -65,6 +66,24 @@ class AssetRequirement(TypedDict):
     purpose: str
     description: str
     required: bool
+
+
+class AssetGenerationItem(AssetRequirement):
+    suggested_filename: str
+    unity_binding_key: str
+
+
+class AssetGenerationRequest(TypedDict):
+    contract_version: ContractVersion
+    request_id: str
+    source_design_id: str
+    game_title: str
+    genre: GenreProfile
+    asset_type: AssetType
+    creative_style: str
+    mood_style: MoodStyle
+    output_directory: str
+    assets: list[AssetGenerationItem]
 
 
 class GameSpec(TypedDict):
@@ -253,6 +272,8 @@ class WorkflowState(TypedDict, total=False):
     parsed_request: ArtifactReference
     analysis: ArtifactReference
     logic_analysis: ArtifactReference
+    image_asset_request: ArtifactReference
+    sound_asset_request: ArtifactReference
     image_draft: ArtifactReference
     game_logic_draft: ArtifactReference
     sound_draft: ArtifactReference
@@ -322,6 +343,7 @@ class GenerateImageAgentInput(TypedDict):
     parsed_request: ArtifactReference
     analysis: ArtifactReference
     logic_analysis: ArtifactReference
+    image_asset_request: ArtifactReference
 
 
 class GenerateImageAgentOutput(TypedDict):
@@ -337,6 +359,8 @@ class DesignGameLogicAgentInput(TypedDict):
 
 class DesignGameLogicAgentOutput(TypedDict):
     game_logic_draft: ArtifactReference
+    image_asset_request: ArtifactReference
+    sound_asset_request: ArtifactReference
 
 
 class GenerateSoundAgentInput(TypedDict):
@@ -344,6 +368,7 @@ class GenerateSoundAgentInput(TypedDict):
     parsed_request: ArtifactReference
     analysis: ArtifactReference
     logic_analysis: ArtifactReference
+    sound_asset_request: ArtifactReference
 
 
 class GenerateSoundAgentOutput(TypedDict):

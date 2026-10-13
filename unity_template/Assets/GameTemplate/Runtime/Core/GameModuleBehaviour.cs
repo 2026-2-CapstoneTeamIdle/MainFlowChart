@@ -8,6 +8,8 @@ namespace TeamIdle.GameTemplate.Core
 
         public bool IsInitialized { get; private set; }
 
+        protected GameContext Context { get; private set; }
+
         public void Initialize(GameContext context)
         {
             if (IsInitialized)
@@ -15,6 +17,7 @@ namespace TeamIdle.GameTemplate.Core
                 return;
             }
 
+            Context = context;
             OnInitialize(context);
             IsInitialized = true;
         }
@@ -27,6 +30,7 @@ namespace TeamIdle.GameTemplate.Core
             }
 
             OnShutdown();
+            Context = null;
             IsInitialized = false;
         }
 

@@ -21,6 +21,7 @@ from mainflow.contracts import (
     AnalysisResult,
     ApplyAssetsAgentInput,
     ApplyAssetsAgentOutput,
+    AssetGenerationRequest,
     AssetValidationSpec,
     AssetValidationSpecAgentInput,
     AssetValidationSpecAgentOutput,
@@ -192,6 +193,10 @@ def mock_generate_image_node(
     request = cast(ParsedRequest, runtime.manager.read_json(state["parsed_request"]))
     cast(AnalysisResult, runtime.manager.read_json(state["analysis"]))
     cast(LogicAnalysis, runtime.manager.read_json(state["logic_analysis"]))
+    asset_request = cast(
+        AssetGenerationRequest,
+        runtime.manager.read_json(state["image_asset_request"]),
+    )
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">'
         '<rect width="64" height="64" fill="#20283d"/>'
@@ -213,7 +218,7 @@ def mock_generate_image_node(
         "status": "generated",
         "assets": [
             {
-                "asset_id": "player-image",
+                "asset_id": asset_request["assets"][0]["asset_id"],
                 "name": "Mock Player",
                 "artifact": image_reference,
                 "file_format": "svg",
@@ -263,6 +268,50 @@ def mock_design_game_logic_node(
         "required_sound_asset_ids": ["theme-sound"],
         "notes": [],
     }
+    image_request: AssetGenerationRequest = {
+        "contract_version": CONTRACT_VERSION,
+        "request_id": "mock-image-assets",
+        "source_design_id": "mock-design",
+        "game_title": "Mock Game",
+        "genre": "SurvivorLike",
+        "asset_type": "image",
+        "creative_style": request["image_style"],
+        "mood_style": request["mood_style"],
+        "output_directory": "generated/images",
+        "assets": [
+            {
+                "asset_id": "player-image",
+                "asset_type": "image",
+                "purpose": "player",
+                "description": "Mock player image",
+                "required": True,
+                "suggested_filename": "player-image.png",
+                "unity_binding_key": "asset_registry:player-image",
+            }
+        ],
+    }
+    sound_request: AssetGenerationRequest = {
+        "contract_version": CONTRACT_VERSION,
+        "request_id": "mock-sound-assets",
+        "source_design_id": "mock-design",
+        "game_title": "Mock Game",
+        "genre": "SurvivorLike",
+        "asset_type": "sound",
+        "creative_style": request["mood_style"],
+        "mood_style": request["mood_style"],
+        "output_directory": "generated/sounds",
+        "assets": [
+            {
+                "asset_id": "theme-sound",
+                "asset_type": "sound",
+                "purpose": "bgm",
+                "description": "Mock theme sound",
+                "required": True,
+                "suggested_filename": "theme-sound.wav",
+                "unity_binding_key": "asset_registry:theme-sound",
+            }
+        ],
+    }
     return {
         "game_logic_draft": runtime.manager.write_json(
             state["project_id"],
@@ -270,7 +319,21 @@ def mock_design_game_logic_node(
             "game_logic_draft.json",
             draft,
             producer="design_game_logic",
-        )
+        ),
+        "image_asset_request": runtime.manager.write_json(
+            state["project_id"],
+            "game",
+            "asset_requests/image_asset_request.json",
+            image_request,
+            producer="design_game_logic",
+        ),
+        "sound_asset_request": runtime.manager.write_json(
+            state["project_id"],
+            "game",
+            "asset_requests/sound_asset_request.json",
+            sound_request,
+            producer="design_game_logic",
+        ),
     }
 
 
@@ -296,6 +359,10 @@ def mock_generate_sound_node(
     request = cast(ParsedRequest, runtime.manager.read_json(state["parsed_request"]))
     cast(AnalysisResult, runtime.manager.read_json(state["analysis"]))
     cast(LogicAnalysis, runtime.manager.read_json(state["logic_analysis"]))
+    asset_request = cast(
+        AssetGenerationRequest,
+        runtime.manager.read_json(state["sound_asset_request"]),
+    )
     sound_reference = runtime.manager.write_bytes(
         state["project_id"],
         "sound",
@@ -310,7 +377,7 @@ def mock_generate_sound_node(
         "status": "generated",
         "assets": [
             {
-                "asset_id": "theme-sound",
+                "asset_id": asset_request["assets"][0]["asset_id"],
                 "name": "Mock Theme",
                 "artifact": sound_reference,
                 "file_format": "wav",

@@ -1,8 +1,10 @@
 # MainFlowChart
 
-사용자의 이미지 스타일, 분위기 스타일, 게임 장르, 한 문장 조건을 분석한 뒤 이미지·게임
-로직·사운드 Agent를 병렬 실행하고 결과를 검증·통합하는 LangGraph 기반 게임 제작 파이프라인이다.
-현재 생성 Node에는 실제 AI API와 Unity 연동 전 단계의 placeholder가 포함돼 있다.
+사용자의 이미지 스타일, 분위기 스타일, 게임 장르, 한 문장 조건을 분석한 뒤 게임을 먼저
+설계한다. 설계에서 만든 이미지·사운드 요청 JSON을 각 생성 Agent에 전달하고 결과를
+검증·통합하는 LangGraph 기반 게임 제작 파이프라인이다.
+게임 로직 Node는 장르별 모듈을 조합하고 prefab·씬 placeholder를 배치한 Unity 프로젝트와 ZIP을 생성한다. 이미지·사운드 생성
+Node에는 실제 AI API 연동 전 단계의 placeholder가 포함돼 있다.
 
 ## 구조
 
@@ -100,11 +102,11 @@ flowchart TD
     Parse --> Analysis[조건 기능 분석]
     Analysis --> LogicAnalysis[게임 로직 분석]
 
-    LogicAnalysis --> ImageGen[이미지 생성]
     LogicAnalysis --> GameDesign[게임 로직 설계]
-    LogicAnalysis --> SoundGen[사운드 생성]
 
+    GameDesign --> ImageGen[이미지 생성]
     GameDesign --> GameValidate[게임 검증]
+    GameDesign --> SoundGen[사운드 생성]
     GameValidate --> AssetSpec[이미지/사운드 검증서 생성]
     ImageGen --> ImageValidate[이미지 검증]
     AssetSpec --> ImageValidate

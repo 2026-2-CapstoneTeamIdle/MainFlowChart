@@ -12,6 +12,28 @@ namespace TeamIdle.GameTemplate.Editor
     {
         public const string ScenePath = "Assets/Scenes/Bootstrap.unity";
         public const string ConfigPath = "Assets/GameTemplate/Generated/GameTemplateConfig.asset";
+        public const string GenerationRequestPath =
+            "Assets/GameTemplate/Generated/GenerationRequest.json";
+
+        [InitializeOnLoadMethod]
+        private static void ScheduleGeneratedProjectBuild()
+        {
+            if (!File.Exists(GenerationRequestPath))
+            {
+                return;
+            }
+
+            EditorApplication.delayCall += () =>
+            {
+                if (!File.Exists(GenerationRequestPath))
+                {
+                    return;
+                }
+
+                BuildTemplate();
+                Debug.Log("UNITY_GENERATED_PROJECT_READY");
+            };
+        }
 
         [MenuItem("Tools/Team IDLE/Rebuild Bootstrap Scene")]
         public static void BuildFromMenu()
@@ -23,6 +45,8 @@ namespace TeamIdle.GameTemplate.Editor
         public static void BuildForBatch()
         {
             BuildTemplate();
+            var config = AssetDatabase.LoadAssetAtPath<GameTemplateConfig>(ConfigPath);
+            PrefabSceneAssembler.ValidateCurrentSceneForBatch(config);
             Debug.Log("UNITY_TEMPLATE_BUILD_OK");
         }
 
@@ -43,13 +67,11 @@ namespace TeamIdle.GameTemplate.Editor
                 AssetDatabase.CreateAsset(config, ConfigPath);
             }
 
-            config.Configure(
-                "3.0.0",
-                "Generated 2D Game",
-                "Unassigned",
-                ScenePath,
-                new[] { "game_bootstrap", "validation_probe" }
-            );
+            var configuredModules =
+                config.SelectedModules.Count > 0
+                    ? config.SelectedModules
+                    : new[] { "game_bootstrap", "validation_probe" };
+            config.Configure("3.0.0", config.GameTitle, config.Genre, ScenePath, configuredModules);
             EditorUtility.SetDirty(config);
 
             var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
@@ -60,6 +82,11 @@ namespace TeamIdle.GameTemplate.Editor
             var bootstrap = bootstrapObject.AddComponent<GameBootstrap>();
             var moduleRoot = new GameObject("Modules").transform;
             moduleRoot.SetParent(bootstrapObject.transform, false);
+            ModuleComponentCatalog.AddConfiguredModules(
+                moduleRoot.gameObject,
+                config.SelectedModules,
+                validationProbe
+            );
 
             var serializedBootstrap = new SerializedObject(bootstrap);
             serializedBootstrap.FindProperty("config").objectReferenceValue = config;
@@ -77,6 +104,8 @@ namespace TeamIdle.GameTemplate.Editor
             camera.clearFlags = CameraClearFlags.SolidColor;
             camera.backgroundColor = new Color(0.035f, 0.04f, 0.055f, 1f);
 
+            PrefabSceneAssembler.Assemble(config, moduleRoot, camera, validationProbe);
+
             if (!EditorSceneManager.SaveScene(scene, ScenePath))
             {
                 throw new InvalidOperationException(
@@ -86,6 +115,7 @@ namespace TeamIdle.GameTemplate.Editor
 
             EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(ScenePath, true) };
             AssetDatabase.SaveAssets();
+            AssetDatabase.DeleteAsset(GenerationRequestPath);
             AssetDatabase.Refresh();
         }
 
