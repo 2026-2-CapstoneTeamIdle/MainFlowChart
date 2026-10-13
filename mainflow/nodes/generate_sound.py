@@ -7,9 +7,10 @@ from typing import cast
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
+    AnalysisResult,
     GenerateSoundAgentInput,
     GenerateSoundAgentOutput,
-    InitialFinalValidationSpec,
+    LogicAnalysis,
     ParsedRequest,
     SoundDraft,
 )
@@ -17,10 +18,9 @@ from mainflow.nodes._common import log
 
 
 # Node 계약
-# - 이전 Node: create_initial_final_validation_spec
-# - 입력 State: project_id, parsed_request, initial_final_validation_spec
-# - 입력 파일: data/parsed_request.json,
-#   validation/initial_final_validation_spec.json
+# - 이전 Node: logic_analysis
+# - 입력 State: project_id, parsed_request, analysis, logic_analysis
+# - 입력 파일: data/parsed_request.json, data/analysis.json, data/logic_analysis.json
 # - 출력 State: sound_draft(ArtifactReference)
 # - 출력 파일: generated/sounds/sound_draft.json 및 향후 사운드 에셋
 # - 다음 Node: validate_sound (asset_validation_spec과 합류)
@@ -32,10 +32,8 @@ def generate_sound_node(
 
     manager = ArtifactManager()
     cast(ParsedRequest, manager.read_json(state["parsed_request"]))
-    cast(
-        InitialFinalValidationSpec,
-        manager.read_json(state["initial_final_validation_spec"]),
-    )
+    cast(AnalysisResult, manager.read_json(state["analysis"]))
+    cast(LogicAnalysis, manager.read_json(state["logic_analysis"]))
 
     # TODO: 실제 사운드 생성
     draft: SoundDraft = {

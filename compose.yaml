@@ -20,9 +20,11 @@ services:
       - --image-style
       - Pixel Art
       - --genre
-      - Action
-      - --quality
-      - Medium
+      - 플랫포머
+      - --mood-style
+      - Fantasy
+      - --condition
+      - 공격과 8방향 이동이 가능한 게임
 
   test:
     build:

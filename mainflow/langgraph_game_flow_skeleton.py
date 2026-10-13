@@ -6,13 +6,14 @@ from langgraph.graph import END, START, StateGraph
 
 from mainflow.contracts import WorkflowState
 from mainflow.nodes import (
+    analysis_node,
     apply_assets_to_game_node,
     create_asset_validation_spec_node,
-    create_initial_final_validation_spec_node,
     design_game_logic_node,
     final_validation_node,
     generate_image_node,
     generate_sound_node,
+    logic_analysis_node,
     parse_input_node,
     user_input_node,
     validate_game_node,
@@ -29,10 +30,8 @@ def build_graph():
     graph.add_node("user_input", user_input_node)
     graph.add_node("parse_input", parse_input_node)
 
-    graph.add_node(
-        "create_initial_final_validation_spec",
-        create_initial_final_validation_spec_node,
-    )
+    graph.add_node("analysis", analysis_node)
+    graph.add_node("logic_analysis", logic_analysis_node)
 
     graph.add_node("generate_image", generate_image_node)
     graph.add_node("design_game_logic", design_game_logic_node)
@@ -64,23 +63,21 @@ def build_graph():
     graph.add_edge(START, "user_input")
     graph.add_edge("user_input", "parse_input")
 
-    # 최초 최종 검증서를 먼저 작성
-    graph.add_edge(
-        "parse_input",
-        "create_initial_final_validation_spec",
-    )
+    # Parse the one-sentence condition before the parallel generation branches.
+    graph.add_edge("parse_input", "analysis")
+    graph.add_edge("analysis", "logic_analysis")
 
     # 1. Image / Game / Sound generation in parallel
     graph.add_edge(
-        "create_initial_final_validation_spec",
+        "logic_analysis",
         "generate_image",
     )
     graph.add_edge(
-        "create_initial_final_validation_spec",
+        "logic_analysis",
         "design_game_logic",
     )
     graph.add_edge(
-        "create_initial_final_validation_spec",
+        "logic_analysis",
         "generate_sound",
     )
 
@@ -125,7 +122,7 @@ def build_graph():
         "apply_assets_to_game",
     )
 
-    # 6. Final validation using the initial final validation spec
+    # 6. Final validation using LogicAnalysis criteria
     graph.add_edge(
         "apply_assets_to_game",
         "final_validation",

@@ -23,10 +23,10 @@ workspace/                         # workspace/.gitignore로 내용 제외
 
 | Category | 실제 경로 | 주요 생산자 | 주요 소비자 |
 |---|---|---|---|
-| `image` | `generated/images/` | `generate_image` | `validate_image`, `apply_assets_to_game` |
+| `image` | `generated/images/` | `parse_input`(Custom 참고 이미지), `generate_image` | `generate_image`, `validate_image`, `apply_assets_to_game` |
 | `sound` | `generated/sounds/` | `generate_sound` | `validate_sound`, `apply_assets_to_game` |
 | `game` | `game/` | `design_game_logic`, `apply_assets_to_game` | `validate_game`, `final_validation` |
-| `data` | `data/` | `parse_input` 및 공통 시스템 | 요구사항을 읽는 모든 Agent |
+| `data` | `data/` | `parse_input`, `analysis`, `logic_analysis` 및 공통 시스템 | 요구사항을 읽는 모든 Agent |
 | `validation` | `validation/` | 검증서/검증 Agent | 후속 검증 및 최종 검증 Agent |
 
 `data/artifact_manifest.json`은 `ArtifactManager`가 관리한다. Agent가 직접 편집하면 안 된다.
@@ -52,7 +52,11 @@ request_ref = manager.write_json(
     project_id,
     "data",
     "parsed_request.json",
-    {"contract_version": "2.0.0", "genre": "Action"},
+    {
+        "contract_version": "3.0.0",
+        "genre": "플랫포머",
+        "mood_style": "Fantasy",
+    },
     producer="parse_input",
 )
 
@@ -66,7 +70,7 @@ parsed_request = manager.read_json(request_ref)
 
 ```json
 {
-  "contract_version": "2.0.0",
+  "contract_version": "3.0.0",
   "artifact_id": "image-<uuid>",
   "project_id": "20260926_03",
   "category": "image",
@@ -77,6 +81,25 @@ parsed_request = manager.read_json(request_ref)
   "created_at": "2026-09-26T10:00:00+00:00",
   "producer": "generate_image"
 }
+```
+
+## Custom 이미지 전달
+
+`image_style=Custom`이면 `parse_input`이 외부 PNG/JPG를 다음 위치로 가져온다.
+
+```text
+workspace/{project_id}/generated/images/references/custom_style.{png|jpg|jpeg}
+```
+
+확장자뿐 아니라 PNG/JPEG 파일 signature를 검사한다. `parsed_request.json`에는 원본 절대 경로를
+남기지 않고 해당 파일의 `ArtifactReference`를 `custom_image` 필드에 기록한다. 이미지 Agent는
+이 참조를 `ArtifactManager.read_bytes()`로 읽어 생성 참고 자료로 사용한다.
+
+분석 중간 산출물은 다음 위치에 보관한다.
+
+```text
+workspace/{project_id}/data/analysis.json
+workspace/{project_id}/data/logic_analysis.json
 ```
 
 참조의 `relative_path`를 직접 이어 붙여 읽지 않는다. 항상 `ArtifactManager`의 읽기 메서드를 사용한다.

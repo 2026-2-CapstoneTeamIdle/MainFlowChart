@@ -9,7 +9,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -30,7 +29,7 @@ def repository_files(pattern: str) -> list[str]:
         text=True,
         encoding="utf-8",
     )
-    return [line for line in result.stdout.splitlines() if line]
+    return [line for line in result.stdout.splitlines() if line and (ROOT / line).is_file()]
 
 
 def run(command: list[str]) -> None:
