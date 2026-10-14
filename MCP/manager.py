@@ -103,8 +103,18 @@ class MCPManager:
     async def connect(self) -> AsyncIterator[MCPNodeSession]:
         """Open one reusable connection for an LLM tool-call loop."""
 
-        async with Client(self.server_target) as client:
-            yield MCPNodeSession(self.node_name, client)
+        try:
+            async with Client(self.server_target) as client:
+                yield MCPNodeSession(self.node_name, client)
+        except BaseExceptionGroup as error:
+            single_error: BaseException = error
+            while (
+                isinstance(single_error, BaseExceptionGroup) and len(single_error.exceptions) == 1
+            ):
+                single_error = single_error.exceptions[0]
+            if single_error is not error:
+                raise single_error from None
+            raise
 
     async def tool_definitions(self) -> list[MCPToolDefinition]:
         async with self.connect() as session:

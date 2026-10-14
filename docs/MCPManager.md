@@ -8,11 +8,13 @@
 
 ```text
 LangGraph Node
-  └─ MCPManager(node_name)
-      └─ Streamable HTTP Client
-          └─ mcp-server:8001/mcp
-              └─ ArtifactManager
-                  └─ /app/workspace/{project_id}/...
+  └─ run_node_llm(prompt, provider=...)
+      ├─ Gemini / OpenAI / Local SLM adapter
+      └─ MCPManager(node_name)
+          └─ Streamable HTTP Client
+              └─ mcp-server:8001/mcp
+                  └─ ArtifactManager
+                      └─ /app/workspace/{project_id}/...
 ```
 
 - `MCP/server.py`: 공식 Python MCP SDK v2 기반 Streamable HTTP 서버
@@ -20,6 +22,9 @@ LangGraph Node
 - `MCP/policies.py`: 노드 이름별 도구 허용 목록
 - `MCP/node_context.py`: 기존 Node 본문 수정 없이 실행 중 `MCPManager` 주입
 - `MCP/config.py`: Docker와 로컬 환경 변수 설정
+- `MCP/llm_config.py`: 공급자·모델·endpoint 환경 변수 해석
+- `MCP/llm_providers.py`: Gemini와 OpenAI 호환 API 응답을 공통 형식으로 변환
+- `MCP/llm_runner.py`: LLM Tool 요청을 MCP로 실행하고 결과를 모델에 다시 전달
 
 LangGraph의 Edge와 State 계약은 변경하지 않는다. MCP는 파일 접근 능력을 제공할 뿐이며 Agent
 결과는 계속 기존 `ArtifactReference` 계약으로 전달한다.
@@ -104,34 +109,65 @@ write_project_file
 write_project_text
 ```
 
-## 5. Node에서 LLM에 도구 연결
+## 5. Node에서 LLM과 도구 사용
 
-Graph가 Node를 실행하면 해당 Node 이름의 `MCPManager`가 context에 자동으로 들어간다. 실제 LLM을
-호출하는 Node에서는 다음처럼 사용한다.
+Graph가 Node를 실행하면 해당 Node 이름의 `MCPManager`가 context에 자동으로 들어간다. Node에서는
+공급자별 SDK나 Tool 반복문을 작성하지 않고 `run_node_llm()`만 호출한다.
 
 ```python
-from MCP import get_current_mcp_manager
+from MCP import run_node_llm
 
 
-async def call_agent_llm(messages):
-    manager = get_current_mcp_manager()
-    async with manager.connect() as mcp_session:
-        tools = await mcp_session.openai_tool_definitions()
-
-        # 사용하는 LLM SDK에 messages와 tools를 전달한다.
-        response = await llm_client.create(messages=messages, tools=tools)
-
-        # 모델이 요청한 도구 이름과 arguments를 그대로 실행한다.
-        tool_result = await mcp_session.call_tool(
-            response.tool_name,
-            response.arguments,
-        )
-        return tool_result
+async def analysis_node(state):
+    result = await run_node_llm(
+        prompt=(
+            f"project_id={state['project_id']}의 data/parsed_request.json을 읽고 "
+            "게임 기능을 분석하세요. 필요하면 MCP 파일 도구를 사용하세요."
+        ),
+        system_prompt="게임 요구사항 분석가로 작업하고 JSON만 반환하세요.",
+    )
+    analysis_json = result.text
+    # analysis_json을 contracts.py 형식으로 검증한 뒤 ArtifactManager로 저장한다.
 ```
 
-`tool_definitions()`은 제공자 독립적인 MCP 스키마를 반환하고,
-`openai_tool_definitions()`은 OpenAI 호환 function tool 형식을 반환한다. 실제 Gemini 호출 검증에는
-Google Gen AI SDK를 사용하며 API 키 값은 저장소에 저장하지 않는다.
+`run_node_llm()`은 현재 Node에 허용된 MCP 도구만 모델에 보여 준다. 모델이 Tool을 요청하면 실행기가
+권한을 다시 확인하고 도구를 호출한 다음 결과를 모델에 되돌려 준다. 모델이 최종 텍스트를 반환할
+때까지 이 과정을 반복한다. 반환값 `LLMRunResult`에는 다음 값이 들어 있다.
+
+- `text`: 모델의 최종 출력
+- `provider`, `model`: 실제 사용한 공급자와 모델
+- `turns`: 모델 호출 횟수
+- `tool_calls`: 실행된 도구 이름, 인자, 결과 기록
+
+공급자는 호출할 때 명시적으로 선택할 수 있다.
+
+```python
+gemini_result = await run_node_llm(prompt, provider="gemini")
+openai_result = await run_node_llm(prompt, provider="openai", model="팀 지정 모델")
+local_result = await run_node_llm(prompt, provider="local", model="qwen3:8b")
+```
+
+`provider`를 생략하면 `LLM_{NODE_NAME}_PROVIDER`, `LLM_PROVIDER`, `gemini` 순서로 선택한다. 예를 들어
+Analysis만 OpenAI를 사용하고 나머지는 Gemini를 사용하려면 다음처럼 설정한다.
+
+```powershell
+$env:LLM_PROVIDER = "gemini"
+$env:LLM_ANALYSIS_PROVIDER = "openai"
+$env:LLM_ANALYSIS_MODEL = "팀에서 사용할 OpenAI 모델명"
+```
+
+Local SLM은 Ollama, LM Studio, vLLM처럼 OpenAI Chat Completions와 Function Calling을 지원하는
+endpoint를 대상으로 한다. 사용하는 모델 자체가 Tool Calling을 지원해야 파일 도구를 호출할 수 있다.
+
+LLM을 사용하는 Node는 `async def`여야 한다. 그래프도 `invoke()`가 아니라 `await ainvoke()` 또는
+`astream()`으로 실행해야 한다. LLM을 쓰지 않는 기존 동기 Node는 그대로 둘 수 있다.
+
+LLM 출력은 신뢰하지 말고 반드시 `contracts.py`의 계약으로 검증한다. Node의 공식 결과 파일은 기존과
+동일하게 `ArtifactManager`로 등록하고 `ArtifactReference`를 State에 반환한다. MCP 쓰기 도구는 생성
+중 수정 가능한 작업 파일에만 사용한다.
+
+저수준 제어가 필요한 경우 `MCPToolLLMRunner`에 직접 Provider를 주입할 수 있다. 테스트에서는 이
+방식으로 가짜 Provider를 넣어 실제 API 호출 없이 Tool 반복과 권한을 검증한다.
 
 ## 6. Node별 도구 권한
 
@@ -160,11 +196,34 @@ Google Gen AI SDK를 사용하며 API 키 값은 저장소에 저장하지 않�
 | `MCP_MAX_TEXT_BYTES` | `262144` | 한 번에 읽거나 쓰는 UTF-8 최대 크기 |
 | `MCP_MAX_LIST_ENTRIES` | `200` | 파일 목록 최대 개수 |
 | `MAINFLOW_WORKSPACE` | 저장소의 `workspace/` | 접근 가능한 workspace root |
+| `LLM_PROVIDER` | `gemini` | 전체 Node 기본 공급자: `gemini`, `openai`, `local` |
+| `LLM_MODEL` | 공급자별 기본값 | 전체 Node 기본 모델 재정의 |
+| `LLM_{NODE}_PROVIDER` | 없음 | 특정 Node 공급자 재정의, 예: `LLM_ANALYSIS_PROVIDER` |
+| `LLM_{NODE}_MODEL` | 없음 | 특정 Node 모델 재정의, 예: `LLM_ANALYSIS_MODEL` |
+| `LLM_TIMEOUT_SECONDS` | `120` | OpenAI 호환 HTTP 요청 제한 시간 |
 | `GEMINI_API_KEY` | 없음 | Gemini API 인증 키 |
-| `GEMINI_MODEL` | `gemini-3-flash-preview` | 실통합 검사에 사용할 Gemini 모델 |
+| `GEMINI_MODEL` | `gemini-3-flash-preview` | Gemini 기본 모델 |
+| `OPENAI_API_KEY` | 없음 | OpenAI API 인증 키 |
+| `OPENAI_MODEL` | `gpt-4.1-mini` | OpenAI 기본 모델 |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI 호환 endpoint |
+| `LOCAL_LLM_API_KEY` | 없음 | Local endpoint가 인증을 요구할 때만 사용 |
+| `LOCAL_LLM_MODEL` | `gemma3` | Local SLM 기본 모델 |
+| `LOCAL_LLM_BASE_URL` | `http://127.0.0.1:11434/v1` | Local OpenAI 호환 endpoint |
 
 API 키와 토큰은 MCP 도구 인자, workspace, manifest에 저장하지 않는다. 외부 공개 환경에서는 별도
 인증 계층을 추가해야 하며 현재 Compose 설정은 로컬 개발 전용이다.
+
+Docker의 MainFlow에서 호스트의 Ollama를 호출할 때는 보통 다음 값을 사용한다.
+
+```powershell
+$env:LLM_PROVIDER = "local"
+$env:LOCAL_LLM_BASE_URL = "http://host.docker.internal:11434/v1"
+$env:LOCAL_LLM_MODEL = "qwen3:8b"
+docker compose run --rm mainflow
+```
+
+MCP로 읽은 파일 내용은 모델 호출 입력에 포함되므로 Gemini/OpenAI를 선택하면 해당 내용이 외부
+API로 전송된다. 외부 전송이 불가능한 파일은 Local SLM을 사용하거나 프롬프트에서 제외해야 한다.
 
 ## 8. 테스트
 
@@ -172,9 +231,9 @@ API 키와 토큰은 MCP 도구 인자, workspace, manifest에 저장하지 않�
 docker compose --profile test run --rm test
 ```
 
-테스트는 인프로세스 MCP 연결로 도구 검색·호출, Node 권한 필터, 경로 이탈 방지, 해시 충돌,
-Artifact 불변성을 검증한다. Docker 검증에서는 별도 MCP 컨테이너의 health check와 Streamable HTTP
-연결도 확인한다.
+테스트는 인프로세스 MCP 연결로 도구 검색·호출, Node 권한 필터, LLM Tool 반복, 공급자별 설정,
+경로 이탈 방지, 해시 충돌, Artifact 불변성을 검증한다. Docker 검증에서는 별도 MCP 컨테이너의
+health check와 Streamable HTTP 연결도 확인한다.
 
 실제 Gemini가 MCP를 통해 `workspace` 파일을 읽는지 확인하려면 다음 순서로 실행한다.
 

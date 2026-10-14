@@ -9,10 +9,10 @@ import os
 import secrets
 from typing import Any
 
-from google import genai
-from google.genai import types
-
 from mainflow.ArtifactManager import ArtifactManager
+from MCP.llm_config import LLMSettings
+from MCP.llm_providers import create_llm_provider
+from MCP.llm_runner import MCPToolLLMRunner
 from MCP.manager import MCPManager
 
 DEFAULT_MODEL = "gemini-3-flash-preview"
@@ -29,16 +29,6 @@ def _parse_args() -> argparse.Namespace:
         help="Gemini model name (default: GEMINI_MODEL or gemini-3-flash-preview)",
     )
     return parser.parse_args()
-
-
-def _tool_payload(result: dict[str, Any]) -> dict[str, Any]:
-    payload = result["structured_content"]
-    if payload is not None:
-        return payload
-    return {
-        "is_error": result["is_error"],
-        "content": result["content"],
-    }
 
 
 def _safe_error_details(error: BaseException) -> list[dict[str, Any]]:
@@ -71,83 +61,20 @@ async def run_check(model: str) -> dict[str, Any]:
         "Do not guess its contents. Reply with the exact file content only. "
         f"project_id={project_id}, relative_path={TEST_RELATIVE_PATH}"
     )
-    contents: list[types.Content] = [
-        types.Content(role="user", parts=[types.Part.from_text(text=prompt)])
-    ]
-    tool_calls: list[dict[str, Any]] = []
-    final_output = ""
-
-    client = genai.Client(api_key=api_key)
+    settings = LLMSettings.from_environment(
+        node_name="user_input",
+        provider="gemini",
+        model=model,
+    )
+    provider = create_llm_provider(settings)
     try:
-        async with MCPManager("user_input").connect() as mcp_session:
-            definitions = await mcp_session.tool_definitions()
-            read_definitions = [
-                definition
-                for definition in definitions
-                if definition["name"] == "read_project_text"
-            ]
-            if len(read_definitions) != 1:
-                raise RuntimeError("read_project_text is not available to user_input")
-
-            definition = read_definitions[0]
-            tool = types.Tool(
-                function_declarations=[
-                    types.FunctionDeclaration(
-                        name=definition["name"],
-                        description=definition["description"],
-                        parameters_json_schema=definition["input_schema"],
-                    )
-                ]
-            )
-
-            for turn in range(4):
-                mode = "ANY" if turn == 0 else "AUTO"
-                response = await client.aio.models.generate_content(
-                    model=model,
-                    contents=contents,
-                    config=types.GenerateContentConfig(
-                        temperature=0,
-                        tools=[tool],
-                        automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                            disable=True
-                        ),
-                        tool_config=types.ToolConfig(
-                            function_calling_config=types.FunctionCallingConfig(
-                                mode=mode,
-                                allowed_function_names=(
-                                    ["read_project_text"] if mode == "ANY" else None
-                                ),
-                            )
-                        ),
-                    ),
-                )
-                if not response.candidates or response.candidates[0].content is None:
-                    raise RuntimeError("Gemini returned no candidate content")
-                contents.append(response.candidates[0].content)
-
-                calls_this_turn = response.function_calls or []
-                if not calls_this_turn:
-                    final_output = (response.text or "").strip()
-                    break
-
-                response_parts: list[types.Part] = []
-                for call in calls_this_turn:
-                    if not call.name:
-                        raise RuntimeError("Gemini returned a function call without a name")
-                    arguments = dict(call.args or {})
-                    result = await mcp_session.call_tool(call.name, arguments)
-                    tool_calls.append({"name": call.name, "arguments": arguments})
-                    response_parts.append(
-                        types.Part.from_function_response(
-                            name=call.name,
-                            response=_tool_payload(result),
-                        )
-                    )
-                contents.append(types.Content(role="tool", parts=response_parts))
-            else:
-                raise RuntimeError("Gemini did not finish after four tool-call turns")
+        runner = MCPToolLLMRunner(MCPManager("user_input"), provider)
+        result = await runner.run(prompt, require_tool=True)
     finally:
-        await client.aio.aclose()
+        await provider.aclose()
+
+    tool_calls = [{"name": call.name, "arguments": call.arguments} for call in result.tool_calls]
+    final_output = result.text
 
     read_call_observed = any(
         call["name"] == "read_project_text"
