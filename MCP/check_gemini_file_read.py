@@ -68,7 +68,10 @@ async def run_check(model: str) -> dict[str, Any]:
     )
     provider = create_llm_provider(settings)
     try:
-        runner = MCPToolLLMRunner(MCPManager("user_input"), provider)
+        runner = MCPToolLLMRunner(
+            MCPManager("user_input", project_id=project_id),
+            provider,
+        )
         result = await runner.run(prompt, require_tool=True)
     finally:
         await provider.aclose()

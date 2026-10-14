@@ -110,7 +110,11 @@ class LLMRunnerTest(unittest.IsolatedAsyncioTestCase):
 
                 provider = FileReadingProvider(project_id, relative_path)
                 runner = MCPToolLLMRunner(
-                    MCPManager("analysis", server_target=mcp),
+                    MCPManager(
+                        "analysis",
+                        server_target=mcp,
+                        project_id=project_id,
+                    ),
                     provider,
                 )
                 result = await runner.run("파일을 읽어 주세요.", require_tool=True)

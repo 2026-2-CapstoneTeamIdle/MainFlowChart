@@ -81,12 +81,60 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PermissionError):
             await manager.call_tool("write_project_text", {})
 
+    async def test_node_manager_rejects_a_different_project_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory) / "workspace"
+            with patch.dict(os.environ, {"MAINFLOW_WORKSPACE": str(workspace)}):
+                artifact_manager = ArtifactManager()
+                active_project_id = artifact_manager.create_project()
+                other_project_id = artifact_manager.create_project()
+                artifact_manager.write_project_text(
+                    other_project_id,
+                    "data/private.txt",
+                    "other-project",
+                )
+                manager = MCPManager(
+                    "analysis",
+                    server_target=mcp,
+                    project_id=active_project_id,
+                )
+
+                with self.assertRaises(PermissionError):
+                    await manager.call_tool(
+                        "read_project_text",
+                        {
+                            "project_id": other_project_id,
+                            "relative_path": "data/private.txt",
+                        },
+                    )
+
+    async def test_node_manager_requires_a_bound_project_id(self) -> None:
+        manager = MCPManager("analysis", server_target=mcp)
+        with self.assertRaises(RuntimeError):
+            await manager.call_tool(
+                "list_project_files",
+                {"project_id": "20261014_01"},
+            )
+
     def test_node_wrapper_injects_scoped_manager(self) -> None:
         def node(state: dict[str, str]) -> dict[str, str]:
-            return {"node_name": get_current_mcp_manager().node_name, **state}
+            manager = get_current_mcp_manager()
+            return {
+                "node_name": manager.node_name,
+                "bound_project_id": manager.project_id or "",
+                **state,
+            }
 
         bound = bind_mcp_tools("analysis", node)
-        self.assertEqual(bound({"value": "ok"}), {"node_name": "analysis", "value": "ok"})
+        self.assertEqual(
+            bound({"project_id": "20261014_01", "value": "ok"}),
+            {
+                "node_name": "analysis",
+                "bound_project_id": "20261014_01",
+                "project_id": "20261014_01",
+                "value": "ok",
+            },
+        )
         with self.assertRaises(RuntimeError):
             get_current_mcp_manager()
 

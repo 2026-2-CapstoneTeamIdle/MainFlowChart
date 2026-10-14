@@ -8,6 +8,7 @@ WRITE_PROJECT_TEXT = "write_project_text"
 
 READ_TOOLS = frozenset({LIST_PROJECT_FILES, READ_PROJECT_TEXT})
 WORKING_FILE_TOOLS = frozenset({*READ_TOOLS, WRITE_PROJECT_TEXT})
+PROJECT_SCOPED_TOOLS = WORKING_FILE_TOOLS
 
 # The server may grow new tools without exposing them to every LLM. A node only
 # receives definitions listed here, and MCPManager rejects unlisted calls even

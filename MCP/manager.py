@@ -8,7 +8,7 @@ from typing import Any, TypedDict
 
 from mcp import Client
 from MCP.config import MCPSettings
-from MCP.policies import allowed_tools_for_node
+from MCP.policies import PROJECT_SCOPED_TOOLS, allowed_tools_for_node
 
 
 class MCPToolDefinition(TypedDict):
@@ -26,8 +26,14 @@ class MCPToolCallResult(TypedDict):
 class MCPNodeSession:
     """Connected MCP session scoped to a single workflow node."""
 
-    def __init__(self, node_name: str, client: Client) -> None:
+    def __init__(
+        self,
+        node_name: str,
+        client: Client,
+        project_id: str | None,
+    ) -> None:
         self.node_name = node_name
+        self.project_id = project_id
         self._client = client
         self._allowed_tools = allowed_tools_for_node(node_name)
 
@@ -76,6 +82,7 @@ class MCPNodeSession:
 
         if name not in self._allowed_tools:
             raise PermissionError(f"Node {self.node_name} cannot call MCP tool: {name}")
+        _validate_project_scope(self.node_name, self.project_id, name, arguments)
 
         result = await self._client.call_tool(name, arguments)
         content = [block.model_dump(by_alias=True, mode="json") for block in result.content]
@@ -94,9 +101,11 @@ class MCPManager:
         self,
         node_name: str,
         server_target: object | None = None,
+        project_id: str | None = None,
     ) -> None:
         allowed_tools_for_node(node_name)
         self.node_name = node_name
+        self.project_id = project_id
         self.server_target = server_target or MCPSettings.from_environment().server_url
 
     @asynccontextmanager
@@ -105,7 +114,7 @@ class MCPManager:
 
         try:
             async with Client(self.server_target) as client:
-                yield MCPNodeSession(self.node_name, client)
+                yield MCPNodeSession(self.node_name, client, self.project_id)
         except BaseExceptionGroup as error:
             single_error: BaseException = error
             while (
@@ -131,5 +140,28 @@ class MCPManager:
     ) -> MCPToolCallResult:
         if name not in allowed_tools_for_node(self.node_name):
             raise PermissionError(f"Node {self.node_name} cannot call MCP tool: {name}")
+        _validate_project_scope(self.node_name, self.project_id, name, arguments)
         async with self.connect() as session:
             return await session.call_tool(name, arguments)
+
+
+def _validate_project_scope(
+    node_name: str,
+    bound_project_id: str | None,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> None:
+    """Reject project tools that do not match the workflow's bound project."""
+
+    if tool_name not in PROJECT_SCOPED_TOOLS:
+        return
+    if bound_project_id is None:
+        raise RuntimeError(f"Node {node_name} has no project_id bound to its MCP session")
+    requested_project_id = arguments.get("project_id")
+    if not isinstance(requested_project_id, str) or not requested_project_id:
+        raise ValueError(f"MCP tool {tool_name} requires a project_id")
+    if requested_project_id != bound_project_id:
+        raise PermissionError(
+            f"Node {node_name} cannot access project {requested_project_id}; "
+            f"active project is {bound_project_id}"
+        )

@@ -29,6 +29,10 @@ LangGraph Node
 LangGraph의 Edge와 State 계약은 변경하지 않는다. MCP는 파일 접근 능력을 제공할 뿐이며 Agent
 결과는 계속 기존 `ArtifactReference` 계약으로 전달한다.
 
+Graph의 각 Node가 실행될 때 `MCPManager`에는 Node 이름과 State의 `project_id`가 함께 바인딩된다.
+따라서 같은 Node를 여러 프로젝트에서 동시에 실행해도 각 실행은 자신의 프로젝트 workspace만
+접근할 수 있다.
+
 ## 2. Docker 실행
 
 저장소 루트에서 실행한다.
@@ -139,6 +143,19 @@ async def analysis_node(state):
 - `turns`: 모델 호출 횟수
 - `tool_calls`: 실행된 도구 이름, 인자, 결과 기록
 
+프로젝트 파일 Tool을 실행할 때는 Tool 인자의 `project_id`가 현재 Node State의 `project_id`와 정확히
+같아야 한다. LLM이 다른 프로젝트 ID를 생성하거나 프롬프트에서 가져와 호출하면 실행 전에
+`PermissionError`로 거부된다. State에 `project_id`가 아직 없는 `user_input`, `parse_input` 단계에서는
+프로젝트 파일 Tool을 호출할 수 없다. `parse_input`이 프로젝트를 생성한 다음 Node부터 자동으로
+바인딩된다.
+
+```text
+Node State project_id=20261014_03
+  ├─ Tool project_id=20261014_03 → 허용
+  ├─ Tool project_id=20261014_04 → 거부
+  └─ Tool project_id 누락          → 거부
+```
+
 공급자는 호출할 때 명시적으로 선택할 수 있다.
 
 ```python
@@ -166,8 +183,16 @@ LLM 출력은 신뢰하지 말고 반드시 `contracts.py`의 계약으로 검�
 동일하게 `ArtifactManager`로 등록하고 `ArtifactReference`를 State에 반환한다. MCP 쓰기 도구는 생성
 중 수정 가능한 작업 파일에만 사용한다.
 
-저수준 제어가 필요한 경우 `MCPToolLLMRunner`에 직접 Provider를 주입할 수 있다. 테스트에서는 이
-방식으로 가짜 Provider를 넣어 실제 API 호출 없이 Tool 반복과 권한을 검증한다.
+저수준 제어가 필요한 경우 `MCPToolLLMRunner`에 직접 Provider를 주입할 수 있다. 이 경우에도
+`MCPManager`에 대상 프로젝트를 명시해야 한다.
+
+```python
+manager = MCPManager("analysis", project_id=state["project_id"])
+runner = MCPToolLLMRunner(manager, provider)
+```
+
+테스트에서는 이 방식으로 가짜 Provider를 넣어 실제 API 호출 없이 Tool 반복, Node 권한,
+프로젝트 격리를 검증한다.
 
 ## 6. Node별 도구 권한
 
@@ -231,9 +256,9 @@ API로 전송된다. 외부 전송이 불가능한 파일은 Local SLM을 사용
 docker compose --profile test run --rm test
 ```
 
-테스트는 인프로세스 MCP 연결로 도구 검색·호출, Node 권한 필터, LLM Tool 반복, 공급자별 설정,
-경로 이탈 방지, 해시 충돌, Artifact 불변성을 검증한다. Docker 검증에서는 별도 MCP 컨테이너의
-health check와 Streamable HTTP 연결도 확인한다.
+테스트는 인프로세스 MCP 연결로 도구 검색·호출, Node 권한 필터, State와 Tool의 프로젝트 ID 일치,
+LLM Tool 반복, 공급자별 설정, 경로 이탈 방지, 해시 충돌, Artifact 불변성을 검증한다. Docker
+검증에서는 별도 MCP 컨테이너의 health check와 Streamable HTTP 연결도 확인한다.
 
 실제 Gemini가 MCP를 통해 `workspace` 파일을 읽는지 확인하려면 다음 순서로 실행한다.
 
