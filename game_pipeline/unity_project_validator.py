@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -43,6 +44,7 @@ class UnityProjectValidator:
 
     REQUIRED_JSON_PATHS: ClassVar[dict[str, Path]] = {
         "design": Path("Assets/GameTemplate/Generated/GameLogicDesign.json"),
+        "implementation_plan": Path("Assets/GameTemplate/Generated/GameImplementationPlan.json"),
         "manifest": Path("GenerationManifest.json"),
         "image_request": Path(
             "Assets/GameTemplate/Generated/AssetRequests/image_asset_request.json"
@@ -58,9 +60,14 @@ class UnityProjectValidator:
         "builder": Path("Assets/GameTemplate/Editor/TemplateProjectBuilder.cs"),
         "module_catalog": Path("Assets/GameTemplate/Editor/ModuleComponentCatalog.cs"),
         "scene_assembler": Path("Assets/GameTemplate/Editor/PrefabSceneAssembler.cs"),
+        "generated_feature_contract": Path(
+            "Assets/GameTemplate/Runtime/Core/IGeneratedFeatureModule.cs"
+        ),
     }
     SUCCESS_MARKERS: ClassVar[tuple[str, ...]] = (
         "UNITY_MODULE_CATALOG_OK",
+        "UNITY_GENERATED_FEATURE_BINDINGS_OK",
+        "UNITY_IMPLEMENTATION_PLAN_OK",
         "UNITY_SCENE_ASSEMBLY_OK",
         "UNITY_TEMPLATE_BUILD_OK",
     )
@@ -91,7 +98,7 @@ class UnityProjectValidator:
 
         self._check_draft(outcome, draft)
         payloads = self._check_project_structure(outcome, root, draft)
-        self._check_contract_consistency(outcome, payloads, draft, request)
+        self._check_contract_consistency(outcome, root, payloads, draft, request)
 
         if outcome.status == "failed":
             return outcome
@@ -185,11 +192,18 @@ class UnityProjectValidator:
     def _check_contract_consistency(
         self,
         outcome: UnityValidationOutcome,
+        root: Path,
         payloads: dict[str, dict[str, Any]],
         draft: GameLogicDraft,
         request: ParsedRequest,
     ) -> None:
-        required_payloads = {"design", "manifest", "image_request", "sound_request"}
+        required_payloads = {
+            "design",
+            "implementation_plan",
+            "manifest",
+            "image_request",
+            "sound_request",
+        }
         if not required_payloads.issubset(payloads):
             return
 
@@ -197,6 +211,7 @@ class UnityProjectValidator:
         manifest = payloads["manifest"]
         image_request = payloads["image_request"]
         sound_request = payloads["sound_request"]
+        implementation_plan = payloads["implementation_plan"]
         game_spec = design.get("game_spec")
         if not isinstance(game_spec, dict):
             self._add_check(
@@ -245,6 +260,11 @@ class UnityProjectValidator:
             and design_modules == manifest_modules
             and not design.get("unsupported_mechanics")
         )
+        plan_valid, plan_message = self._validate_implementation_plan(
+            design,
+            implementation_plan,
+            manifest,
+        )
 
         image_ids = self._asset_ids(image_request, "image")
         sound_ids = self._asset_ids(sound_request, "sound")
@@ -282,6 +302,25 @@ class UnityProjectValidator:
             else "Selected modules are empty, inconsistent, or unsupported",
             error_code="GAME_MODULE_MISMATCH",
         )
+        generated_valid, generated_message = self._validate_generated_modules(
+            root,
+            design,
+            manifest,
+        )
+        self._add_check(
+            outcome,
+            "game.generated_modules",
+            generated_valid,
+            generated_message,
+            error_code="GAME_GENERATED_MODULE_INVALID",
+        )
+        self._add_check(
+            outcome,
+            "game.implementation_plan",
+            plan_valid,
+            plan_message,
+            error_code="GAME_IMPLEMENTATION_PLAN_INVALID",
+        )
         self._add_check(
             outcome,
             "game.asset_ids",
@@ -291,6 +330,43 @@ class UnityProjectValidator:
             else "Game draft and asset-request IDs do not match",
             error_code="GAME_ASSET_ID_MISMATCH",
         )
+
+    @staticmethod
+    def _validate_implementation_plan(
+        design: dict[str, Any],
+        plan: dict[str, Any],
+        manifest: dict[str, Any],
+    ) -> tuple[bool, str]:
+        systems = plan.get("systems")
+        content = plan.get("content")
+        screens = plan.get("ui_screens")
+        scenarios = plan.get("playtest_scenarios")
+        valid = (
+            design.get("implementation_plan") == plan
+            and manifest.get("implementation_plan")
+            == "Assets/GameTemplate/Generated/GameImplementationPlan.json"
+            and plan.get("plan_version") == "1.0.0"
+            and plan.get("complexity_tier") == "advanced_prototype"
+            and isinstance(systems, list)
+            and len(systems) >= 5
+            and isinstance(content, list)
+            and len(content) >= 4
+            and all(
+                isinstance(item, dict) and isinstance(item.get("count"), int) and item["count"] > 0
+                for item in content
+            )
+            and isinstance(screens, list)
+            and len(screens) >= 4
+            and isinstance(scenarios, list)
+            and len(scenarios) >= 3
+            and all(
+                isinstance(item, dict) and bool(item.get("steps")) and bool(item.get("assertions"))
+                for item in scenarios
+            )
+        )
+        if valid:
+            return True, "Advanced implementation plan has systems, content, UI, and scenarios"
+        return False, "Implementation plan is missing complexity or validation detail"
 
     def _run_unity_validation(self, outcome: UnityValidationOutcome, root: Path) -> None:
         if self.mode == "static":
@@ -345,34 +421,34 @@ class UnityProjectValidator:
             )
             return
 
+        temp_dir = Path(tempfile.mkdtemp(prefix="mainflow-unity-validation-"))
         try:
-            with tempfile.TemporaryDirectory(prefix="mainflow-unity-validation-") as temp_dir:
-                log_path = Path(temp_dir) / "unity-validation.log"
-                command = [
-                    str(editor),
-                    "-batchmode",
-                    "-nographics",
-                    "-quit",
-                    "-projectPath",
-                    str(root),
-                    "-executeMethod",
-                    "TeamIdle.GameTemplate.Editor.TemplateProjectBuilder.BuildForBatch",
-                    "-logFile",
-                    str(log_path),
-                ]
-                completed = subprocess.run(
-                    command,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=self.timeout_seconds,
-                    check=False,
-                )
-                log_parts = [completed.stdout or "", completed.stderr or ""]
-                if log_path.is_file():
-                    log_parts.append(log_path.read_text(encoding="utf-8", errors="replace"))
-                outcome.unity_log = "\n".join(part for part in log_parts if part)
+            log_path = temp_dir / "unity-validation.log"
+            command = [
+                str(editor),
+                "-batchmode",
+                "-nographics",
+                "-quit",
+                "-projectPath",
+                str(root),
+                "-executeMethod",
+                "TeamIdle.GameTemplate.Editor.TemplateProjectBuilder.BuildForBatch",
+                "-logFile",
+                str(log_path),
+            ]
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self.timeout_seconds,
+                check=False,
+            )
+            log_parts = [completed.stdout or "", completed.stderr or ""]
+            if log_path.is_file():
+                log_parts.append(log_path.read_text(encoding="utf-8", errors="replace"))
+            outcome.unity_log = "\n".join(part for part in log_parts if part)
         except subprocess.TimeoutExpired:
             self._add_check(
                 outcome,
@@ -391,6 +467,10 @@ class UnityProjectValidator:
                 error_code="UNITY_EDITOR_START_FAILED",
             )
             return
+        finally:
+            # Unity can keep its log handle briefly after the process exits on Windows.
+            # Cleanup failure must not turn a successful compilation into a validation error.
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
         missing_markers = [
             marker for marker in self.SUCCESS_MARKERS if marker not in outcome.unity_log
@@ -471,6 +551,56 @@ class UnityProjectValidator:
                 return None
             ids.append(cast(str, item["asset_id"]))
         return set(ids) if len(ids) == len(set(ids)) else None
+
+    @staticmethod
+    def _validate_generated_modules(
+        root: Path,
+        design: dict[str, Any],
+        manifest: dict[str, Any],
+    ) -> tuple[bool, str]:
+        generated = design.get("generated_modules", [])
+        manifest_generated = manifest.get("generated_modules", [])
+        if not isinstance(generated, list) or not isinstance(manifest_generated, list):
+            return False, "Generated module metadata must be arrays"
+        if not generated:
+            return (
+                (not manifest_generated),
+                "No generated modules were required"
+                if not manifest_generated
+                else "Manifest contains unexpected generated modules",
+            )
+        manifest_by_id = {
+            item.get("module_id"): item for item in manifest_generated if isinstance(item, dict)
+        }
+        errors: list[str] = []
+        for item in generated:
+            if not isinstance(item, dict):
+                errors.append("non-object generated module")
+                continue
+            module_id = item.get("module_id")
+            metadata = manifest_by_id.get(module_id)
+            if not isinstance(module_id, str) or not isinstance(metadata, dict):
+                errors.append(f"missing manifest metadata for {module_id}")
+                continue
+            relative_path = metadata.get("relative_path")
+            expected_hash = item.get("source_sha256")
+            if not isinstance(relative_path, str) or not isinstance(expected_hash, str):
+                errors.append(f"invalid metadata for {module_id}")
+                continue
+            source_path = (root / relative_path).resolve()
+            try:
+                source_path.relative_to(root)
+                source = source_path.read_bytes()
+            except (ValueError, OSError):
+                errors.append(f"missing or unsafe source path for {module_id}")
+                continue
+            actual_hash = hashlib.sha256(source).hexdigest()
+            if actual_hash != expected_hash or metadata.get("source_sha256") != expected_hash:
+                errors.append(f"source hash mismatch for {module_id}")
+        return (
+            not errors,
+            "Generated module sources and hashes are valid" if not errors else "; ".join(errors),
+        )
 
     @staticmethod
     def _add_check(

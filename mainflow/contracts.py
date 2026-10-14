@@ -102,6 +102,46 @@ class GameSpec(TypedDict):
     asset_requirements: list[AssetRequirement]
 
 
+class GeneratedGameModule(TypedDict):
+    module_id: str
+    feature_id: str
+    feature_description: str
+    class_name: str
+    source_code: str
+    source_sha256: str
+
+
+class ImplementationSystem(TypedDict):
+    system_id: str
+    module_ids: list[str]
+    depends_on: list[str]
+    responsibilities: list[str]
+
+
+class PlannedContent(TypedDict):
+    archetype: str
+    count: int
+    purpose: str
+
+
+class PlaytestScenario(TypedDict):
+    scenario_id: str
+    title: str
+    steps: list[str]
+    assertions: list[str]
+
+
+class GameImplementationPlan(TypedDict):
+    plan_version: Literal["1.0.0"]
+    complexity_tier: Literal["advanced_prototype"]
+    minimum_session_minutes: int
+    core_loop_phases: list[str]
+    systems: list[ImplementationSystem]
+    content: list[PlannedContent]
+    ui_screens: list[str]
+    playtest_scenarios: list[PlaytestScenario]
+
+
 class GameLogicDesign(TypedDict):
     contract_version: ContractVersion
     design_id: str
@@ -110,6 +150,8 @@ class GameLogicDesign(TypedDict):
     genre_modules: list[str]
     selected_modules: list[str]
     unsupported_mechanics: list[str]
+    generated_modules: list[GeneratedGameModule]
+    implementation_plan: GameImplementationPlan
 
 
 class ParsedRequest(TypedDict):

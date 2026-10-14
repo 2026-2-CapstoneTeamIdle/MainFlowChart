@@ -25,7 +25,11 @@ namespace TeamIdle.GameTemplate.Platformer
         [SerializeField]
         private float groundRadius = 0.15f;
 
+        [SerializeField]
+        private float jumpBufferSeconds = 0.15f;
+
         private InputAdapterModule input;
+        private float jumpQueuedUntil = float.NegativeInfinity;
 
         public override string ModuleId => "platformer_movement";
 
@@ -41,6 +45,14 @@ namespace TeamIdle.GameTemplate.Platformer
             context.Register(this);
         }
 
+        private void Update()
+        {
+            if (IsInitialized && input.ConfirmPressed)
+            {
+                jumpQueuedUntil = Time.time + jumpBufferSeconds;
+            }
+        }
+
         private void FixedUpdate()
         {
             if (!IsInitialized || target == null)
@@ -52,16 +64,27 @@ namespace TeamIdle.GameTemplate.Platformer
             velocity.x = input.Movement.x * moveSpeed;
             target.linearVelocity = velocity;
 
-            if (input.ConfirmPressed && IsGrounded())
+            if (Time.time <= jumpQueuedUntil && IsGrounded())
             {
                 target.linearVelocity = new Vector2(target.linearVelocity.x, jumpVelocity);
+                jumpQueuedUntil = float.NegativeInfinity;
             }
         }
 
         private bool IsGrounded()
         {
             var position = groundCheck == null ? target.position : (Vector2)groundCheck.position;
-            return Physics2D.OverlapCircle(position, groundRadius, groundMask) != null;
+            foreach (var overlap in Physics2D.OverlapCircleAll(position, groundRadius, groundMask))
+            {
+                if (overlap == null || overlap.isTrigger || overlap.attachedRigidbody == target)
+                {
+                    continue;
+                }
+
+                return true;
+            }
+
+            return false;
         }
     }
 

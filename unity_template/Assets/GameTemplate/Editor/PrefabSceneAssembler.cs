@@ -35,6 +35,7 @@ namespace TeamIdle.GameTemplate.Editor
         private sealed class AssemblyContext
         {
             public GameTemplateConfig Config;
+            public GameImplementationPlan Plan;
             public Transform Modules;
             public Transform Environment;
             public Transform Entities;
@@ -82,6 +83,7 @@ namespace TeamIdle.GameTemplate.Editor
             var context = new AssemblyContext
             {
                 Config = config,
+                Plan = GameImplementationPlan.Load(),
                 Modules = moduleRoot,
                 Environment = environment,
                 Entities = entities,
@@ -116,6 +118,7 @@ namespace TeamIdle.GameTemplate.Editor
                     break;
             }
 
+            AttachGeneratedFeatureBinder(context, generatedRoot.gameObject);
             report.sceneObjectCount = generatedRoot.GetComponentsInChildren<Transform>(true).Length;
             File.WriteAllText(ReportPath, JsonUtility.ToJson(report, true));
             AssetDatabase.ImportAsset(ReportPath, ImportAssetOptions.ForceUpdate);
@@ -136,6 +139,48 @@ namespace TeamIdle.GameTemplate.Editor
                 generatedRoot.GetComponentInChildren<PrototypeSceneController>(true),
                 "PrototypeSceneController"
             );
+            var featureBinder = generatedRoot.GetComponent<GeneratedFeatureBinder>();
+            RequireObject(featureBinder, "GeneratedFeatureBinder");
+            var implementationPlan = GameImplementationPlan.Load();
+            if (implementationPlan.playtest_scenarios.Count < 3)
+            {
+                throw new InvalidOperationException(
+                    "At least three playtest scenarios are required."
+                );
+            }
+
+            var moduleRoot = GameObject.Find("Modules");
+            RequireObject(moduleRoot, "Modules");
+            var generatedFeatureCount = 0;
+            foreach (var behaviour in moduleRoot.GetComponentsInChildren<MonoBehaviour>(true))
+            {
+                if (
+                    behaviour
+                        .GetType()
+                        .GetCustomAttributes(typeof(GeneratedGameModuleAttribute), false)
+                        .Length == 0
+                )
+                {
+                    continue;
+                }
+
+                if (behaviour is not IGeneratedFeatureModule)
+                {
+                    throw new InvalidOperationException(
+                        $"Generated module must implement IGeneratedFeatureModule: {behaviour.GetType().Name}"
+                    );
+                }
+
+                generatedFeatureCount++;
+            }
+
+            var boundFeatureCount = featureBinder.BindNow();
+            if (boundFeatureCount != generatedFeatureCount)
+            {
+                throw new InvalidOperationException(
+                    $"Expected {generatedFeatureCount} generated feature bindings but found {boundFeatureCount}."
+                );
+            }
 
             var expectedObjects = new Dictionary<string, string[]>
             {
@@ -163,7 +208,28 @@ namespace TeamIdle.GameTemplate.Editor
                 );
             }
 
+            Debug.Log($"UNITY_GENERATED_FEATURE_BINDINGS_OK:{boundFeatureCount}");
+            Debug.Log(
+                $"UNITY_IMPLEMENTATION_PLAN_OK:{implementationPlan.complexity_tier}:"
+                    + implementationPlan.playtest_scenarios.Count
+            );
             Debug.Log($"UNITY_SCENE_ASSEMBLY_OK:{config.Genre}:{names.Length}");
+        }
+
+        private static void AttachGeneratedFeatureBinder(
+            AssemblyContext context,
+            GameObject generatedRoot
+        )
+        {
+            var player = FindChildByName(context.Entities, "Player");
+            var binder = generatedRoot.AddComponent<GeneratedFeatureBinder>();
+            binder.Configure(
+                player == null ? null : player.gameObject,
+                context.Modules,
+                context.Environment,
+                context.Entities,
+                context.Ui
+            );
         }
 
         private static void AssemblePlatformer(AssemblyContext context)
@@ -184,24 +250,39 @@ namespace TeamIdle.GameTemplate.Editor
             playerBody.gravityScale = 3f;
             player.AddComponent<BoxCollider2D>();
             player.AddComponent<HealthComponent>();
+            var stageController =
+                context.Ui.gameObject.AddComponent<PrototypePlatformerStageController>();
+            stageController.Bind(player.transform);
+            context.Camera.gameObject.AddComponent<PrototypeCameraFollow>().Bind(player.transform);
             var groundCheck = new GameObject("GroundCheck").transform;
             groundCheck.SetParent(player.transform, false);
             groundCheck.localPosition = new Vector3(0f, -0.75f, 0f);
 
-            CreatePlatform(context, "Ground", new Vector2(0f, -4f), new Vector2(18f, 1f));
-            CreatePlatform(context, "Platform_A", new Vector2(-1f, -1.5f), new Vector2(4f, 0.5f));
-            CreatePlatform(context, "Platform_B", new Vector2(4f, 0.5f), new Vector2(3f, 0.5f));
+            CreatePlatform(context, "Ground", new Vector2(4f, -4f), new Vector2(28f, 1f));
+            var platformCount = context.Plan.Count("platform", 10);
+            for (var index = 0; index < platformCount; index++)
+            {
+                var column = index % 5;
+                var tier = index / 5;
+                CreatePlatform(
+                    context,
+                    $"Platform_{index + 1}",
+                    new Vector2(-4f + column * 3.2f, -1.6f + tier * 2.2f),
+                    new Vector2(2.2f + (index % 2) * 0.8f, 0.45f)
+                );
+            }
 
             var movement = GetModule<PlatformerMovementModule>(context);
             movement?.Bind(playerBody, groundCheck);
-            SetInt(GetModule<CollectibleSystemModule>(context), "requiredCount", 3);
+            var collectibleCount = context.Plan.Count("collectible", 8);
+            SetInt(GetModule<CollectibleSystemModule>(context), "requiredCount", collectibleCount);
 
-            for (var index = 0; index < 3; index++)
+            for (var index = 0; index < collectibleCount; index++)
             {
                 var collectible = CreateSpriteObject(
                     $"Collectible_{index + 1}",
                     context.Entities,
-                    new Vector2(-2f + index * 3f, -0.7f + index * 0.9f),
+                    new Vector2(-4f + (index % 5) * 3.2f, -0.8f + (index / 5) * 2.2f),
                     Vector2.one * 0.45f,
                     new Color(1f, 0.82f, 0.2f),
                     "collectible"
@@ -211,10 +292,56 @@ namespace TeamIdle.GameTemplate.Editor
                 collectible.AddComponent<PrototypeCollectible>();
             }
 
+            for (var index = 0; index < context.Plan.Count("hazard", 5); index++)
+            {
+                var hazard = CreateSpriteObject(
+                    $"Hazard_{index + 1}",
+                    context.Entities,
+                    new Vector2(-2.5f + index * 3.1f, -3.3f),
+                    new Vector2(1.2f, 0.35f),
+                    new Color(1f, 0.2f, 0.25f),
+                    "hazard"
+                );
+                var collider = hazard.AddComponent<BoxCollider2D>();
+                collider.isTrigger = true;
+                hazard.AddComponent<PrototypeHazard>();
+            }
+
+            for (var index = 0; index < context.Plan.Count("checkpoint", 2); index++)
+            {
+                var checkpoint = CreateSpriteObject(
+                    $"Checkpoint_{index + 1}",
+                    context.Entities,
+                    new Vector2(index == 0 ? 0f : 7f, -2.8f),
+                    new Vector2(0.45f, 1.8f),
+                    new Color(0.25f, 0.9f, 0.95f),
+                    "checkpoint"
+                );
+                var collider = checkpoint.AddComponent<BoxCollider2D>();
+                collider.isTrigger = true;
+                checkpoint.AddComponent<PrototypeCheckpoint>().Configure(index + 1);
+            }
+
+            for (var index = 0; index < context.Plan.Count("enemy", 3); index++)
+            {
+                var enemy = CreateSpriteObject(
+                    $"PatrolEnemy_{index + 1}",
+                    context.Entities,
+                    new Vector2(1f + index * 3.5f, -2.9f),
+                    new Vector2(0.8f, 0.8f),
+                    new Color(0.95f, 0.35f, 0.4f),
+                    "platformer-enemy"
+                );
+                enemy.AddComponent<BoxCollider2D>();
+                var body = enemy.AddComponent<Rigidbody2D>();
+                body.bodyType = RigidbodyType2D.Kinematic;
+                enemy.AddComponent<PrototypePatrolEnemy>();
+            }
+
             var goal = CreateSpriteObject(
                 "StageGoal",
                 context.Entities,
-                new Vector2(7f, -2.5f),
+                new Vector2(12f, -2.5f),
                 new Vector2(0.8f, 2f),
                 new Color(0.2f, 1f, 0.45f),
                 "goal"
@@ -307,7 +434,7 @@ namespace TeamIdle.GameTemplate.Editor
                 new Color(0.12f, 0.28f, 0.36f),
                 "card-player-area"
             );
-            for (var index = 0; index < 5; index++)
+            for (var index = 0; index < context.Plan.Count("starting_hand_slot", 5); index++)
             {
                 CreateSpriteObject(
                     $"CardSlot_{index + 1}",
@@ -322,7 +449,7 @@ namespace TeamIdle.GameTemplate.Editor
             var deck = GetModule<DeckSystemModule>(context);
             var serialized = new SerializedObject(deck);
             var cards = serialized.FindProperty("startingDeck");
-            cards.arraySize = 8;
+            cards.arraySize = context.Plan.Count("card", 20);
             for (var index = 0; index < cards.arraySize; index++)
             {
                 var card = cards.GetArrayElementAtIndex(index);
@@ -368,7 +495,7 @@ namespace TeamIdle.GameTemplate.Editor
             var dialogue = GetModule<DialogueRunnerModule>(context);
             var serialized = new SerializedObject(dialogue);
             var lines = serialized.FindProperty("lines");
-            lines.arraySize = 3;
+            lines.arraySize = context.Plan.Count("dialogue_line", 40);
             SetDialogueLine(
                 lines.GetArrayElementAtIndex(0),
                 "intro-1",
@@ -387,6 +514,15 @@ namespace TeamIdle.GameTemplate.Editor
                 "Guide",
                 "Choose an option to test the branching flag system."
             );
+            for (var index = 3; index < lines.arraySize; index++)
+            {
+                SetDialogueLine(
+                    lines.GetArrayElementAtIndex(index),
+                    $"generated-{index + 1}",
+                    index % 2 == 0 ? "Hero" : "Guide",
+                    $"Generated story beat {index + 1}: choices and flags continue the scene."
+                );
+            }
             serialized.ApplyModifiedPropertiesWithoutUndo();
         }
 
@@ -409,12 +545,12 @@ namespace TeamIdle.GameTemplate.Editor
                 new Color(0.85f, 0.55f, 0.42f),
                 "raising-character"
             );
-            for (var index = 0; index < 3; index++)
+            for (var index = 0; index < context.Plan.Count("activity", 8); index++)
             {
                 CreateSpriteObject(
                     $"ActivityCard_{index + 1}",
                     context.Entities,
-                    new Vector2(-2f + index * 1.8f, -3f),
+                    new Vector2(-3.5f + (index % 4) * 1.8f, -3f + (index / 4) * 1.35f),
                     new Vector2(1.4f, 1.2f),
                     new Color(0.75f, 0.68f - index * 0.08f, 0.35f + index * 0.12f),
                     "activity-card"
@@ -493,9 +629,10 @@ namespace TeamIdle.GameTemplate.Editor
             SetInt(autoTarget, "enemyMask", 1 << 8);
             ConfigureUpgradePool(GetModule<UpgradeSelectionSystemModule>(context));
 
-            for (var index = 0; index < 12; index++)
+            var arenaMarkerCount = context.Plan.Count("arena_marker", 20);
+            for (var index = 0; index < arenaMarkerCount; index++)
             {
-                var angle = index / 12f * Mathf.PI * 2f;
+                var angle = index / (float)arenaMarkerCount * Mathf.PI * 2f;
                 CreateSpriteObject(
                     $"ArenaMarker_{index + 1}",
                     context.Environment,

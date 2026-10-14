@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using TeamIdle.GameTemplate.Card;
 using TeamIdle.GameTemplate.Common;
 using TeamIdle.GameTemplate.Core;
@@ -57,9 +58,68 @@ namespace TeamIdle.GameTemplate.Editor
             ["upgrade_selection_system"] = typeof(UpgradeSelectionSystemModule),
         };
 
+        private static Dictionary<string, Type> generatedModuleTypes;
+
         public static bool TryGetType(string moduleId, out Type moduleType)
         {
-            return ModuleTypes.TryGetValue(moduleId, out moduleType);
+            if (ModuleTypes.TryGetValue(moduleId, out moduleType))
+            {
+                return true;
+            }
+
+            generatedModuleTypes ??= DiscoverGeneratedModuleTypes();
+            return generatedModuleTypes.TryGetValue(moduleId, out moduleType);
+        }
+
+        private static Dictionary<string, Type> DiscoverGeneratedModuleTypes()
+        {
+            var discovered = new Dictionary<string, Type>(StringComparer.Ordinal);
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                Type[] types;
+                try
+                {
+                    types = assembly.GetTypes();
+                }
+                catch (ReflectionTypeLoadException error)
+                {
+                    types = Array.FindAll(error.Types, type => type != null);
+                }
+
+                foreach (var type in types)
+                {
+                    if (
+                        type == null
+                        || type.IsAbstract
+                        || !typeof(GameModuleBehaviour).IsAssignableFrom(type)
+                    )
+                    {
+                        continue;
+                    }
+
+                    var attribute = type.GetCustomAttribute<GeneratedGameModuleAttribute>();
+                    if (attribute == null || string.IsNullOrWhiteSpace(attribute.ModuleId))
+                    {
+                        continue;
+                    }
+
+                    if (ModuleTypes.ContainsKey(attribute.ModuleId))
+                    {
+                        throw new InvalidOperationException(
+                            $"Generated module cannot replace template module: {attribute.ModuleId}"
+                        );
+                    }
+
+                    if (!discovered.TryAdd(attribute.ModuleId, type))
+                    {
+                        throw new InvalidOperationException(
+                            $"Duplicate generated module ID: {attribute.ModuleId}"
+                        );
+                    }
+                }
+            }
+
+            return discovered;
         }
 
         public static void AddConfiguredModules(

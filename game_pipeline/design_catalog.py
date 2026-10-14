@@ -20,6 +20,7 @@ from mainflow.contracts import (
     GenreProfile,
     Viewpoint,
 )
+from game_pipeline.implementation_planner import build_implementation_plan
 
 COMMON_MODULES = [
     "game_bootstrap",
@@ -466,4 +467,6 @@ def build_game_logic_design(game_spec: GameSpec) -> GameLogicDesign:
         "genre_modules": genre_modules,
         "selected_modules": _unique_strings(COMMON_MODULES + genre_modules),
         "unsupported_mechanics": unsupported,
+        "generated_modules": [],
+        "implementation_plan": build_implementation_plan(game_spec, unsupported),
     }

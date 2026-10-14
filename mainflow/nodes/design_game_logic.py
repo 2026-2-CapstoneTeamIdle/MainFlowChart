@@ -6,9 +6,12 @@ from pathlib import Path
 from typing import cast
 
 from game_pipeline import (
+    GeminiFeatureGenerator,
     UnityProjectGenerator,
+    attach_generated_modules,
     build_game_logic_design,
     normalize_game_spec,
+    plan_feature_mechanics,
 )
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
@@ -42,21 +45,23 @@ def design_game_logic_node(
     analysis = cast(AnalysisResult, manager.read_json(state["analysis"]))
     cast(LogicAnalysis, manager.read_json(state["logic_analysis"]))
 
+    feature_plan = plan_feature_mechanics(analysis["features"], request["genre"])
     game_spec = normalize_game_spec(
         request["genre"],
         {
             "viewpoint": request["viewpoint"],
-            "features": [
-                {
-                    "feature_id": feature["feature_id"],
-                    "description": feature["description"],
-                    "required": True,
-                }
-                for feature in analysis["features"]
-            ],
+            "features": feature_plan.game_features,
+            "mechanics": feature_plan.mechanics,
         },
     )
     design = build_game_logic_design(game_spec)
+    if design["unsupported_mechanics"]:
+        log("기존 모듈에 없는 기능을 Gemini API로 생성합니다.")
+        generated_modules = GeminiFeatureGenerator.from_environment().generate(
+            design,
+            feature_plan.generation_requirements,
+        )
+        design = attach_generated_modules(design, generated_modules)
     design_reference = manager.write_json(
         state["project_id"],
         "game",
@@ -66,8 +71,8 @@ def design_game_logic_node(
     )
     workspace_project_root = manager.ensure_project(state["project_id"])
     unity_project_root = workspace_project_root / "game" / "unity_project"
-    generator = UnityProjectGenerator()
-    generation = generator.generate(
+    unity_generator = UnityProjectGenerator()
+    generation = unity_generator.generate(
         design,
         unity_project_root,
         image_style=request["image_style"],
@@ -87,7 +92,7 @@ def design_game_logic_node(
         state["project_id"],
         "game",
         "unity_project.zip",
-        generator.create_archive(generation.project_root),
+        unity_generator.create_archive(generation.project_root),
         producer="design_game_logic",
         media_type="application/zip",
     )
@@ -124,6 +129,11 @@ def design_game_logic_node(
     ]
     if design["unsupported_mechanics"]:
         notes.append("별도 구현이 필요한 mechanic: " + ", ".join(design["unsupported_mechanics"]))
+    if design["generated_modules"]:
+        notes.append(
+            "Gemini API 생성 모듈: "
+            + ", ".join(module["module_id"] for module in design["generated_modules"])
+        )
     draft: GameLogicDraft = {
         "contract_version": CONTRACT_VERSION,
         "draft_id": f"{game_spec['genre'].lower()}-game-logic-draft",

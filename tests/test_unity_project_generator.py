@@ -39,6 +39,10 @@ class UnityProjectGeneratorTest(unittest.TestCase):
         self.assertTrue(result.build_request_path.is_file())
         self.assertTrue(result.image_asset_request_path.is_file())
         self.assertTrue(result.sound_asset_request_path.is_file())
+        implementation_plan_path = (
+            result.project_root / "Assets/GameTemplate/Generated/GameImplementationPlan.json"
+        )
+        self.assertTrue(implementation_plan_path.is_file())
         self.assertFalse((result.project_root / "Library").exists())
         config = (
             result.project_root / "Assets/GameTemplate/Generated/GameTemplateConfig.asset"
@@ -51,6 +55,12 @@ class UnityProjectGeneratorTest(unittest.TestCase):
         manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(manifest["design_id"], design["design_id"])
         self.assertEqual(manifest["selected_modules"], design["selected_modules"])
+        self.assertEqual(
+            manifest["implementation_plan"],
+            "Assets/GameTemplate/Generated/GameImplementationPlan.json",
+        )
+        implementation_plan = json.loads(implementation_plan_path.read_text(encoding="utf-8"))
+        self.assertEqual(implementation_plan, design["implementation_plan"])
         image_request = json.loads(result.image_asset_request_path.read_text(encoding="utf-8"))
         sound_request = json.loads(result.sound_asset_request_path.read_text(encoding="utf-8"))
         self.assertEqual(image_request["asset_type"], "image")
@@ -85,6 +95,10 @@ class UnityProjectGeneratorTest(unittest.TestCase):
         self.assertIn("UnityProject/ProjectSettings/ProjectVersion.txt", names)
         self.assertIn(
             "UnityProject/Assets/GameTemplate/Generated/GenerationRequest.json",
+            names,
+        )
+        self.assertIn(
+            "UnityProject/Assets/GameTemplate/Generated/GameImplementationPlan.json",
             names,
         )
         self.assertIn(
