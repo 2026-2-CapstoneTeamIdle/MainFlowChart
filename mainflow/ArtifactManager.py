@@ -31,6 +31,12 @@ class ArtifactManager:
     PROJECT_DIRECTORIES = tuple(CATEGORY_PATHS.values())
     MANIFEST_RELATIVE_PATH = Path("data/artifact_manifest.json")
     MANIFEST_LOCK_RELATIVE_PATH = Path("data/.artifact_manifest.lock")
+    PROTECTED_WORKING_PATHS = frozenset(
+        {
+            MANIFEST_RELATIVE_PATH.as_posix(),
+            MANIFEST_LOCK_RELATIVE_PATH.as_posix(),
+        }
+    )
 
     def __init__(self, workspace_root: str | Path | None = None) -> None:
         default_root = Path(__file__).resolve().parent.parent / "workspace"
@@ -282,6 +288,139 @@ class ArtifactManager:
         if category is None:
             return list(artifacts)
         return [item for item in artifacts if item["category"] == category]
+
+    def resolve_project_path(
+        self,
+        project_id: str,
+        relative_path: str | Path = ".",
+    ) -> Path:
+        """Resolve a safe path inside an existing project workspace.
+
+        This public boundary is intended for tools that edit mutable working
+        files, such as generated Unity source. Registered artifacts remain
+        immutable and continue to use ``ArtifactReference`` methods.
+        """
+
+        project_root = self.ensure_project(project_id)
+        relative = Path(relative_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"Project path must be a safe relative path: {relative_path}")
+        target = (project_root / relative).resolve()
+        self._require_within(project_root, target)
+        return target
+
+    def list_project_files(
+        self,
+        project_id: str,
+        relative_directory: str | Path = ".",
+        *,
+        recursive: bool = True,
+        limit: int = 200,
+    ) -> list[Path]:
+        """List safe project-relative files for an external working-file tool."""
+
+        if limit < 1:
+            raise ValueError("limit must be greater than or equal to 1")
+        project_root = self.ensure_project(project_id)
+        directory = self.resolve_project_path(project_id, relative_directory)
+        if not directory.is_dir():
+            raise NotADirectoryError(f"Project directory does not exist: {relative_directory}")
+
+        candidates = directory.rglob("*") if recursive else directory.glob("*")
+        files: list[Path] = []
+        for candidate in candidates:
+            resolved = candidate.resolve()
+            self._require_within(project_root, resolved)
+            if resolved.is_file():
+                files.append(resolved.relative_to(project_root))
+                if len(files) >= limit:
+                    break
+        return sorted(files, key=lambda path: path.as_posix())
+
+    def read_project_file(
+        self,
+        project_id: str,
+        relative_path: str | Path,
+        *,
+        max_bytes: int | None = None,
+    ) -> bytes:
+        """Read a mutable working file after enforcing the project boundary."""
+
+        target = self.resolve_project_path(project_id, relative_path)
+        if not target.is_file():
+            raise FileNotFoundError(f"Project file does not exist: {relative_path}")
+        if max_bytes is not None:
+            if max_bytes < 1:
+                raise ValueError("max_bytes must be greater than zero")
+            size_bytes = target.stat().st_size
+            if size_bytes > max_bytes:
+                raise ValueError(f"Project file exceeds {max_bytes} bytes: {relative_path}")
+        return target.read_bytes()
+
+    def write_project_file(
+        self,
+        project_id: str,
+        relative_path: str | Path,
+        content: bytes,
+        *,
+        expected_sha256: str | None = None,
+    ) -> Path:
+        """Create or revise a mutable project file with optimistic locking.
+
+        Existing files require their current SHA-256 value. Manifest files and
+        registered immutable artifacts cannot be changed through this method.
+        """
+
+        if not isinstance(content, bytes):
+            raise TypeError("content must be bytes")
+
+        project_root = self.ensure_project(project_id)
+        target = self.resolve_project_path(project_id, relative_path)
+        relative = target.relative_to(project_root).as_posix()
+        if relative in self.PROTECTED_WORKING_PATHS:
+            raise ValueError(f"Protected project file cannot be modified: {relative}")
+
+        registered_paths = {
+            reference["relative_path"] for reference in self.list_artifacts(project_id)
+        }
+        if relative in registered_paths:
+            raise ValueError(
+                "Registered artifacts are immutable; write a new artifact or working filename: "
+                f"{relative}"
+            )
+
+        exists = target.is_file()
+        if target.exists() and not exists:
+            raise IsADirectoryError(f"Project path is not a file: {relative}")
+        if exists:
+            if expected_sha256 is None:
+                raise ValueError("expected_sha256 is required when modifying an existing file")
+            actual_sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
+            if actual_sha256 != expected_sha256:
+                raise ValueError(f"Project file changed since it was read: {relative}")
+        elif expected_sha256 is not None:
+            raise FileNotFoundError(f"Cannot match expected_sha256 for a new file: {relative}")
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        self._atomic_write(target, content, overwrite=exists)
+        return target
+
+    def write_project_text(
+        self,
+        project_id: str,
+        relative_path: str | Path,
+        content: str,
+        *,
+        expected_sha256: str | None = None,
+    ) -> Path:
+        """UTF-8 convenience wrapper for ``write_project_file``."""
+
+        return self.write_project_file(
+            project_id,
+            relative_path,
+            content.encode("utf-8"),
+            expected_sha256=expected_sha256,
+        )
 
     def _append_manifest(self, reference: ArtifactReference) -> None:
         project_id = reference["project_id"]

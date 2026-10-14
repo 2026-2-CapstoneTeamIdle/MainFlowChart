@@ -24,12 +24,14 @@ MainFlowChart/
 │     ├─ design_game_logic.py
 │     ├─ generate_sound.py
 │     └─ ...                       # 검증·통합 Node 포함
+├─ MCP/                            # MCP 서버, 클라이언트, Node 도구 정책
 ├─ CI/CD/LocalWeb/                  # 로컬 웹 UI
 ├─ docs/                           # 팀 규약과 운영 문서
 │  ├─ assets/langgraph_flow.png
 │  ├─ ContractRule.md
 │  ├─ DockerManager.md
-│  └─ FileSystem.md
+│  ├─ FileSystem.md
+│  └─ MCPManager.md
 ├─ examples/                       # 실행 요청 예제
 │  └─ request.example.json
 ├─ unity_template/                 # 생성기가 복사할 Unity 6 2D 기본 프로젝트
@@ -91,6 +93,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/render_workflow_png.ps
 - [데이터 계약](docs/ContractRule.md)
 - [파일 교환 규약](docs/FileSystem.md)
 - [Docker 실행](docs/DockerManager.md)
+- [MCP 서버와 LLM 도구 연결](docs/MCPManager.md)
 - [Local Web 실행](CI/CD/LocalWeb/LocalWebManager.md)
 - [테스트 결과](tests/TestResult.md)
 - [Workflow 이미지](docs/assets/langgraph_flow.png)

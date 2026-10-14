@@ -20,39 +20,43 @@ from mainflow.nodes import (
     validate_image_node,
     validate_sound_node,
 )
+from MCP import bind_mcp_tools
 
 
 def build_graph():
     """Register workflow Nodes and preserve the authoritative Edge topology."""
     graph = StateGraph(WorkflowState)
 
+    def add_node(name, node):
+        graph.add_node(name, bind_mcp_tools(name, node))
+
     # Nodes
-    graph.add_node("user_input", user_input_node)
-    graph.add_node("parse_input", parse_input_node)
+    add_node("user_input", user_input_node)
+    add_node("parse_input", parse_input_node)
 
-    graph.add_node("analysis", analysis_node)
-    graph.add_node("logic_analysis", logic_analysis_node)
+    add_node("analysis", analysis_node)
+    add_node("logic_analysis", logic_analysis_node)
 
-    graph.add_node("generate_image", generate_image_node)
-    graph.add_node("design_game_logic", design_game_logic_node)
-    graph.add_node("generate_sound", generate_sound_node)
+    add_node("generate_image", generate_image_node)
+    add_node("design_game_logic", design_game_logic_node)
+    add_node("generate_sound", generate_sound_node)
 
-    graph.add_node("validate_game", validate_game_node)
+    add_node("validate_game", validate_game_node)
 
-    graph.add_node(
+    add_node(
         "create_asset_validation_spec",
         create_asset_validation_spec_node,
     )
 
-    graph.add_node("validate_image", validate_image_node)
-    graph.add_node("validate_sound", validate_sound_node)
+    add_node("validate_image", validate_image_node)
+    add_node("validate_sound", validate_sound_node)
 
-    graph.add_node(
+    add_node(
         "apply_assets_to_game",
         apply_assets_to_game_node,
     )
 
-    graph.add_node(
+    add_node(
         "final_validation",
         final_validation_node,
     )
