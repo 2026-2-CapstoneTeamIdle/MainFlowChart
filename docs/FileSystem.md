@@ -118,6 +118,18 @@ State로 받은 `ArtifactReference`를 통해 workspace 사본을 읽으며 Unit
 
 참조의 `relative_path`를 직접 이어 붙여 읽지 않는다. 항상 `ArtifactManager`의 읽기 메서드를 사용한다.
 
+## MCP 작업 파일
+
+LLM이 MCP로 Unity 소스 등 생성 중인 작업 파일을 수정할 때도 `ArtifactManager`의 프로젝트 경계를
+사용한다. `resolve_project_path`, `list_project_files`, `read_project_file`, `write_project_file`,
+`write_project_text`가 이 용도다.
+
+- 작업 파일은 반드시 `workspace/{project_id}/` 내부에 둔다.
+- 기존 파일 수정에는 직전 읽기에서 얻은 SHA-256이 필요하다.
+- manifest와 등록된 Artifact는 MCP 작업 파일 API로 덮어쓸 수 없다.
+- 수정 가능한 작업 파일을 최종 산출물로 확정할 때 새 Artifact로 등록한다.
+- 세부 도구 사용법과 Node별 권한은 [`MCPManager.md`](MCPManager.md)를 따른다.
+
 ## 5. 파일명과 수정 규칙
 
 - 파일명은 영문 소문자 `snake_case`를 기본으로 하고 확장자를 명시한다.

@@ -2,6 +2,8 @@
 
 Docker는 Python 3.11, uv, LangGraph 의존성을 동일하게 고정해 팀원이 별도 임시 환경 구성 없이
 MainFlow를 실행하도록 한다. 호스트의 `workspace/`는 컨테이너 `/app/workspace`에 연결된다.
+Compose는 같은 workspace를 사용하는 `mcp-server`를 함께 실행하고 MainFlow는
+`http://mcp-server:8001/mcp`로 접속한다.
 
 ## 기본 실행
 
@@ -11,6 +13,16 @@ MainFlow를 실행하도록 한다. 호스트의 `workspace/`는 컨테이너 `/
 docker compose build
 docker compose run --rm mainflow
 ```
+
+MCP 서버만 실행하거나 상태를 확인할 때는 다음 명령을 사용한다.
+
+```powershell
+docker compose up --build mcp-server
+Invoke-RestMethod http://127.0.0.1:8001/health
+```
+
+MCP endpoint는 `http://127.0.0.1:8001/mcp`이며 일반 REST endpoint가 아니라 MCP 클라이언트로
+접속해야 한다. 자세한 사용법은 [`MCPManager.md`](MCPManager.md)를 따른다.
 
 기본 요청은 다음과 같다.
 
@@ -67,4 +79,5 @@ docker compose -f "CI/CD/LocalWeb/compose.yaml" up --build
 - Docker Desktop이 실행 중인지 확인한다.
 - `docker version`과 `docker compose version`으로 설치 상태를 확인한다.
 - 8000 포트 충돌 시 Local Web compose의 호스트 포트를 변경한다.
+- 8001 포트 충돌 시 root `compose.yaml`의 MCP 호스트 포트를 변경한다.
 - 실행 산출물은 컨테이너 삭제 후에도 호스트 `workspace/`에 남는다.

@@ -1,6 +1,34 @@
 name: main-flow-chart
 
 services:
+  mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: main-flow-chart:local
+    environment:
+      MAINFLOW_WORKSPACE: /app/workspace
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8001"
+      MCP_ALLOWED_HOSTS: "mcp-server,mcp-server:*,localhost,localhost:*,127.0.0.1,127.0.0.1:*"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - type: bind
+        source: ./workspace
+        target: /app/workspace
+    ports:
+      - "127.0.0.1:8001:8001"
+    command:
+      - /app/.venv/bin/python
+      - -m
+      - MCP.server
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-m", "MCP.healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
   mainflow:
     build:
       context: .
@@ -8,7 +36,22 @@ services:
     image: main-flow-chart:local
     environment:
       MAINFLOW_WORKSPACE: /app/workspace
+      MCP_SERVER_URL: http://mcp-server:8001/mcp
+      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-120}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3-flash-preview}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      LOCAL_LLM_API_KEY: ${LOCAL_LLM_API_KEY:-}
+      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-gemma3}
+      LOCAL_LLM_BASE_URL: ${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
       PYTHONUNBUFFERED: "1"
+    depends_on:
+      mcp-server:
+        condition: service_healthy
     volumes:
       - type: bind
         source: ./workspace

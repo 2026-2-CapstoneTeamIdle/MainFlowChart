@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "LangGraph-based game asset generation workflow"
 requires-python = ">=3.11,<3.12"
 dependencies = [
+    "google-genai>=1.0.0,<2.0.0",
     "langgraph>=1.0.0,<2.0.0",
+    "mcp>=2.3.0,<3.0.0",
 ]
 
 [dependency-groups]
