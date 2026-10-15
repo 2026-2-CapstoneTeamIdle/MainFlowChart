@@ -4,8 +4,10 @@ into game-ready PNG assets.
 Select a backend with ``MAINFLOW_IMAGE_BACKEND``:
 
 - ``placeholder`` (default): deterministic shapes, no API key needed.
-- ``openai``: OpenAI Images API.  Requires ``OPENAI_API_KEY``; the model can be
-  overridden with ``MAINFLOW_OPENAI_IMAGE_MODEL``.
+- ``openai``: OpenAI Images API.  Requires ``OPENAI_API_KEY``; the model and
+  rendering quality can be overridden with ``MAINFLOW_OPENAI_IMAGE_MODEL`` and
+  ``MAINFLOW_OPENAI_IMAGE_QUALITY``.  A reference image (``Custom`` style) is
+  sent through the image edit endpoint.
 
 API keys are read from the environment only and are never written to the
 workspace, the manifest or the logs.
@@ -20,10 +22,9 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
-from mainflow.contracts import QualityLevel
 from mainflow.image_generation import (
-    TRANSPARENT_ROLES,
     ImageGenerator,
+    ImageKind,
     ImageRequest,
     PlaceholderImageGenerator,
 )
@@ -34,10 +35,16 @@ OPENAI_MODEL_ENVIRONMENT_KEY = "MAINFLOW_OPENAI_IMAGE_MODEL"
 # selected through MAINFLOW_OPENAI_IMAGE_MODEL once verified.
 DEFAULT_OPENAI_MODEL = "gpt-image-1"
 
-OPENAI_QUALITY: dict[QualityLevel, str] = {
-    "Low": "low",
-    "Medium": "medium",
-    "High": "high",
+OPENAI_QUALITY_ENVIRONMENT_KEY = "MAINFLOW_OPENAI_IMAGE_QUALITY"
+DEFAULT_OPENAI_QUALITY = "medium"
+OPENAI_QUALITIES = frozenset({"low", "medium", "high"})
+OPENAI_SIZES: dict[ImageKind, str] = {
+    "sprite": "1024x1024",
+    "portrait": "1024x1536",
+    "ui": "1024x1024",
+    "tileset": "1024x1024",
+    "illustration": "1024x1024",
+    "background": "1536x1024",
 }
 PIXEL_ART_COLORS = 32
 # Sprites keep this fraction of the canvas as empty margin after cropping.
@@ -63,10 +70,19 @@ class OpenAIImageGenerator:
         model: str | None = None,
         *,
         client: Any | None = None,
+        quality: str | None = None,
         max_retries: int = 3,
         timeout_seconds: float = 120.0,
     ) -> None:
         self.model = model or os.environ.get(OPENAI_MODEL_ENVIRONMENT_KEY, DEFAULT_OPENAI_MODEL)
+        self.quality = (
+            quality or os.environ.get(OPENAI_QUALITY_ENVIRONMENT_KEY) or DEFAULT_OPENAI_QUALITY
+        ).lower()
+        if self.quality not in OPENAI_QUALITIES:
+            raise ValueError(
+                f"Unsupported {OPENAI_QUALITY_ENVIRONMENT_KEY}: {self.quality!r} "
+                "(expected low, medium or high)"
+            )
         if client is None:
             from openai import OpenAI
 
@@ -89,16 +105,27 @@ class OpenAIImageGenerator:
         ) from blocked
 
     def _generate_once(self, request: ImageRequest, prompt: str) -> bytes:
-        transparent = request.plan.role in TRANSPARENT_ROLES
-        response = self.client.images.generate(
-            model=self.model,
-            prompt=prompt,
-            size="1536x1024" if request.plan.role == "background" else "1024x1024",
-            quality=OPENAI_QUALITY[request.quality],
-            background="transparent" if transparent else "opaque",
-            output_format="png",
-            n=1,
-        )
+        options: dict[str, Any] = {
+            "model": self.model,
+            "prompt": prompt,
+            "size": OPENAI_SIZES[request.plan.kind],
+            "quality": self.quality,
+            "background": "transparent" if request.plan.transparent else "opaque",
+            "output_format": "png",
+            "n": 1,
+        }
+        if request.reference is None:
+            response = self.client.images.generate(**options)
+        else:
+            extension = "jpg" if request.reference.media_type == "image/jpeg" else "png"
+            response = self.client.images.edit(
+                image=(
+                    f"reference.{extension}",
+                    request.reference.content,
+                    request.reference.media_type,
+                ),
+                **options,
+            )
         if not response.data or not response.data[0].b64_json:
             raise RuntimeError("OpenAI image response did not contain image data")
         return postprocess(base64.b64decode(response.data[0].b64_json), request)
@@ -125,7 +152,7 @@ def postprocess(content: bytes, request: ImageRequest) -> bytes:
     with Image.open(io.BytesIO(content)) as source:
         image = source.convert("RGBA")
 
-    if request.plan.role in TRANSPARENT_ROLES:
+    if request.plan.transparent:
         if not _has_transparency(image):
             image = remove_flat_background(image)
         image = _fit_sprite(image, request.width, request.height, request.style)

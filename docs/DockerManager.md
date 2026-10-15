@@ -59,6 +59,40 @@ docker compose run --rm mainflow `
   --condition "타워를 배치해 적을 막는 게임"
 ```
 
+## 이미지 생성 백엔드
+
+`generate_image`는 게임 설계가 만든 `image_asset_request`의 이미지 에셋마다 PNG를 만든다.
+생성기는 `MAINFLOW_IMAGE_BACKEND`로 고른다.
+
+| 값 | 동작 | 필요 조건 |
+|---|---|---|
+| `placeholder` (기본) | 스타일별 도형 PNG를 결정적으로 생성 | 없음 |
+| `openai` | OpenAI Images API로 생성 후 리사이즈·투명화·Pixel Art 팔레트 축소 | `OPENAI_API_KEY` |
+
+- `MAINFLOW_OPENAI_IMAGE_MODEL`: 모델, 기본값 `gpt-image-1`
+- `MAINFLOW_OPENAI_IMAGE_QUALITY`: `low | medium | high`, 기본값 `medium`
+- `Custom` 스타일의 참고 이미지(`reference_image`)는 이미지 편집 endpoint로 함께 전달한다.
+- 결과가 안전 필터에 차단되면 프롬프트를 바꿔 최대 3회 시도하고, 실패는 draft `notes`에 남긴다.
+
+에셋 종류(스프라이트, 초상화, UI, 타일셋, 일러스트, 배경)는 `asset_id`가 아니라 요청의
+`purpose`와 `description`으로 판단하며 종류에 따라 크기와 투명 배경 여부가 정해진다.
+`unity_binding_key`와 생성하지 못한 필수 에셋은 계약에 전용 필드가 생기기 전까지 draft `notes`에
+`unity_binding:`, `missing_required_asset:` 접두어로 기록한다.
+
+```powershell
+$env:MAINFLOW_IMAGE_BACKEND = "openai"
+$env:OPENAI_API_KEY = "<개인 키>"
+uv run --locked python -m mainflow.run_flow `
+  --image-style "Pixel Art" `
+  --mood-style Fantasy `
+  --genre "플랫포머" `
+  --viewpoint "사이드뷰" `
+  --condition "점프와 공격이 가능한 게임"
+```
+
+Compose는 호스트 셸 또는 `.env`에서 위 변수를 읽는다. 실제 키는 저장소에 커밋하지 않는다.
+테스트는 가짜 클라이언트를 사용하므로 API 키 없이 실행된다.
+
 ## 테스트
 
 ```powershell

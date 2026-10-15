@@ -13,7 +13,6 @@ from unittest import mock
 from PIL import Image, ImageDraw
 
 from mainflow.ArtifactManager import ArtifactManager
-from mainflow.contracts import CONTRACT_VERSION
 from mainflow.image_backends import (
     OpenAIImageGenerator,
     create_image_generator,
@@ -23,13 +22,19 @@ from mainflow.image_backends import (
 from mainflow.image_generation import (
     ImageRequest,
     PlaceholderImageGenerator,
-    asset_size,
+    ReferenceImage,
     build_prompt,
-    image_criteria,
     inspect_png,
     plan_assets,
 )
-from mainflow.langgraph_game_flow_skeleton import generate_image_node, validate_image_node
+from mainflow.nodes import generate_image_node, validate_image_node
+from tests.image_fixtures import asset_item, image_asset_request, write_image_inputs
+
+ASSETS = [
+    asset_item("hero", "플레이어", "날개를 가진 플레이어 스프라이트"),
+    asset_item("hero_portrait", "캐릭터", "표정 변형이 가능한 캐릭터 초상화"),
+    asset_item("stage", "배경", "주요 장면 배경 이미지"),
+]
 
 
 def sprite_png(size: int = 1024, transparent: bool = True) -> bytes:
@@ -60,7 +65,7 @@ def _encode(image: Image.Image) -> bytes:
 
 
 class FakeImagesClient:
-    """Records ``images.generate`` calls and returns canned PNGs."""
+    """Records ``images.generate``/``images.edit`` calls and returns canned PNGs."""
 
     def __init__(self, transparent_sprites: bool = True) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -68,8 +73,15 @@ class FakeImagesClient:
         self.images = self
 
     def generate(self, **kwargs: Any) -> SimpleNamespace:
-        self.calls.append(kwargs)
-        if kwargs["size"] == "1536x1024":
+        self.calls.append({"endpoint": "generate", **kwargs})
+        return self._respond(kwargs)
+
+    def edit(self, **kwargs: Any) -> SimpleNamespace:
+        self.calls.append({"endpoint": "edit", **kwargs})
+        return self._respond(kwargs)
+
+    def _respond(self, kwargs: dict[str, Any]) -> SimpleNamespace:
+        if kwargs["background"] == "opaque":
             content = scene_png()
         else:
             content = sprite_png(transparent=self.transparent_sprites)
@@ -77,49 +89,77 @@ class FakeImagesClient:
         return SimpleNamespace(data=[SimpleNamespace(b64_json=encoded)])
 
 
-def make_request(key: str, style: str = "Cartoon", quality: str = "Medium") -> ImageRequest:
-    plan = next(plan for plan in plan_assets("RPG") if plan.key == key)
-    width, height = asset_size(plan, quality)  # type: ignore[arg-type]
+def make_request(
+    asset_id: str = "hero",
+    style: str = "Cartoon",
+    reference: ReferenceImage | None = None,
+) -> ImageRequest:
+    request = image_asset_request(ASSETS, image_style=style)
+    plan = next(plan for plan in plan_assets(request) if plan.asset_id == asset_id)
+    width, height = plan.size
     return ImageRequest(
         plan=plan,
-        style=style,  # type: ignore[arg-type]
-        genre="RPG",
+        style=request["image_style"],
+        mood_style=request["mood_style"],
+        viewpoint=request["viewpoint"],
+        genre=request["genre"],
         width=width,
         height=height,
-        prompt=build_prompt(plan, style, "RPG"),  # type: ignore[arg-type]
-        quality=quality,  # type: ignore[arg-type]
+        prompt=build_prompt(plan, request),
+        reference=reference,
     )
 
 
 class OpenAIImageGeneratorTest(unittest.TestCase):
-    def test_request_parameters_follow_asset_role_and_quality(self) -> None:
+    def test_request_parameters_follow_asset_kind(self) -> None:
         client = FakeImagesClient()
-        generator = OpenAIImageGenerator("test-model", client=client)
+        generator = OpenAIImageGenerator("test-model", client=client, quality="high")
 
-        generator.generate(make_request("player", quality="High"))
-        generator.generate(make_request("background", quality="Low"))
+        generator.generate(make_request("hero"))
+        generator.generate(make_request("hero_portrait"))
+        generator.generate(make_request("stage"))
 
-        sprite_call, scene_call = client.calls
+        sprite_call, portrait_call, scene_call = client.calls
+        self.assertEqual(sprite_call["endpoint"], "generate")
         self.assertEqual(sprite_call["model"], "test-model")
         self.assertEqual(sprite_call["background"], "transparent")
         self.assertEqual(sprite_call["size"], "1024x1024")
         self.assertEqual(sprite_call["quality"], "high")
         self.assertEqual(sprite_call["output_format"], "png")
-        self.assertIn("adventurer hero", sprite_call["prompt"])
+        self.assertIn("날개를 가진", sprite_call["prompt"])
+        self.assertEqual(portrait_call["size"], "1024x1536")
         self.assertEqual(scene_call["background"], "opaque")
         self.assertEqual(scene_call["size"], "1536x1024")
-        self.assertEqual(scene_call["quality"], "low")
 
-    def test_model_can_be_set_by_environment(self) -> None:
-        with mock.patch.dict(os.environ, {"MAINFLOW_OPENAI_IMAGE_MODEL": "gpt-image-2"}):
+    def test_reference_image_uses_edit_endpoint(self) -> None:
+        client = FakeImagesClient()
+        reference = ReferenceImage(sprite_png(64), "image/png")
+        OpenAIImageGenerator("m", client=client).generate(
+            make_request(style="Custom", reference=reference)
+        )
+        (call,) = client.calls
+        self.assertEqual(call["endpoint"], "edit")
+        self.assertEqual(call["image"], ("reference.png", reference.content, "image/png"))
+        self.assertIn("reference image", call["prompt"])
+
+    def test_model_and_quality_can_be_set_by_environment(self) -> None:
+        environment = {
+            "MAINFLOW_OPENAI_IMAGE_MODEL": "gpt-image-2",
+            "MAINFLOW_OPENAI_IMAGE_QUALITY": "LOW",
+        }
+        with mock.patch.dict(os.environ, environment):
             generator = OpenAIImageGenerator(client=FakeImagesClient())
-        self.assertEqual(generator.model, "gpt-image-2")
+        self.assertEqual((generator.model, generator.quality), ("gpt-image-2", "low"))
+
+    def test_invalid_quality_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            OpenAIImageGenerator("m", client=FakeImagesClient(), quality="ultra")
 
     def test_empty_response_raises(self) -> None:
         client = mock.Mock()
         client.images.generate.return_value = SimpleNamespace(data=[])
         with self.assertRaises(RuntimeError):
-            OpenAIImageGenerator("m", client=client).generate(make_request("player"))
+            OpenAIImageGenerator("m", client=client).generate(make_request())
 
 
 class ModerationError(Exception):
@@ -141,12 +181,9 @@ class BlockingImagesClient(FakeImagesClient):
 
 
 class ModerationRetryTest(unittest.TestCase):
-    def test_prompt_asks_for_original_design(self) -> None:
-        self.assertIn("not based on any existing", make_request("player").prompt)
-
     def test_blocked_output_is_retried_with_a_changed_prompt(self) -> None:
         client = BlockingImagesClient(blocked_attempts=1)
-        request = make_request("player")
+        request = make_request()
 
         content = OpenAIImageGenerator("m", client=client).generate(request)
 
@@ -159,34 +196,32 @@ class ModerationRetryTest(unittest.TestCase):
     def test_gives_up_after_all_prompt_variants(self) -> None:
         client = BlockingImagesClient(blocked_attempts=99)
         with self.assertRaisesRegex(RuntimeError, "safety system"):
-            OpenAIImageGenerator("m", client=client).generate(make_request("player"))
+            OpenAIImageGenerator("m", client=client).generate(make_request())
         self.assertEqual(len(client.calls), 3)
 
     def test_other_errors_are_not_retried(self) -> None:
         client = mock.Mock()
         client.images.generate.side_effect = ValueError("invalid size")
         with self.assertRaises(ValueError):
-            OpenAIImageGenerator("m", client=client).generate(make_request("player"))
+            OpenAIImageGenerator("m", client=client).generate(make_request())
         self.assertEqual(client.images.generate.call_count, 1)
 
 
 class PostprocessTest(unittest.TestCase):
     def test_sprite_is_resized_and_keeps_transparency(self) -> None:
-        request = make_request("player")
+        request = make_request("hero")
         info = inspect_png(postprocess(sprite_png(), request))
         self.assertEqual((info.width, info.height), (request.width, request.height))
         self.assertTrue(info.has_transparent_pixel)
 
     def test_background_is_center_cropped_and_opaque(self) -> None:
-        request = make_request("background")
-        content = postprocess(scene_png(), request)
-        info = inspect_png(content)
+        request = make_request("stage")
+        info = inspect_png(postprocess(scene_png(), request))
         self.assertEqual((info.width, info.height), (request.width, request.height))
         self.assertFalse(info.has_transparent_pixel)
 
     def test_opaque_sprite_falls_back_to_background_removal(self) -> None:
-        request = make_request("player")
-        info = inspect_png(postprocess(sprite_png(transparent=False), request))
+        info = inspect_png(postprocess(sprite_png(transparent=False), make_request("hero")))
         self.assertTrue(info.has_transparent_pixel)
 
     def test_background_removal_keeps_interior(self) -> None:
@@ -196,13 +231,11 @@ class PostprocessTest(unittest.TestCase):
         self.assertEqual(result.getpixel((128, 128))[3], 255)
 
     def test_pixel_art_limits_palette_and_snaps_alpha(self) -> None:
-        request = make_request("player", style="Pixel Art", quality="High")
+        request = make_request("hero_portrait", style="Pixel Art")
         with Image.open(io.BytesIO(postprocess(sprite_png(), request))) as image:
-            image = image.convert("RGBA")
-            opaque_colors = {pixel[:3] for pixel in image.get_flattened_data() if pixel[3]}
-            alphas = {pixel[3] for pixel in image.get_flattened_data()}
-        self.assertLessEqual(len(opaque_colors), 32)
-        self.assertLessEqual(alphas, {0, 255})
+            pixels = list(image.convert("RGBA").get_flattened_data())
+        self.assertLessEqual(len({pixel[:3] for pixel in pixels if pixel[3]}), 32)
+        self.assertLessEqual({pixel[3] for pixel in pixels}, {0, 255})
 
 
 class BackendSelectionTest(unittest.TestCase):
@@ -230,62 +263,37 @@ class OpenAIGraphNodeTest(unittest.TestCase):
         self.environment.stop()
         self.temporary_directory.cleanup()
 
-    def _write(self, category, filename, payload):
-        return self.manager.write_json(
-            self.project_id, category, filename, payload, producer="test"
-        )
-
     def test_generated_assets_pass_validation(self) -> None:
-        parsed_request = self._write(
-            "data",
-            "parsed_request.json",
-            {
-                "contract_version": CONTRACT_VERSION,
-                "image_style": "Anime",
-                "genre": "RPG",
-                "quality": "Medium",
-            },
-        )
-        final_spec = self._write(
-            "validation",
-            "initial_final_validation_spec.json",
-            {"contract_version": CONTRACT_VERSION, "spec_id": "s", "criteria": []},
-        )
-        asset_spec = self._write(
-            "validation",
-            "asset_validation_spec.json",
-            {
-                "contract_version": CONTRACT_VERSION,
-                "spec_id": "a",
-                "image_criteria": image_criteria(),
-                "sound_criteria": [],
-            },
+        state = write_image_inputs(
+            self.manager, self.project_id, image_asset_request(ASSETS, image_style="Anime")
         )
         client = FakeImagesClient(transparent_sprites=False)
-        image_draft = generate_image_node(
-            {
-                "project_id": self.project_id,
-                "parsed_request": parsed_request,
-                "initial_final_validation_spec": final_spec,
-            },
-            OpenAIImageGenerator("test-model", client=client),
+        state["image_draft"] = generate_image_node(
+            state, OpenAIImageGenerator("test-model", client=client)
         )["image_draft"]
 
-        draft = self.manager.read_json(image_draft)
-        self.assertEqual(draft["notes"], ["generator=openai"])
-        self.assertEqual(len(client.calls), len(plan_assets("RPG")))
-
-        result = self.manager.read_json(
-            validate_image_node(
-                {
-                    "project_id": self.project_id,
-                    "parsed_request": parsed_request,
-                    "image_draft": image_draft,
-                    "asset_validation_spec": asset_spec,
-                }
-            )["image_validation_result"]
-        )
+        self.assertEqual(len(client.calls), len(ASSETS))
+        result = self.manager.read_json(validate_image_node(state)["image_validation_result"])
         self.assertEqual(result["status"], "passed", result["issues"])
+        self.assertEqual(result["validated_asset_ids"], [item["asset_id"] for item in ASSETS])
+
+    def test_custom_reference_image_is_read_from_the_request(self) -> None:
+        reference = self.manager.write_bytes(
+            self.project_id,
+            "image",
+            "references/custom_style.png",
+            sprite_png(64),
+            producer="parse_input",
+            media_type="image/png",
+        )
+        request = image_asset_request(ASSETS[:1], image_style="Custom", reference_image=reference)
+        state = write_image_inputs(self.manager, self.project_id, request)
+        client = FakeImagesClient()
+        generate_image_node(state, OpenAIImageGenerator("m", client=client))
+
+        (call,) = client.calls
+        self.assertEqual(call["endpoint"], "edit")
+        self.assertEqual(call["image"][1], self.manager.read_bytes(reference))
 
 
 if __name__ == "__main__":

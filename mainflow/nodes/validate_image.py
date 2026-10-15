@@ -13,6 +13,13 @@ from mainflow.contracts import (
     ParsedRequest,
     ValidateImageAgentInput,
     ValidateImageAgentOutput,
+    ValidationCheckResult,
+    ValidationIssue,
+)
+from mainflow.image_generation import (
+    MISSING_REQUIRED_NOTE_PREFIX,
+    TRANSPARENT_PROMPT,
+    inspect_png,
 )
 from mainflow.nodes._common import log
 
@@ -33,16 +40,89 @@ def validate_image_node(
 
     manager = ArtifactManager()
     cast(ParsedRequest, manager.read_json(state["parsed_request"]))
-    cast(ImageDraft, manager.read_json(state["image_draft"]))
-    cast(AssetValidationSpec, manager.read_json(state["asset_validation_spec"]))
+    draft = cast(ImageDraft, manager.read_json(state["image_draft"]))
+    spec = cast(AssetValidationSpec, manager.read_json(state["asset_validation_spec"]))
 
-    # TODO: 이미지 검증
+    # TODO: 비전 모델을 이용한 스타일 일치 검증 추가
+    issues: list[ValidationIssue] = []
+    # The node contract does not include image_asset_request, so missing
+    # required assets are read from the markers generate_image leaves in notes.
+    missing_ids = [
+        note.removeprefix(MISSING_REQUIRED_NOTE_PREFIX)
+        for note in draft["notes"]
+        if note.startswith(MISSING_REQUIRED_NOTE_PREFIX)
+    ]
+    for asset_id in missing_ids:
+        issues.append(
+            {
+                "code": "image-plan-complete",
+                "severity": "error",
+                "message": "필수 이미지 에셋이 생성되지 않았습니다.",
+                "target_id": asset_id,
+            }
+        )
+
+    failed: dict[str, set[str]] = {}
+    validated_asset_ids: list[str] = []
+    for asset in draft["assets"]:
+        asset_id = asset["asset_id"]
+        errors: list[tuple[str, str]] = []
+        try:
+            info = inspect_png(manager.read_bytes(asset["artifact"]))
+        except (OSError, ValueError) as error:
+            errors.append(("image-file-valid", f"PNG를 읽을 수 없습니다: {error}"))
+        else:
+            if (info.width, info.height) != (asset["width"], asset["height"]):
+                errors.append(
+                    (
+                        "image-size-match",
+                        f"선언 {asset['width']}x{asset['height']}, 실제 {info.width}x{info.height}",
+                    )
+                )
+            if TRANSPARENT_PROMPT in asset["prompt"] and not info.has_transparent_pixel:
+                errors.append(("image-transparency", "투명 배경이 필요한 에셋입니다."))
+        for code, message in errors:
+            failed.setdefault(code, set()).add(asset_id)
+            issues.append(
+                {
+                    "code": code,
+                    "severity": "error",
+                    "message": message,
+                    "target_id": asset_id,
+                }
+            )
+        if not errors:
+            validated_asset_ids.append(asset_id)
+
+    checks: list[ValidationCheckResult] = []
+    for criterion in spec["image_criteria"]:
+        criterion_id = criterion["criterion_id"]
+        if criterion_id == "image-plan-complete":
+            passed = not missing_ids
+        else:
+            passed = criterion_id not in failed
+        checks.append(
+            {
+                "criterion_id": criterion_id,
+                "passed": passed,
+                "message": "통과" if passed else "실패 - issues 참고",
+            }
+        )
+
+    required_ids = {
+        criterion["criterion_id"] for criterion in spec["image_criteria"] if criterion["required"]
+    }
+    all_required_passed = all(
+        check["passed"] for check in checks if check["criterion_id"] in required_ids
+    )
+    status = "passed" if draft["status"] == "generated" and all_required_passed else "failed"
+    log(f"  - 이미지 검증 {status} ({len(validated_asset_ids)}/{len(draft['assets'])} 에셋 통과)")
     result: ImageValidationResult = {
         "contract_version": CONTRACT_VERSION,
-        "status": "pending",
-        "checks": [],
-        "issues": [],
-        "validated_asset_ids": [],
+        "status": status,
+        "checks": checks,
+        "issues": issues,
+        "validated_asset_ids": validated_asset_ids,
     }
     return {
         "image_validation_result": manager.write_json(

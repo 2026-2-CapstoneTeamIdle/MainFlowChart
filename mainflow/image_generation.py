@@ -1,10 +1,12 @@
 """Image generation and validation logic for the ``generate_image`` and
-``validate_image`` agents.
+``validate_image`` nodes.
 
-The generator sits behind the ``ImageGenerator`` protocol so a real AI backend
-(OpenAI, Imagen, Stable Diffusion, ...) can replace the deterministic
-``PlaceholderImageGenerator`` without changing the graph nodes.  PNG encoding
-and decoding use only the standard library.
+The asset list comes from the game design's ``image_asset_request``
+(``AssetGenerationRequest``).  Each requested asset keeps its ``asset_id`` and
+``unity_binding_key`` unchanged.  The generator sits behind the
+``ImageGenerator`` protocol so an AI backend (see ``image_backends``) can
+replace the deterministic ``PlaceholderImageGenerator`` without changing the
+nodes.  PNG encoding and decoding use only the standard library.
 """
 
 from __future__ import annotations
@@ -15,79 +17,53 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from mainflow.contracts import (
-    GameGenre,
+    AssetGenerationItem,
+    AssetGenerationRequest,
+    GenreProfile,
     ImageStyle,
-    QualityLevel,
+    MoodStyle,
     ValidationCriterion,
+    Viewpoint,
 )
 
-ImageRole = Literal["character", "enemy", "tile", "item", "ui", "background"]
+ImageKind = Literal["sprite", "portrait", "ui", "tileset", "illustration", "background"]
 RGBA = tuple[int, int, int, int]
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 PNG_MEDIA_TYPE = "image/png"
-# Roles drawn over a game scene must keep a transparent background.
-TRANSPARENT_ROLES: frozenset[ImageRole] = frozenset({"character", "enemy", "item", "ui"})
+# Kinds drawn over a game scene must keep a transparent background.
+TRANSPARENT_KINDS: frozenset[ImageKind] = frozenset({"sprite", "portrait", "ui"})
 
+# The contract forbids inferring an asset's kind from its opaque asset_id, so
+# the kind is read from the human-written purpose/description.  Checked in
+# order; the first match wins and "sprite" is the fallback.
+# TODO: replace with an explicit field once the team adds one to the contract.
+KIND_KEYWORDS: tuple[tuple[ImageKind, tuple[str, ...]], ...] = (
+    ("tileset", ("타일", "tile")),
+    ("ui", ("ui", "테두리", "프레임", "frame", "아이콘", "icon", "버튼", "button")),
+    ("illustration", ("일러스트", "illustration")),
+    ("portrait", ("초상화", "portrait")),
+    ("background", ("배경", "background", "맵", "map", "스테이지", "stage")),
+)
 
-@dataclass(frozen=True)
-class ImageAssetPlan:
-    """One image the game expects.  ``key`` is shared with the game agent."""
-
-    key: str
-    name: str
-    role: ImageRole
-    description: str
-
-    @property
-    def asset_id(self) -> str:
-        return f"image-{self.key}"
-
-    @property
-    def filename(self) -> str:
-        return f"{self.key}.png"
-
-
-# Standard asset list per genre.  ``generate_image`` runs in parallel with
-# ``design_game_logic``, so both agents rely on this list instead of each
-# other's output.  Change it only together with the game agent owner.
-GENRE_ASSET_PLANS: dict[GameGenre, tuple[ImageAssetPlan, ...]] = {
-    "Action": (
-        ImageAssetPlan("player", "Player", "character", "hero character"),
-        ImageAssetPlan("enemy_basic", "Basic Enemy", "enemy", "basic enemy"),
-        ImageAssetPlan("projectile", "Projectile", "item", "bullet projectile"),
-        ImageAssetPlan("background", "Background", "background", "battle stage"),
-    ),
-    "RPG": (
-        ImageAssetPlan("player", "Player", "character", "adventurer hero"),
-        ImageAssetPlan("npc_villager", "Villager", "character", "friendly villager"),
-        ImageAssetPlan("enemy_slime", "Slime", "enemy", "slime monster"),
-        ImageAssetPlan("item_potion", "Potion", "item", "healing potion"),
-        ImageAssetPlan("background", "Background", "background", "fantasy village"),
-    ),
-    "Platformer": (
-        ImageAssetPlan("player", "Player", "character", "jumping hero"),
-        ImageAssetPlan("enemy_basic", "Basic Enemy", "enemy", "walking enemy"),
-        ImageAssetPlan("tile_ground", "Ground Tile", "tile", "ground tile"),
-        ImageAssetPlan("item_coin", "Coin", "item", "gold coin"),
-        ImageAssetPlan("background", "Background", "background", "side-scrolling sky"),
-    ),
-    "Puzzle": (
-        ImageAssetPlan("tile_block_red", "Red Block", "tile", "red puzzle block"),
-        ImageAssetPlan("tile_block_blue", "Blue Block", "tile", "blue puzzle block"),
-        ImageAssetPlan("cursor", "Cursor", "ui", "selection cursor"),
-        ImageAssetPlan("background", "Background", "background", "puzzle board"),
-    ),
-    "Simulation": (
-        ImageAssetPlan("character_worker", "Worker", "character", "town worker"),
-        ImageAssetPlan("building_house", "House", "item", "small house building"),
-        ImageAssetPlan("tile_grass", "Grass Tile", "tile", "grass tile"),
-        ImageAssetPlan("background", "Background", "background", "town map"),
-    ),
+# Output size in pixels per kind.
+KIND_SIZES: dict[ImageKind, tuple[int, int]] = {
+    "sprite": (64, 64),
+    "portrait": (256, 384),
+    "ui": (128, 128),
+    "tileset": (128, 128),
+    "illustration": (256, 256),
+    "background": (512, 384),
 }
 
-# Sprite edge length in pixels per quality level.
-SPRITE_SIZE: dict[QualityLevel, int] = {"Low": 32, "Medium": 64, "High": 128}
+KIND_PROMPTS: dict[ImageKind, str] = {
+    "sprite": "A 2D game sprite",
+    "portrait": "A 2D character portrait for dialogue scenes",
+    "ui": "A 2D game UI element",
+    "tileset": "A seamless 2D tileset texture arranged as a grid of tiles",
+    "illustration": "A 2D card illustration",
+    "background": "A 2D game background scene",
+}
 
 STYLE_PALETTES: dict[ImageStyle, tuple[RGBA, RGBA, RGBA]] = {
     # (primary, secondary, background)
@@ -96,6 +72,7 @@ STYLE_PALETTES: dict[ImageStyle, tuple[RGBA, RGBA, RGBA]] = {
     "Cartoon": ((255, 196, 0, 255), (0, 166, 237, 255), (204, 238, 255, 255)),
     "Realistic": ((122, 98, 74, 255), (78, 102, 66, 255), (160, 170, 165, 255)),
     "Low Poly": ((90, 200, 160, 255), (240, 120, 80, 255), (60, 70, 110, 255)),
+    "Custom": ((150, 150, 160, 255), (90, 90, 110, 255), (220, 220, 225, 255)),
 }
 
 STYLE_PROMPTS: dict[ImageStyle, str] = {
@@ -104,47 +81,118 @@ STYLE_PROMPTS: dict[ImageStyle, str] = {
     "Cartoon": "cartoon style, bold outlines, flat colors",
     "Realistic": "realistic, detailed textures, natural lighting",
     "Low Poly": "low poly 3D render, flat shaded facets",
+    "Custom": "match the art style, palette and rendering of the reference image",
 }
 
+MOOD_PROMPTS: dict[MoodStyle, str] = {
+    "Cyberpunk": "cyberpunk, neon lights, high-tech city",
+    "Medieval": "medieval, castles and old stone",
+    "Modern": "modern everyday setting",
+    "Fantasy": "high fantasy, magical",
+    "Horror": "dark horror atmosphere, eerie",
+    "Cozy": "cozy, warm and soft",
+}
+
+VIEWPOINT_PROMPTS: dict[Viewpoint, str] = {
+    "사이드뷰": "side view",
+    "탑다운": "top-down view",
+    "쿼터뷰": "isometric three-quarter view",
+    "고정 화면": "fixed single-screen front view",
+}
+
+# validate_image looks for this clause in an asset's recorded prompt to know
+# that the asset must have transparent pixels.
+TRANSPARENT_PROMPT = "isolated on a transparent background, single centered subject"
+OPAQUE_PROMPT = "fills the whole canvas, no transparency"
 
 # Generic game subjects ("jumping hero", "gold coin") tend to drift toward
 # famous franchise characters, which the provider's output moderation blocks.
 ORIGINAL_DESIGN_PROMPT = "original design, not based on any existing game, franchise or character"
 
-
-def plan_assets(genre: GameGenre) -> tuple[ImageAssetPlan, ...]:
-    return GENRE_ASSET_PLANS[genre]
-
-
-def asset_size(plan: ImageAssetPlan, quality: QualityLevel) -> tuple[int, int]:
-    sprite = SPRITE_SIZE[quality]
-    if plan.role == "background":
-        return sprite * 4, sprite * 3
-    return sprite, sprite
+# ImageAsset has no field for these yet, so generate_image records them as
+# draft notes with fixed prefixes that validate_image can read back.
+# TODO: move to ImageAsset/ImageDraft fields once the contract carries them.
+BINDING_NOTE_PREFIX = "unity_binding:"
+MISSING_REQUIRED_NOTE_PREFIX = "missing_required_asset:"
 
 
-def build_prompt(plan: ImageAssetPlan, style: ImageStyle, genre: GameGenre) -> str:
-    background = (
-        "transparent background, single centered object"
-        if plan.role in TRANSPARENT_ROLES
-        else "full scene"
+@dataclass(frozen=True)
+class ImageAssetPlan:
+    """One requested image, derived from an ``AssetGenerationItem``."""
+
+    asset_id: str
+    purpose: str
+    description: str
+    required: bool
+    filename: str
+    unity_binding_key: str
+    kind: ImageKind
+
+    @property
+    def transparent(self) -> bool:
+        return self.kind in TRANSPARENT_KINDS
+
+    @property
+    def size(self) -> tuple[int, int]:
+        return KIND_SIZES[self.kind]
+
+
+def classify_kind(purpose: str, description: str) -> ImageKind:
+    text = f"{purpose} {description}".lower()
+    for kind, keywords in KIND_KEYWORDS:
+        if any(keyword in text for keyword in keywords):
+            return kind
+    return "sprite"
+
+
+def plan_from_item(item: AssetGenerationItem) -> ImageAssetPlan:
+    filename = item["suggested_filename"]
+    if not filename.lower().endswith(".png"):
+        filename = f"{item['asset_id']}.png"
+    return ImageAssetPlan(
+        asset_id=item["asset_id"],
+        purpose=item["purpose"],
+        description=item["description"],
+        required=item["required"],
+        filename=filename,
+        unity_binding_key=item["unity_binding_key"],
+        kind=classify_kind(item["purpose"], item["description"]),
     )
+
+
+def plan_assets(request: AssetGenerationRequest) -> list[ImageAssetPlan]:
+    return [plan_from_item(item) for item in request["assets"] if item["asset_type"] == "image"]
+
+
+def build_prompt(plan: ImageAssetPlan, request: AssetGenerationRequest) -> str:
+    background = TRANSPARENT_PROMPT if plan.transparent else OPAQUE_PROMPT
     return (
-        f"{plan.description} for a {genre} game, "
-        f"{STYLE_PROMPTS[style]}, {background}, "
-        f"{ORIGINAL_DESIGN_PROMPT}"
+        f'{KIND_PROMPTS[plan.kind]} for the {request["genre"]} game "{request["game_title"]}": '
+        f"{plan.description} (role: {plan.purpose}). "
+        f"Art style: {STYLE_PROMPTS[request['image_style']]}. "
+        f"Mood: {MOOD_PROMPTS[request['mood_style']]}. "
+        f"Viewpoint: {VIEWPOINT_PROMPTS[request['viewpoint']]}. "
+        f"{background}, no text or letters, {ORIGINAL_DESIGN_PROMPT}"
     )
+
+
+@dataclass(frozen=True)
+class ReferenceImage:
+    content: bytes
+    media_type: str
 
 
 @dataclass(frozen=True)
 class ImageRequest:
     plan: ImageAssetPlan
     style: ImageStyle
-    genre: GameGenre
+    mood_style: MoodStyle
+    viewpoint: Viewpoint
+    genre: GenreProfile
     width: int
     height: int
     prompt: str
-    quality: QualityLevel = "Medium"
+    reference: ReferenceImage | None = None
 
 
 class ImageGenerator(Protocol):
@@ -162,7 +210,8 @@ class PlaceholderImageGenerator:
 
     def generate(self, request: ImageRequest) -> bytes:
         primary, secondary, backdrop = STYLE_PALETTES[request.style]
-        if request.plan.role in ("enemy", "ui"):
+        # Alternate colors per asset so different assets are easy to tell apart.
+        if zlib.crc32(request.plan.asset_id.encode("utf-8")) % 2:
             primary, secondary = secondary, primary
         width, height = request.width, request.height
         # Pixel Art is drawn on a coarse grid so the result looks blocky.
@@ -175,7 +224,7 @@ class PlaceholderImageGenerator:
                 sx, sy = (x // block) * block, (y // block) * block
                 row.append(
                     self._pixel(
-                        request.plan.role, sx, sy, width, height, primary, secondary, backdrop
+                        request.plan.kind, sx, sy, width, height, primary, secondary, backdrop
                     )
                 )
             rows.append(row)
@@ -183,7 +232,7 @@ class PlaceholderImageGenerator:
 
     @staticmethod
     def _pixel(
-        role: ImageRole,
+        kind: ImageKind,
         x: int,
         y: int,
         width: int,
@@ -196,24 +245,27 @@ class PlaceholderImageGenerator:
         u = (x + 0.5) / width - 0.5
         v = (y + 0.5) / height - 0.5
 
-        if role == "background":
+        if kind == "background":
             # Vertical gradient from backdrop to secondary, with a ground band.
             if v > 0.3:
                 return primary
             t = y / max(1, height - 1)
             return _mix(backdrop, secondary, t * 0.6)
-        if role == "tile":
-            edge = min(x, y, width - 1 - x, height - 1 - y)
-            return secondary if edge < max(1, width // 16) else primary
-        if role == "item":
-            # Diamond.
-            return primary if abs(u) + abs(v) < 0.35 else transparent
-        if role == "ui":
+        if kind == "tileset":
+            # 4x4 grid of bordered tiles.
+            tile_width, tile_height = max(1, width // 4), max(1, height // 4)
+            tx, ty = x % tile_width, y % tile_height
+            edge = min(tx, ty, tile_width - 1 - tx, tile_height - 1 - ty)
+            return secondary if edge < max(1, tile_width // 8) else primary
+        if kind == "illustration":
+            # Diamond emblem on a filled card.
+            return primary if abs(u) + abs(v) < 0.35 else backdrop
+        if kind == "ui":
             # Hollow square frame.
             outer = max(abs(u), abs(v)) < 0.45
             inner = max(abs(u), abs(v)) < 0.35
             return primary if outer and not inner else transparent
-        # character / enemy: head circle over body ellipse.
+        # sprite / portrait: head circle over body ellipse.
         if u * u + (v + 0.22) ** 2 < 0.15**2:
             return secondary
         if (u / 0.3) ** 2 + ((v - 0.15) / 0.3) ** 2 < 1.0:
@@ -352,7 +404,7 @@ IMAGE_CRITERIA: tuple[ValidationCriterion, ...] = (
     {
         "criterion_id": "image-plan-complete",
         "target": "image",
-        "description": "Every planned image asset for the genre was generated",
+        "description": "Every required image asset in the image request was generated",
         "required": True,
     },
     {
@@ -370,7 +422,7 @@ IMAGE_CRITERIA: tuple[ValidationCriterion, ...] = (
     {
         "criterion_id": "image-transparency",
         "target": "image",
-        "description": "Sprites drawn over the scene have transparent pixels",
+        "description": "Sprites, portraits and UI drawn over the scene have transparent pixels",
         "required": True,
     },
 )

@@ -12,10 +12,6 @@ services:
       MCP_PORT: "8001"
       MCP_ALLOWED_HOSTS: "mcp-server,mcp-server:*,localhost,localhost:*,127.0.0.1,127.0.0.1:*"
       PYTHONUNBUFFERED: "1"
-      # placeholder (default) | openai. Keys come from the host shell or .env.
-      MAINFLOW_IMAGE_BACKEND: ${MAINFLOW_IMAGE_BACKEND:-placeholder}
-      MAINFLOW_OPENAI_IMAGE_MODEL: ${MAINFLOW_OPENAI_IMAGE_MODEL:-gpt-image-1}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:
       - type: bind
         source: ./workspace
@@ -42,6 +38,9 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       MAINFLOW_GEMINI_MODEL: ${MAINFLOW_GEMINI_MODEL:-gemini-3-flash-preview}
       MAINFLOW_GEMINI_TIMEOUT_SECONDS: ${MAINFLOW_GEMINI_TIMEOUT_SECONDS:-90}
+      MAINFLOW_IMAGE_BACKEND: ${MAINFLOW_IMAGE_BACKEND:-placeholder}
+      MAINFLOW_OPENAI_IMAGE_MODEL: ${MAINFLOW_OPENAI_IMAGE_MODEL:-gpt-image-1}
+      MAINFLOW_OPENAI_IMAGE_QUALITY: ${MAINFLOW_OPENAI_IMAGE_QUALITY:-medium}
       MAINFLOW_GEMINI_THINKING_LEVEL: ${MAINFLOW_GEMINI_THINKING_LEVEL:-low}
       MAINFLOW_GEMINI_MAX_OUTPUT_TOKENS: ${MAINFLOW_GEMINI_MAX_OUTPUT_TOKENS:-8192}
       MAINFLOW_WORKSPACE: /app/workspace
