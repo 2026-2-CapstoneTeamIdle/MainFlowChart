@@ -103,6 +103,8 @@ def main() -> int:
     final_state = cast(WorkflowState, build_graph().invoke(initial_state))
     manager = ArtifactManager()
     game_validation = manager.read_json(final_state["game_validation_result"])
+    image_generation = manager.read_json(final_state["image_draft"])
+    sound_generation = manager.read_json(final_state["sound_draft"])
     final_validation = manager.read_json(final_state["final_validation_result"])
     project_root = manager.ensure_project(final_state["project_id"])
 
@@ -110,6 +112,8 @@ def main() -> int:
         "project_id": final_state["project_id"],
         "project_root": str(project_root),
         "game_validation": game_validation,
+        "image_generation": image_generation,
+        "sound_generation": sound_generation,
         "final_validation": final_validation,
         "final_state": final_state,
     }

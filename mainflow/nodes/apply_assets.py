@@ -37,7 +37,7 @@ def apply_assets_to_game_node(
     log("검증을 통과한 이미지/사운드 에셋을 게임에 적용합니다.")
 
     manager = ArtifactManager()
-    cast(GameLogicDraft, manager.read_json(state["game_logic_draft"]))
+    game_draft = cast(GameLogicDraft, manager.read_json(state["game_logic_draft"]))
     cast(ImageDraft, manager.read_json(state["image_draft"]))
     cast(SoundDraft, manager.read_json(state["sound_draft"]))
     cast(
@@ -50,14 +50,21 @@ def apply_assets_to_game_node(
     )
 
     # TODO: 실제 Unity/Godot 프로젝트에 에셋 적용
+    game_failed = game_draft["status"] == "failed"
     integrated_game: IntegratedGame = {
         "contract_version": CONTRACT_VERSION,
-        "status": "pending",
+        "status": "failed" if game_failed else "pending",
         "entry_artifact": None,
         "game_artifacts": [],
         "applied_image_asset_ids": [],
         "applied_sound_asset_ids": [],
-        "notes": ["에셋 통합 Agent 구현 전 placeholder"],
+        "notes": [
+            (
+                "게임 생성 실패로 에셋 적용은 건너뛰었지만 이미지/사운드 파이프라인은 완료됨"
+                if game_failed
+                else "에셋 통합 Agent 구현 전 placeholder"
+            )
+        ],
     }
     return {
         "integrated_game": manager.write_json(

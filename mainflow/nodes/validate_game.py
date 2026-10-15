@@ -60,6 +60,27 @@ def validate_game_node(
         }
         return _write_result(manager, state["project_id"], result)
 
+    if draft["status"] == "failed":
+        result = {
+            "contract_version": CONTRACT_VERSION,
+            "status": "failed",
+            "checks": [
+                {
+                    "criterion_id": "game.generation",
+                    "passed": False,
+                    "message": "Game generation failed before Unity validation.",
+                }
+            ],
+            "issues": [
+                {
+                    "code": "GAME_GENERATION_FAILED",
+                    "severity": "error",
+                    "message": "; ".join(draft["notes"]),
+                }
+            ],
+        }
+        return _write_result(manager, state["project_id"], result)
+
     source_errors: list[str] = []
     for reference in draft["source_artifacts"]:
         try:
@@ -94,6 +115,28 @@ def validate_game_node(
                     "code": "VALIDATION_CONFIGURATION_INVALID",
                     "severity": "error",
                     "message": str(error),
+                }
+            ],
+        }
+        return _write_result(manager, state["project_id"], result)
+    except Exception as error:  # noqa: BLE001 - intentional workflow failure boundary
+        # Unity process, filesystem, or adapter failures must not cancel the
+        # independent image and sound branches.
+        result = {
+            "contract_version": CONTRACT_VERSION,
+            "status": "failed",
+            "checks": [
+                {
+                    "criterion_id": "unity.validation_execution",
+                    "passed": False,
+                    "message": f"Unity validation could not complete: {error}",
+                }
+            ],
+            "issues": [
+                {
+                    "code": "UNITY_VALIDATION_EXECUTION_FAILED",
+                    "severity": "error",
+                    "message": f"{type(error).__name__}: {error}",
                 }
             ],
         }

@@ -22,7 +22,9 @@ from mainflow.contracts import (
     LogicAnalysis,
     ParsedRequest,
     ValidateGameAgentInput,
+    WorkflowState,
 )
+from mainflow.langgraph_game_flow_skeleton import build_graph
 from mainflow.nodes.validate_game import validate_game_node
 
 
@@ -225,6 +227,60 @@ class ValidateGameNodeTest(unittest.TestCase):
 
                 self.assertEqual(result["status"], "passed")
                 self.assertGreaterEqual(len(result["checks"]), 8)
+
+
+class GameFailureIsolationTest(unittest.TestCase):
+    def test_image_and_sound_branches_complete_when_game_generation_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory) / "workspace"
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "MAINFLOW_WORKSPACE": str(workspace),
+                        "MAINFLOW_UNITY_VALIDATION_MODE": "static",
+                    },
+                ),
+                patch(
+                    "mainflow.nodes.design_game_logic.GeminiFeatureGenerator.from_environment",
+                    side_effect=RuntimeError("simulated game generation failure"),
+                ),
+            ):
+                final_state = cast(
+                    WorkflowState,
+                    build_graph().invoke(
+                        {
+                            "image_style": "Pixel Art",
+                            "mood_style": "Fantasy",
+                            "genre": "플랫포머",
+                            "viewpoint": "사이드뷰",
+                            "condition": "플레이어가 좌우로 이동하고 점프하는 게임",
+                        }
+                    ),
+                )
+
+                manager = ArtifactManager()
+                game_draft = manager.read_json(final_state["game_logic_draft"])
+                game_validation = manager.read_json(final_state["game_validation_result"])
+                image_request = manager.read_json(final_state["image_asset_request"])
+                sound_request = manager.read_json(final_state["sound_asset_request"])
+                image_draft = manager.read_json(final_state["image_draft"])
+                sound_draft = manager.read_json(final_state["sound_draft"])
+                integrated_game = manager.read_json(final_state["integrated_game"])
+                final_validation = manager.read_json(final_state["final_validation_result"])
+
+                self.assertEqual(game_draft["status"], "failed")
+                self.assertEqual(game_validation["status"], "failed")
+                self.assertIn(
+                    "GAME_GENERATION_FAILED",
+                    [issue["code"] for issue in game_validation["issues"]],
+                )
+                self.assertGreater(len(image_request["assets"]), 0)
+                self.assertGreater(len(sound_request["assets"]), 0)
+                self.assertEqual(image_draft["status"], "pending")
+                self.assertEqual(sound_draft["status"], "pending")
+                self.assertEqual(integrated_game["status"], "failed")
+                self.assertEqual(final_validation["status"], "failed")
 
 
 if __name__ == "__main__":

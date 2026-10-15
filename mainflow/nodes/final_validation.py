@@ -32,15 +32,35 @@ def final_validation_node(
 
     manager = ArtifactManager()
     cast(LogicAnalysis, manager.read_json(state["logic_analysis"]))
-    cast(IntegratedGame, manager.read_json(state["integrated_game"]))
+    integrated_game = cast(IntegratedGame, manager.read_json(state["integrated_game"]))
 
     # TODO: logic_analysis criteria 기준 최종 검증
-    result: FinalValidationResult = {
-        "contract_version": CONTRACT_VERSION,
-        "status": "pending",
-        "checks": [],
-        "issues": [],
-    }
+    if integrated_game["status"] == "failed":
+        result: FinalValidationResult = {
+            "contract_version": CONTRACT_VERSION,
+            "status": "failed",
+            "checks": [
+                {
+                    "criterion_id": "integration.game_available",
+                    "passed": False,
+                    "message": "Game integration was skipped because game generation failed.",
+                }
+            ],
+            "issues": [
+                {
+                    "code": "FINAL_GAME_UNAVAILABLE",
+                    "severity": "error",
+                    "message": "; ".join(integrated_game["notes"]),
+                }
+            ],
+        }
+    else:
+        result = {
+            "contract_version": CONTRACT_VERSION,
+            "status": "pending",
+            "checks": [],
+            "issues": [],
+        }
     return {
         "final_validation_result": manager.write_json(
             state["project_id"],

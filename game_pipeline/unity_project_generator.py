@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import io
 import hashlib
+import io
 import json
 import re
 import shutil
@@ -11,14 +11,14 @@ import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from mainflow.contracts import (
     CONTRACT_VERSION,
+    ArtifactReference,
     AssetGenerationItem,
     AssetGenerationRequest,
     AssetType,
-    ArtifactReference,
     GameLogicDesign,
     ImageStyle,
     MoodStyle,
@@ -50,7 +50,7 @@ class UnityProjectGenerator:
     GENERATED_SCRIPT_ROOT = GENERATED_ROOT / "Scripts"
     MANIFEST_PATH = Path("GenerationManifest.json")
     ENTRY_SCENE = Path("Assets/Scenes/Bootstrap.unity")
-    IGNORED_DIRECTORIES = {
+    IGNORED_DIRECTORIES: ClassVar[set[str]] = {
         "Library",
         "Temp",
         "Obj",
@@ -236,7 +236,7 @@ class UnityProjectGenerator:
         }
         self._write_json(project_root / self.BUILD_REQUEST_PATH, request)
 
-        image_request = self._build_asset_request(
+        image_request = self.build_asset_request(
             design,
             "image",
             image_style=image_style,
@@ -244,7 +244,7 @@ class UnityProjectGenerator:
             viewpoint=viewpoint,
             reference_image=reference_image,
         )
-        sound_request = self._build_asset_request(
+        sound_request = self.build_asset_request(
             design,
             "sound",
             image_style=image_style,
@@ -303,7 +303,7 @@ class UnityProjectGenerator:
             path.write_text(source, encoding="utf-8", newline="\n")
 
     @staticmethod
-    def _build_asset_request(
+    def build_asset_request(
         design: GameLogicDesign,
         asset_type: AssetType,
         *,
@@ -312,6 +312,12 @@ class UnityProjectGenerator:
         viewpoint: Viewpoint,
         reference_image: ArtifactReference | None,
     ) -> AssetGenerationRequest:
+        """Build an asset request without requiring a generated Unity project.
+
+        Image and sound generation are independent workflow branches.  Keeping
+        request construction separate from project generation lets those
+        branches continue even when code generation or Unity assembly fails.
+        """
         extension = "png" if asset_type == "image" else "wav"
         output_directory = "generated/images" if asset_type == "image" else "generated/sounds"
         assets: list[AssetGenerationItem] = []
