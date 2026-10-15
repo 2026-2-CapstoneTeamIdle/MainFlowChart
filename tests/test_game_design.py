@@ -25,6 +25,23 @@ class GameDesignTest(unittest.TestCase):
                 self.assertTrue(spec["asset_requirements"])
                 self.assertIn("game_bootstrap", design["selected_modules"])
                 self.assertFalse(design["unsupported_mechanics"])
+                plan = design["implementation_plan"]
+                self.assertEqual(plan["complexity_tier"], "advanced_prototype")
+                self.assertGreaterEqual(len(plan["systems"]), 5)
+                self.assertGreaterEqual(len(plan["content"]), 4)
+                self.assertGreaterEqual(len(plan["ui_screens"]), 4)
+                self.assertGreaterEqual(len(plan["playtest_scenarios"]), 3)
+
+    def test_platformer_plan_requests_a_multi_system_playable_stage(self) -> None:
+        design = build_game_logic_design(normalize_game_spec("플랫포머"))
+        plan = design["implementation_plan"]
+        counts = {item["archetype"]: item["count"] for item in plan["content"]}
+
+        self.assertGreaterEqual(counts["platform"], 10)
+        self.assertGreaterEqual(counts["collectible"], 8)
+        self.assertGreaterEqual(counts["hazard"], 5)
+        self.assertGreaterEqual(counts["checkpoint"], 2)
+        self.assertIn("stage_result", plan["ui_screens"])
 
     def test_legacy_action_maps_to_survivor_profile(self) -> None:
         spec = normalize_game_spec("Action")
@@ -84,6 +101,9 @@ class GameDesignTest(unittest.TestCase):
             [feature["feature_id"] for feature in spec["features"]],
         )
         self.assertEqual(design["unsupported_mechanics"], ["wing_evolution"])
+        custom_system = design["implementation_plan"]["systems"][-1]
+        self.assertEqual(custom_system["system_id"], "requested_custom_features")
+        self.assertEqual(custom_system["module_ids"], ["wing_evolution"])
 
     def test_duplicate_asset_ids_are_rejected(self) -> None:
         duplicate = {

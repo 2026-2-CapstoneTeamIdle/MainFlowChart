@@ -68,6 +68,29 @@ uv run --locked python -m mainflow.run_flow `
 
 JSON 요청은 `--request-file examples/request.example.json`으로 전달할 수 있다.
 
+### Gemini 새 기능 생성
+
+분석된 기능이 기존 Unity 모듈 카탈로그에 있으면 API를 호출하지 않고 해당 모듈을 재사용한다.
+카탈로그로 충족할 수 없는 기능만 `gemini-3-flash-preview`에 전달해
+`Assets/GameTemplate/Generated/Scripts/` 아래의 C# 모듈로 생성한다.
+
+```powershell
+$env:GEMINI_API_KEY="Google AI Studio에서 발급한 키"
+$env:MAINFLOW_GEMINI_MODEL="gemini-3-flash-preview"
+
+uv run --locked python -m mainflow.run_flow `
+  --image-style "Pixel Art" `
+  --mood-style Fantasy `
+  --genre "플랫포머" `
+  --viewpoint "사이드뷰" `
+  --condition "점프하고 벽을 타고 올라갈 수 있는 게임"
+```
+
+API 응답은 JSON Schema, C# 선언 규칙, 금지 API, 소스 해시로 먼저 검사한다. 이후 기존
+`validate_game` Node가 생성 파일과 manifest의 일관성을 확인하고 Unity Batchmode에서 실제
+컴파일 및 Bootstrap 씬 조립을 검증한다. 키와 선택 설정은 [`.env.example`](.env.example)을
+참고하되 실제 키는 저장소에 커밋하지 않는다.
+
 ```powershell
 docker compose build
 docker compose run --rm mainflow

@@ -35,6 +35,11 @@ services:
       dockerfile: Dockerfile
     image: main-flow-chart:local
     environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      MAINFLOW_GEMINI_MODEL: ${MAINFLOW_GEMINI_MODEL:-gemini-3-flash-preview}
+      MAINFLOW_GEMINI_TIMEOUT_SECONDS: ${MAINFLOW_GEMINI_TIMEOUT_SECONDS:-90}
+      MAINFLOW_GEMINI_THINKING_LEVEL: ${MAINFLOW_GEMINI_THINKING_LEVEL:-low}
+      MAINFLOW_GEMINI_MAX_OUTPUT_TOKENS: ${MAINFLOW_GEMINI_MAX_OUTPUT_TOKENS:-8192}
       MAINFLOW_WORKSPACE: /app/workspace
       MCP_SERVER_URL: http://mcp-server:8001/mcp
       LLM_PROVIDER: ${LLM_PROVIDER:-gemini}

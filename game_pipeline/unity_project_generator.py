@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import re
@@ -10,14 +11,14 @@ import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from mainflow.contracts import (
     CONTRACT_VERSION,
+    ArtifactReference,
     AssetGenerationItem,
     AssetGenerationRequest,
     AssetType,
-    ArtifactReference,
     GameLogicDesign,
     ImageStyle,
     MoodStyle,
@@ -41,13 +42,15 @@ class UnityProjectGenerator:
     GENERATED_ROOT = Path("Assets/GameTemplate/Generated")
     CONFIG_ASSET = GENERATED_ROOT / "GameTemplateConfig.asset"
     DESIGN_PATH = GENERATED_ROOT / "GameLogicDesign.json"
+    IMPLEMENTATION_PLAN_PATH = GENERATED_ROOT / "GameImplementationPlan.json"
     BUILD_REQUEST_PATH = GENERATED_ROOT / "GenerationRequest.json"
     ASSET_REQUEST_ROOT = GENERATED_ROOT / "AssetRequests"
     IMAGE_ASSET_REQUEST_PATH = ASSET_REQUEST_ROOT / "image_asset_request.json"
     SOUND_ASSET_REQUEST_PATH = ASSET_REQUEST_ROOT / "sound_asset_request.json"
+    GENERATED_SCRIPT_ROOT = GENERATED_ROOT / "Scripts"
     MANIFEST_PATH = Path("GenerationManifest.json")
     ENTRY_SCENE = Path("Assets/Scenes/Bootstrap.unity")
-    IGNORED_DIRECTORIES = {
+    IGNORED_DIRECTORIES: ClassVar[set[str]] = {
         "Library",
         "Temp",
         "Obj",
@@ -158,6 +161,11 @@ class UnityProjectGenerator:
             )
         if len(set(design["selected_modules"])) != len(design["selected_modules"]):
             raise ValueError("selected_modules must not contain duplicate IDs")
+        generated_ids = [module["module_id"] for module in design["generated_modules"]]
+        if len(generated_ids) != len(set(generated_ids)):
+            raise ValueError("generated_modules must not contain duplicate module IDs")
+        if not set(generated_ids).issubset(design["selected_modules"]):
+            raise ValueError("Every generated module must be selected")
 
     def _copy_template(self, staging_path: Path) -> None:
         def ignore(_: str, names: list[str]) -> set[str]:
@@ -212,17 +220,23 @@ class UnityProjectGenerator:
 
         generated_root = project_root / self.GENERATED_ROOT
         generated_root.mkdir(parents=True, exist_ok=True)
+        self._write_generated_modules(project_root, design)
         self._write_json(generated_root / self.DESIGN_PATH.name, design)
+        self._write_json(
+            project_root / self.IMPLEMENTATION_PLAN_PATH,
+            design["implementation_plan"],
+        )
 
         request = {
             "contract_version": CONTRACT_VERSION,
             "design_id": design["design_id"],
             "entry_scene": self.ENTRY_SCENE.as_posix(),
             "selected_modules": design["selected_modules"],
+            "implementation_plan": self.IMPLEMENTATION_PLAN_PATH.as_posix(),
         }
         self._write_json(project_root / self.BUILD_REQUEST_PATH, request)
 
-        image_request = self._build_asset_request(
+        image_request = self.build_asset_request(
             design,
             "image",
             image_style=image_style,
@@ -230,7 +244,7 @@ class UnityProjectGenerator:
             viewpoint=viewpoint,
             reference_image=reference_image,
         )
-        sound_request = self._build_asset_request(
+        sound_request = self.build_asset_request(
             design,
             "sound",
             image_style=image_style,
@@ -251,6 +265,19 @@ class UnityProjectGenerator:
             "design_id": design["design_id"],
             "entry_scene": self.ENTRY_SCENE.as_posix(),
             "selected_modules": design["selected_modules"],
+            "implementation_plan": self.IMPLEMENTATION_PLAN_PATH.as_posix(),
+            "generated_modules": [
+                {
+                    "module_id": module["module_id"],
+                    "feature_id": module["feature_id"],
+                    "class_name": module["class_name"],
+                    "relative_path": (
+                        self.GENERATED_SCRIPT_ROOT / f"{module['class_name']}.cs"
+                    ).as_posix(),
+                    "source_sha256": module["source_sha256"],
+                }
+                for module in design["generated_modules"]
+            ],
             "asset_requirements": game_spec["asset_requirements"],
             "asset_request_files": {
                 "image": self.IMAGE_ASSET_REQUEST_PATH.as_posix(),
@@ -260,8 +287,23 @@ class UnityProjectGenerator:
         }
         self._write_json(project_root / self.MANIFEST_PATH, manifest)
 
+    def _write_generated_modules(
+        self,
+        project_root: Path,
+        design: GameLogicDesign,
+    ) -> None:
+        script_root = project_root / self.GENERATED_SCRIPT_ROOT
+        for module in design["generated_modules"]:
+            source = module["source_code"].replace("\r\n", "\n").rstrip() + "\n"
+            digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+            if digest != module["source_sha256"]:
+                raise ValueError(f"Generated source hash mismatch for {module['module_id']}")
+            path = script_root / f"{module['class_name']}.cs"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(source, encoding="utf-8", newline="\n")
+
     @staticmethod
-    def _build_asset_request(
+    def build_asset_request(
         design: GameLogicDesign,
         asset_type: AssetType,
         *,
@@ -270,6 +312,12 @@ class UnityProjectGenerator:
         viewpoint: Viewpoint,
         reference_image: ArtifactReference | None,
     ) -> AssetGenerationRequest:
+        """Build an asset request without requiring a generated Unity project.
+
+        Image and sound generation are independent workflow branches.  Keeping
+        request construction separate from project generation lets those
+        branches continue even when code generation or Unity assembly fails.
+        """
         extension = "png" if asset_type == "image" else "wav"
         output_directory = "generated/images" if asset_type == "image" else "generated/sounds"
         assets: list[AssetGenerationItem] = []

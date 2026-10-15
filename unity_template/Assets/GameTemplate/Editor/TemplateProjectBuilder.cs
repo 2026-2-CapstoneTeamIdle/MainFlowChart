@@ -44,6 +44,7 @@ namespace TeamIdle.GameTemplate.Editor
 
         public static void BuildForBatch()
         {
+            ModuleComponentCatalog.ValidateForBatch();
             BuildTemplate();
             var config = AssetDatabase.LoadAssetAtPath<GameTemplateConfig>(ConfigPath);
             PrefabSceneAssembler.ValidateCurrentSceneForBatch(config);

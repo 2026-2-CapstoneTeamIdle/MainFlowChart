@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, cast, get_args
 
@@ -101,16 +102,29 @@ def main() -> int:
     initial_state = load_request(arguments)
     final_state = cast(WorkflowState, build_graph().invoke(initial_state))
     manager = ArtifactManager()
+    game_validation = manager.read_json(final_state["game_validation_result"])
+    image_generation = manager.read_json(final_state["image_draft"])
+    sound_generation = manager.read_json(final_state["sound_draft"])
     final_validation = manager.read_json(final_state["final_validation_result"])
     project_root = manager.ensure_project(final_state["project_id"])
 
     output: dict[str, Any] = {
         "project_id": final_state["project_id"],
         "project_root": str(project_root),
+        "game_validation": game_validation,
+        "image_generation": image_generation,
+        "sound_generation": sound_generation,
         "final_validation": final_validation,
         "final_state": final_state,
     }
     print(json.dumps(output, ensure_ascii=False, indent=2))
+    if game_validation.get("status") != "passed":
+        print(
+            "Game generation failed Unity validation. Do not open or distribute this project; "
+            "inspect game_validation.issues first.",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

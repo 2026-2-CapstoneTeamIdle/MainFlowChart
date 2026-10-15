@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from typing import cast
 
+from game_pipeline import UnityProjectValidator
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -33,20 +35,167 @@ def validate_game_node(
     log("임시 에셋을 사용해 설계된 게임을 검증합니다.")
 
     manager = ArtifactManager()
-    cast(ParsedRequest, manager.read_json(state["parsed_request"]))
-    cast(LogicAnalysis, manager.read_json(state["logic_analysis"]))
-    cast(GameLogicDraft, manager.read_json(state["game_logic_draft"]))
+    try:
+        request = cast(ParsedRequest, manager.read_json(state["parsed_request"]))
+        cast(LogicAnalysis, manager.read_json(state["logic_analysis"]))
+        draft = cast(GameLogicDraft, manager.read_json(state["game_logic_draft"]))
+    except (OSError, ValueError, TypeError, KeyError, UnicodeError) as error:
+        result: GameValidationResult = {
+            "contract_version": CONTRACT_VERSION,
+            "status": "failed",
+            "checks": [
+                {
+                    "criterion_id": "validation.input_artifacts",
+                    "passed": False,
+                    "message": f"Validation input artifact could not be read: {error}",
+                }
+            ],
+            "issues": [
+                {
+                    "code": "VALIDATION_INPUT_ARTIFACT_INVALID",
+                    "severity": "error",
+                    "message": str(error),
+                }
+            ],
+        }
+        return _write_result(manager, state["project_id"], result)
 
-    # TODO: Unity Test Framework / build / logic validation
-    result: GameValidationResult = {
+    if draft["status"] == "failed":
+        result = {
+            "contract_version": CONTRACT_VERSION,
+            "status": "failed",
+            "checks": [
+                {
+                    "criterion_id": "game.generation",
+                    "passed": False,
+                    "message": "Game generation failed before Unity validation.",
+                }
+            ],
+            "issues": [
+                {
+                    "code": "GAME_GENERATION_FAILED",
+                    "severity": "error",
+                    "message": "; ".join(draft["notes"]),
+                }
+            ],
+        }
+        return _write_result(manager, state["project_id"], result)
+
+    source_errors: list[str] = []
+    for reference in draft["source_artifacts"]:
+        try:
+            manager.read_bytes(reference)
+        except (OSError, ValueError, TypeError, KeyError, UnicodeError) as error:
+            source_errors.append(f"{reference.get('artifact_id', 'unknown')}: {error}")
+
+    mode = os.environ.get("MAINFLOW_UNITY_VALIDATION_MODE", "auto").lower()
+    timeout_text = os.environ.get("MAINFLOW_UNITY_VALIDATION_TIMEOUT_SECONDS", "300")
+    try:
+        timeout_seconds = int(timeout_text)
+        validator = UnityProjectValidator(
+            mode=mode,  # type: ignore[arg-type]
+            unity_editor=os.environ.get("UNITY_EDITOR_PATH"),
+            timeout_seconds=timeout_seconds,
+        )
+        project_root = manager.ensure_project(state["project_id"]) / "game" / "unity_project"
+        outcome = validator.validate(project_root, draft, request)
+    except (TypeError, ValueError) as error:
+        result = {
+            "contract_version": CONTRACT_VERSION,
+            "status": "failed",
+            "checks": [
+                {
+                    "criterion_id": "validation.configuration",
+                    "passed": False,
+                    "message": str(error),
+                }
+            ],
+            "issues": [
+                {
+                    "code": "VALIDATION_CONFIGURATION_INVALID",
+                    "severity": "error",
+                    "message": str(error),
+                }
+            ],
+        }
+        return _write_result(manager, state["project_id"], result)
+    except Exception as error:  # noqa: BLE001 - intentional workflow failure boundary
+        # Unity process, filesystem, or adapter failures must not cancel the
+        # independent image and sound branches.
+        result = {
+            "contract_version": CONTRACT_VERSION,
+            "status": "failed",
+            "checks": [
+                {
+                    "criterion_id": "unity.validation_execution",
+                    "passed": False,
+                    "message": f"Unity validation could not complete: {error}",
+                }
+            ],
+            "issues": [
+                {
+                    "code": "UNITY_VALIDATION_EXECUTION_FAILED",
+                    "severity": "error",
+                    "message": f"{type(error).__name__}: {error}",
+                }
+            ],
+        }
+        return _write_result(manager, state["project_id"], result)
+
+    source_passed = not source_errors
+    outcome.checks.insert(
+        0,
+        {
+            "criterion_id": "validation.source_artifacts",
+            "passed": source_passed,
+            "message": (
+                "All game source artifacts passed integrity checks"
+                if source_passed
+                else "Invalid source artifacts: " + "; ".join(source_errors)
+            ),
+        },
+    )
+    if source_errors:
+        outcome.issues.insert(
+            0,
+            {
+                "code": "GAME_SOURCE_ARTIFACT_INVALID",
+                "severity": "error",
+                "message": "; ".join(source_errors),
+            },
+        )
+
+    if outcome.unity_log:
+        log_reference = manager.write_text(
+            state["project_id"],
+            "validation",
+            "unity_validation.log",
+            outcome.unity_log,
+            producer="validate_game",
+        )
+        for check in outcome.checks:
+            if check["criterion_id"] == "unity.batchmode":
+                check["message"] += f" (log: {log_reference['artifact_id']})"
+                break
+
+    status = outcome.status
+    result = {
         "contract_version": CONTRACT_VERSION,
-        "status": "pending",
-        "checks": [],
-        "issues": [],
+        "status": status,
+        "checks": outcome.checks,
+        "issues": outcome.issues,
     }
+    return _write_result(manager, state["project_id"], result)
+
+
+def _write_result(
+    manager: ArtifactManager,
+    project_id: str,
+    result: GameValidationResult,
+) -> ValidateGameAgentOutput:
     return {
         "game_validation_result": manager.write_json(
-            state["project_id"],
+            project_id,
             "validation",
             "game_validation_result.json",
             result,

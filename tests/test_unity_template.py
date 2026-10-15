@@ -31,12 +31,15 @@ class UnityTemplateTest(unittest.TestCase):
             "Assets/GameTemplate/Runtime/TeamIdle.GameTemplate.Runtime.asmdef",
             "Assets/GameTemplate/Runtime/Core/GameBootstrap.cs",
             "Assets/GameTemplate/Runtime/Core/GameTemplateConfig.cs",
+            "Assets/GameTemplate/Runtime/Core/IGeneratedFeatureModule.cs",
             "Assets/GameTemplate/Runtime/Core/IGameModule.cs",
             "Assets/GameTemplate/Runtime/Core/ValidationProbe.cs",
             "Assets/GameTemplate/Editor/TemplateProjectBuilder.cs",
             "Assets/GameTemplate/Editor/ModuleComponentCatalog.cs",
             "Assets/GameTemplate/Editor/PrefabSceneAssembler.cs",
+            "Assets/GameTemplate/Editor/GameImplementationPlan.cs",
             "Assets/GameTemplate/Runtime/Prototype/PrototypeSceneController.cs",
+            "Assets/GameTemplate/Runtime/Prototype/PlatformerPrototypeActors.cs",
             "Assets/GameTemplate/Generated/GameTemplateConfig.asset",
             "Assets/Scenes/Bootstrap.unity",
         ]
@@ -55,6 +58,11 @@ class UnityTemplateTest(unittest.TestCase):
 
         self.assertIn("PrefabSceneAssembler.Assemble", builder)
         self.assertIn("ValidateCurrentSceneForBatch", builder)
+        self.assertIn("ModuleComponentCatalog.ValidateForBatch", builder)
+        self.assertIn("AttachGeneratedFeatureBinder", assembler)
+        self.assertIn("IGeneratedFeatureModule", assembler)
+        self.assertIn("GameImplementationPlan.Load()", assembler)
+        self.assertIn("UNITY_IMPLEMENTATION_PLAN_OK", assembler)
         for genre in (
             "Platformer",
             "TowerDefense",
@@ -65,6 +73,19 @@ class UnityTemplateTest(unittest.TestCase):
         ):
             with self.subTest(genre=genre):
                 self.assertIn(f'case "{genre}"', assembler)
+
+    def test_platformer_buffers_jump_input_before_fixed_update(self) -> None:
+        movement = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Runtime/Platformer/PlatformerModules.cs"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("private void Update()", movement)
+        self.assertIn("jumpQueuedUntil = Time.time + jumpBufferSeconds", movement)
+        self.assertIn("Time.time <= jumpQueuedUntil && IsGrounded()", movement)
+        self.assertIn("Physics2D.OverlapCircleAll", movement)
+        self.assertIn("overlap.attachedRigidbody == target", movement)
+        fixed_update = movement.split("private void FixedUpdate()", maxsplit=1)[1]
+        self.assertNotIn("input.ConfirmPressed", fixed_update)
 
     def test_manifest_contains_required_2d_dependencies(self) -> None:
         manifest = json.loads(
