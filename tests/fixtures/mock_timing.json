@@ -1,7 +1,8 @@
 {
   "user_input": 5,
   "parse_input": 10,
-  "create_initial_final_validation_spec": 10,
+  "analysis": 10,
+  "logic_analysis": 10,
   "generate_image": 80,
   "design_game_logic": 60,
   "generate_sound": 70,

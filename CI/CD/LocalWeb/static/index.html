@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MainFlowChart Local Web</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <main class="page-shell">
+      <header class="hero">
+        <p class="eyebrow">TEAM IDLE · LOCAL WORKSPACE</p>
+        <h1>게임 제작 Workflow</h1>
+        <p class="hero-copy">
+          이미지, 게임 로직, 사운드 Agent를 하나의 로컬 화면에서 실행하기 위한 기본
+          화면입니다.
+        </p>
+        <div class="server-state" aria-live="polite">
+          <span id="status-dot" class="status-dot status-dot--pending"></span>
+          <span id="status-text">로컬 서버 확인 중</span>
+        </div>
+      </header>
+
+      <section class="panel" aria-labelledby="request-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="section-label">NEW PROJECT</p>
+            <h2 id="request-heading">게임 생성 요청</h2>
+          </div>
+          <span class="phase-badge">입력 선택 가능 · 실행 미연결</span>
+        </div>
+
+        <form id="request-form" class="request-grid">
+          <label>
+            이미지 스타일
+            <select id="image-style" name="image_style">
+              <option>Pixel Art</option>
+              <option>Anime</option>
+              <option>Cartoon</option>
+              <option>Realistic</option>
+              <option>Low Poly</option>
+              <option>Custom</option>
+            </select>
+          </label>
+
+          <label>
+            분위기 스타일
+            <select name="mood_style">
+              <option>Cyberpunk</option>
+              <option>Medieval</option>
+              <option>Modern</option>
+              <option selected>Fantasy</option>
+              <option>Horror</option>
+              <option>Cozy</option>
+            </select>
+          </label>
+
+          <label>
+            게임 장르
+            <select name="genre">
+              <option>플랫포머</option>
+              <option>타워 디펜스</option>
+              <option>카드</option>
+              <option>비주얼 노벨</option>
+              <option>육성 시뮬레이션</option>
+              <option>뱀서류</option>
+            </select>
+          </label>
+
+          <label>
+            시점
+            <select name="viewpoint">
+              <option>사이드뷰</option>
+              <option>탑다운</option>
+              <option>쿼터뷰</option>
+              <option>고정 화면</option>
+            </select>
+          </label>
+
+          <label class="wide-field">
+            조건
+            <input
+              name="condition"
+              type="text"
+              placeholder="예: 공격과 8방향 이동이 가능한 게임"
+            />
+          </label>
+
+          <label class="wide-field">
+            Custom 이미지 참고 파일 (PNG/JPG)
+            <input
+              id="custom-image"
+              name="custom_image"
+              type="file"
+              accept="image/png,image/jpeg"
+              disabled
+            />
+          </label>
+
+          <button type="submit" disabled>Workflow 연결 후 사용 가능</button>
+        </form>
+      </section>
+
+      <section class="panel" aria-labelledby="progress-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="section-label">WORKFLOW</p>
+            <h2 id="progress-heading">실행 현황</h2>
+          </div>
+        </div>
+
+        <div class="empty-state">
+          <div class="empty-icon">01</div>
+          <div>
+            <strong>아직 실행된 프로젝트가 없습니다.</strong>
+            <p>다음 단계에서 LangGraph Stream과 Artifact 목록을 이 영역에 연결합니다.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

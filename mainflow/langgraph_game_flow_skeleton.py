@@ -1,695 +1,62 @@
-from __future__ import annotations
+"""Assemble the MainFlowChart LangGraph without embedding Node implementations."""
 
-from typing import cast
+from __future__ import annotations
 
 from langgraph.graph import END, START, StateGraph
 
-from mainflow.ArtifactManager import ArtifactManager
-from mainflow.image_backends import create_image_generator
-from mainflow.image_generation import (
-    PNG_MEDIA_TYPE,
-    TRANSPARENT_ROLES,
-    ImageGenerator,
-    ImageRequest,
-    asset_size,
-    build_prompt,
-    image_criteria,
-    inspect_png,
-    plan_assets,
+from mainflow.contracts import WorkflowState
+from mainflow.nodes import (
+    analysis_node,
+    apply_assets_to_game_node,
+    create_asset_validation_spec_node,
+    design_game_logic_node,
+    final_validation_node,
+    generate_image_node,
+    generate_sound_node,
+    logic_analysis_node,
+    parse_input_node,
+    user_input_node,
+    validate_game_node,
+    validate_image_node,
+    validate_sound_node,
 )
-from mainflow.contracts import (
-    CONTRACT_VERSION,
-    ApplyAssetsAgentInput,
-    ApplyAssetsAgentOutput,
-    AssetValidationSpec,
-    AssetValidationSpecAgentInput,
-    AssetValidationSpecAgentOutput,
-    DesignGameLogicAgentInput,
-    DesignGameLogicAgentOutput,
-    FinalValidationResult,
-    FinalValidationAgentInput,
-    FinalValidationAgentOutput,
-    GenerateImageAgentInput,
-    GenerateImageAgentOutput,
-    GenerateSoundAgentInput,
-    GenerateSoundAgentOutput,
-    GameLogicDraft,
-    GameValidationResult,
-    ImageAsset,
-    ImageDraft,
-    ImageValidationResult,
-    InitialFinalValidationSpec,
-    InitialValidationSpecAgentInput,
-    InitialValidationSpecAgentOutput,
-    ParseInputAgentInput,
-    ParseInputAgentOutput,
-    ParsedRequest,
-    SoundDraft,
-    SoundValidationResult,
-    IntegratedGame,
-    UserInputAgentInput,
-    UserInputAgentOutput,
-    ValidateGameAgentInput,
-    ValidateGameAgentOutput,
-    ValidateImageAgentInput,
-    ValidateImageAgentOutput,
-    ValidateSoundAgentInput,
-    ValidateSoundAgentOutput,
-    ValidationCheckResult,
-    ValidationIssue,
-    WorkflowState,
-)
+from MCP import bind_mcp_tools
 
 
-def log(message: str) -> None:
-    print(f"[FLOW] {message}")
-
-
-# ============================================================
-# Nodes
-# ============================================================
-def user_input_node(state: UserInputAgentInput) -> UserInputAgentOutput:
-    """
-    임시 GUI:
-    - 이미지 스타일
-    - 장르
-    - 퀄리티
-    """
-    if all(key in state for key in ("image_style", "genre", "quality")):
-        log("초기 State의 입력값을 사용해 GUI를 건너뜁니다.")
-        return {
-            "image_style": state["image_style"],
-            "genre": state["genre"],
-            "quality": state["quality"],
-        }
-
-    log("유저 입력 창을 표시합니다.")
-
-    import tkinter as tk
-    from tkinter import ttk
-
-    result: dict[str, str] = {}
-
-    root = tk.Tk()
-    root.title("Game Agent - 임시 입력")
-    root.resizable(False, False)
-
-    frame = ttk.Frame(root, padding=20)
-    frame.grid(row=0, column=0)
-
-    ttk.Label(frame, text="이미지 스타일").grid(row=0, column=0, sticky="w", padx=5, pady=8)
-    image_style_var = tk.StringVar(value="Pixel Art")
-    image_style_box = ttk.Combobox(
-        frame,
-        textvariable=image_style_var,
-        state="readonly",
-        width=24,
-        values=[
-            "Pixel Art",
-            "Anime",
-            "Cartoon",
-            "Realistic",
-            "Low Poly",
-        ],
-    )
-    image_style_box.grid(row=0, column=1, padx=5, pady=8)
-
-    ttk.Label(frame, text="게임 장르").grid(row=1, column=0, sticky="w", padx=5, pady=8)
-    genre_var = tk.StringVar(value="Action")
-    genre_box = ttk.Combobox(
-        frame,
-        textvariable=genre_var,
-        state="readonly",
-        width=24,
-        values=[
-            "Action",
-            "RPG",
-            "Platformer",
-            "Puzzle",
-            "Simulation",
-        ],
-    )
-    genre_box.grid(row=1, column=1, padx=5, pady=8)
-
-    ttk.Label(frame, text="퀄리티").grid(row=2, column=0, sticky="w", padx=5, pady=8)
-    quality_var = tk.StringVar(value="Medium")
-    quality_box = ttk.Combobox(
-        frame,
-        textvariable=quality_var,
-        state="readonly",
-        width=24,
-        values=[
-            "Low",
-            "Medium",
-            "High",
-        ],
-    )
-    quality_box.grid(row=2, column=1, padx=5, pady=8)
-
-    def submit() -> None:
-        result["image_style"] = image_style_var.get()
-        result["genre"] = genre_var.get()
-        result["quality"] = quality_var.get()
-        root.destroy()
-
-    start_button = ttk.Button(
-        frame,
-        text="START",
-        command=submit,
-    )
-    start_button.grid(
-        row=3,
-        column=0,
-        columnspan=2,
-        sticky="ew",
-        padx=5,
-        pady=(15, 5),
-    )
-
-    root.protocol("WM_DELETE_WINDOW", submit)
-    root.mainloop()
-
-    log(
-        "입력 완료 "
-        f"(스타일={result['image_style']}, "
-        f"장르={result['genre']}, "
-        f"퀄리티={result['quality']})"
-    )
-
-    # Combobox values are restricted to the Literal choices in contracts.py.
-    return cast(UserInputAgentOutput, result)
-
-
-def parse_input_node(state: ParseInputAgentInput) -> ParseInputAgentOutput:
-    log("유저 입력을 파싱합니다.")
-
-    # TODO: 이후 AdviserAI / LLM을 이용한 실제 요구사항 파싱
-    manager = ArtifactManager()
-    project_id = manager.create_project()
-    parsed_request: ParsedRequest = {
-        "contract_version": CONTRACT_VERSION,
-        "image_style": state["image_style"],
-        "genre": state["genre"],
-        "quality": state["quality"],
-    }
-    return {
-        "project_id": project_id,
-        "parsed_request": manager.write_json(
-            project_id,
-            "data",
-            "parsed_request.json",
-            parsed_request,
-            producer="parse_input",
-        ),
-    }
-
-
-def create_initial_final_validation_spec_node(
-    state: InitialValidationSpecAgentInput,
-) -> InitialValidationSpecAgentOutput:
-    log("최종 검증에 사용할 최초 검증서를 생성합니다.")
-
-    manager = ArtifactManager()
-    # Read through ArtifactManager so checksum and project boundaries are checked.
-    cast(ParsedRequest, manager.read_json(state["parsed_request"]))
-
-    # TODO: 실제 최종 검증 기준 작성
-    spec: InitialFinalValidationSpec = {
-        "contract_version": CONTRACT_VERSION,
-        "spec_id": "initial-final-validation",
-        "criteria": [],
-    }
-    return {
-        "initial_final_validation_spec": manager.write_json(
-            state["project_id"],
-            "validation",
-            "initial_final_validation_spec.json",
-            spec,
-            producer="create_initial_final_validation_spec",
-        )
-    }
-
-
-# ------------------------------------------------------------
-# 1) Image / Game / Sound generation - PARALLEL
-# ------------------------------------------------------------
-def generate_image_node(
-    state: GenerateImageAgentInput,
-    generator: ImageGenerator | None = None,
-) -> GenerateImageAgentOutput:
-    log("이미지 에셋을 생성합니다.")
-
-    manager = ArtifactManager()
-    request = cast(ParsedRequest, manager.read_json(state["parsed_request"]))
-    cast(
-        InitialFinalValidationSpec,
-        manager.read_json(state["initial_final_validation_spec"]),
-    )
-
-    # MAINFLOW_IMAGE_BACKEND로 생성기 선택 (기본값 placeholder)
-    generator = generator or create_image_generator()
-    assets: list[ImageAsset] = []
-    notes = [f"generator={generator.name}"]
-    for plan in plan_assets(request["genre"]):
-        width, height = asset_size(plan, request["quality"])
-        image_request = ImageRequest(
-            plan=plan,
-            style=request["image_style"],
-            genre=request["genre"],
-            width=width,
-            height=height,
-            prompt=build_prompt(plan, request["image_style"], request["genre"]),
-            quality=request["quality"],
-        )
-        try:
-            content = generator.generate(image_request)
-        except Exception as error:  # 개별 에셋 실패는 draft notes로 기록
-            notes.append(f"{plan.asset_id} 생성 실패: {error}")
-            continue
-        reference = manager.write_bytes(
-            state["project_id"],
-            "image",
-            plan.filename,
-            content,
-            producer="generate_image",
-            media_type=PNG_MEDIA_TYPE,
-        )
-        assets.append(
-            {
-                "asset_id": plan.asset_id,
-                "name": plan.name,
-                "artifact": reference,
-                "file_format": "png",
-                "width": width,
-                "height": height,
-                "prompt": image_request.prompt,
-            }
-        )
-        log(f"  - {plan.asset_id} ({width}x{height}) 저장")
-
-    draft: ImageDraft = {
-        "contract_version": CONTRACT_VERSION,
-        "draft_id": "image-draft",
-        "status": "generated" if assets else "failed",
-        "assets": assets,
-        "notes": notes,
-    }
-    return {
-        "image_draft": manager.write_json(
-            state["project_id"],
-            "image",
-            "image_draft.json",
-            draft,
-            producer="generate_image",
-        )
-    }
-
-
-def design_game_logic_node(
-    state: DesignGameLogicAgentInput,
-) -> DesignGameLogicAgentOutput:
-    log("게임 로직을 설계합니다. (이미지/사운드는 임시 에셋으로 가정)")
-
-    manager = ArtifactManager()
-    cast(ParsedRequest, manager.read_json(state["parsed_request"]))
-    cast(
-        InitialFinalValidationSpec,
-        manager.read_json(state["initial_final_validation_spec"]),
-    )
-
-    # TODO: 실제 게임 로직 / Unity / Godot 코드 설계
-    draft: GameLogicDraft = {
-        "contract_version": CONTRACT_VERSION,
-        "draft_id": "game-logic-draft",
-        "status": "pending",
-        "engine": "TBD",
-        "entry_scene": None,
-        "source_artifacts": [],
-        "required_image_asset_ids": [],
-        "required_sound_asset_ids": [],
-        "notes": ["게임 로직 설계 Agent 구현 전 placeholder"],
-    }
-    return {
-        "game_logic_draft": manager.write_json(
-            state["project_id"],
-            "game",
-            "game_logic_draft.json",
-            draft,
-            producer="design_game_logic",
-        )
-    }
-
-
-def generate_sound_node(
-    state: GenerateSoundAgentInput,
-) -> GenerateSoundAgentOutput:
-    log("사운드 에셋을 생성합니다. (현재는 뼈대만 실행)")
-
-    manager = ArtifactManager()
-    cast(ParsedRequest, manager.read_json(state["parsed_request"]))
-    cast(
-        InitialFinalValidationSpec,
-        manager.read_json(state["initial_final_validation_spec"]),
-    )
-
-    # TODO: 실제 사운드 생성
-    draft: SoundDraft = {
-        "contract_version": CONTRACT_VERSION,
-        "draft_id": "sound-draft",
-        "status": "pending",
-        "assets": [],
-        "notes": ["사운드 생성 Agent 구현 전 placeholder"],
-    }
-    return {
-        "sound_draft": manager.write_json(
-            state["project_id"],
-            "sound",
-            "sound_draft.json",
-            draft,
-            producer="generate_sound",
-        )
-    }
-
-
-# ------------------------------------------------------------
-# 2) Game validation -> asset validation sheet
-# ------------------------------------------------------------
-def validate_game_node(
-    state: ValidateGameAgentInput,
-) -> ValidateGameAgentOutput:
-    log("임시 에셋을 사용해 설계된 게임을 검증합니다.")
-
-    manager = ArtifactManager()
-    cast(ParsedRequest, manager.read_json(state["parsed_request"]))
-    cast(
-        InitialFinalValidationSpec,
-        manager.read_json(state["initial_final_validation_spec"]),
-    )
-    cast(GameLogicDraft, manager.read_json(state["game_logic_draft"]))
-
-    # TODO: Unity Test Framework / build / logic validation
-    result: GameValidationResult = {
-        "contract_version": CONTRACT_VERSION,
-        "status": "pending",
-        "checks": [],
-        "issues": [],
-    }
-    return {
-        "game_validation_result": manager.write_json(
-            state["project_id"],
-            "validation",
-            "game_validation_result.json",
-            result,
-            producer="validate_game",
-        )
-    }
-
-
-def create_asset_validation_spec_node(
-    state: AssetValidationSpecAgentInput,
-) -> AssetValidationSpecAgentOutput:
-    log("게임 검증 결과를 바탕으로 이미지/사운드 에셋 검증서를 생성합니다.")
-
-    manager = ArtifactManager()
-    cast(ParsedRequest, manager.read_json(state["parsed_request"]))
-    cast(
-        GameValidationResult,
-        manager.read_json(state["game_validation_result"]),
-    )
-
-    # TODO: game_validation_result를 이용해 실제 검증 기준 생성
-    spec: AssetValidationSpec = {
-        "contract_version": CONTRACT_VERSION,
-        "spec_id": "asset-validation",
-        "image_criteria": image_criteria(),
-        "sound_criteria": [],
-    }
-    return {
-        "asset_validation_spec": manager.write_json(
-            state["project_id"],
-            "validation",
-            "asset_validation_spec.json",
-            spec,
-            producer="create_asset_validation_spec",
-        )
-    }
-
-
-# ------------------------------------------------------------
-# 3) Validate generated image / sound
-# Each node must wait for:
-# - its generated asset
-# - asset_validation_spec
-# ------------------------------------------------------------
-def validate_image_node(
-    state: ValidateImageAgentInput,
-) -> ValidateImageAgentOutput:
-    log("유저 입력 + 에셋 검증서를 바탕으로 이미지 에셋을 검증합니다.")
-
-    manager = ArtifactManager()
-    request = cast(ParsedRequest, manager.read_json(state["parsed_request"]))
-    draft = cast(ImageDraft, manager.read_json(state["image_draft"]))
-    spec = cast(
-        AssetValidationSpec,
-        manager.read_json(state["asset_validation_spec"]),
-    )
-
-    # TODO: 비전 모델을 이용한 스타일 일치 검증 추가
-    issues: list[ValidationIssue] = []
-    plans = {plan.asset_id: plan for plan in plan_assets(request["genre"])}
-    generated_ids = {asset["asset_id"] for asset in draft["assets"]}
-    missing_ids = sorted(plans.keys() - generated_ids)
-    for asset_id in missing_ids:
-        issues.append(
-            {
-                "code": "image-plan-complete",
-                "severity": "error",
-                "message": "계획된 이미지 에셋이 생성되지 않았습니다.",
-                "target_id": asset_id,
-            }
-        )
-
-    failed: dict[str, set[str]] = {}
-    validated_asset_ids: list[str] = []
-    for asset in draft["assets"]:
-        asset_id = asset["asset_id"]
-        errors: list[tuple[str, str]] = []
-        try:
-            info = inspect_png(manager.read_bytes(asset["artifact"]))
-        except (OSError, ValueError) as error:
-            errors.append(("image-file-valid", f"PNG를 읽을 수 없습니다: {error}"))
-        else:
-            if (info.width, info.height) != (asset["width"], asset["height"]):
-                errors.append(
-                    (
-                        "image-size-match",
-                        f"선언 {asset['width']}x{asset['height']}, 실제 {info.width}x{info.height}",
-                    )
-                )
-            plan = plans.get(asset_id)
-            if (
-                plan is not None
-                and plan.role in TRANSPARENT_ROLES
-                and not info.has_transparent_pixel
-            ):
-                errors.append(("image-transparency", "투명 배경이 필요한 에셋입니다."))
-        for code, message in errors:
-            failed.setdefault(code, set()).add(asset_id)
-            issues.append(
-                {
-                    "code": code,
-                    "severity": "error",
-                    "message": message,
-                    "target_id": asset_id,
-                }
-            )
-        if not errors:
-            validated_asset_ids.append(asset_id)
-
-    checks: list[ValidationCheckResult] = []
-    for criterion in spec["image_criteria"]:
-        criterion_id = criterion["criterion_id"]
-        if criterion_id == "image-plan-complete":
-            passed = not missing_ids
-        else:
-            passed = criterion_id not in failed
-        checks.append(
-            {
-                "criterion_id": criterion_id,
-                "passed": passed,
-                "message": "통과" if passed else "실패 - issues 참고",
-            }
-        )
-
-    required_ids = {
-        criterion["criterion_id"] for criterion in spec["image_criteria"] if criterion["required"]
-    }
-    all_required_passed = all(
-        check["passed"] for check in checks if check["criterion_id"] in required_ids
-    )
-    status = (
-        "passed"
-        if draft["status"] == "generated" and draft["assets"] and all_required_passed
-        else "failed"
-    )
-    log(f"  - 이미지 검증 {status} ({len(validated_asset_ids)}/{len(plans)} 에셋 통과)")
-    result: ImageValidationResult = {
-        "contract_version": CONTRACT_VERSION,
-        "status": status,
-        "checks": checks,
-        "issues": issues,
-        "validated_asset_ids": validated_asset_ids,
-    }
-    return {
-        "image_validation_result": manager.write_json(
-            state["project_id"],
-            "validation",
-            "image_validation_result.json",
-            result,
-            producer="validate_image",
-        )
-    }
-
-
-def validate_sound_node(
-    state: ValidateSoundAgentInput,
-) -> ValidateSoundAgentOutput:
-    log("유저 입력 + 에셋 검증서를 바탕으로 사운드 에셋을 검증합니다.")
-
-    manager = ArtifactManager()
-    cast(ParsedRequest, manager.read_json(state["parsed_request"]))
-    cast(SoundDraft, manager.read_json(state["sound_draft"]))
-    cast(AssetValidationSpec, manager.read_json(state["asset_validation_spec"]))
-
-    # TODO: 사운드 검증
-    result: SoundValidationResult = {
-        "contract_version": CONTRACT_VERSION,
-        "status": "pending",
-        "checks": [],
-        "issues": [],
-        "validated_asset_ids": [],
-    }
-    return {
-        "sound_validation_result": manager.write_json(
-            state["project_id"],
-            "validation",
-            "sound_validation_result.json",
-            result,
-            producer="validate_sound",
-        )
-    }
-
-
-# ------------------------------------------------------------
-# 4) Apply validated assets to the game
-# ------------------------------------------------------------
-def apply_assets_to_game_node(
-    state: ApplyAssetsAgentInput,
-) -> ApplyAssetsAgentOutput:
-    log("검증을 통과한 이미지/사운드 에셋을 게임에 적용합니다.")
-
-    manager = ArtifactManager()
-    cast(GameLogicDraft, manager.read_json(state["game_logic_draft"]))
-    cast(ImageDraft, manager.read_json(state["image_draft"]))
-    cast(SoundDraft, manager.read_json(state["sound_draft"]))
-    cast(
-        ImageValidationResult,
-        manager.read_json(state["image_validation_result"]),
-    )
-    cast(
-        SoundValidationResult,
-        manager.read_json(state["sound_validation_result"]),
-    )
-
-    # TODO: 실제 Unity/Godot 프로젝트에 에셋 적용
-    integrated_game: IntegratedGame = {
-        "contract_version": CONTRACT_VERSION,
-        "status": "pending",
-        "entry_artifact": None,
-        "game_artifacts": [],
-        "applied_image_asset_ids": [],
-        "applied_sound_asset_ids": [],
-        "notes": ["에셋 통합 Agent 구현 전 placeholder"],
-    }
-    return {
-        "integrated_game": manager.write_json(
-            state["project_id"],
-            "game",
-            "integrated_game.json",
-            integrated_game,
-            producer="apply_assets_to_game",
-        )
-    }
-
-
-# ------------------------------------------------------------
-# 5) Final validation
-# ------------------------------------------------------------
-def final_validation_node(
-    state: FinalValidationAgentInput,
-) -> FinalValidationAgentOutput:
-    log("맨 처음 생성한 최종 검증서를 기준으로 완성된 게임을 최종 검증합니다.")
-
-    manager = ArtifactManager()
-    cast(
-        InitialFinalValidationSpec,
-        manager.read_json(state["initial_final_validation_spec"]),
-    )
-    cast(IntegratedGame, manager.read_json(state["integrated_game"]))
-
-    # TODO: initial_final_validation_spec 기준 최종 검증
-    result: FinalValidationResult = {
-        "contract_version": CONTRACT_VERSION,
-        "status": "pending",
-        "checks": [],
-        "issues": [],
-    }
-    return {
-        "final_validation_result": manager.write_json(
-            state["project_id"],
-            "validation",
-            "final_validation_result.json",
-            result,
-            producer="final_validation",
-        )
-    }
-
-
-# ============================================================
-# Graph
-# ============================================================
 def build_graph():
+    """Register workflow Nodes and preserve the authoritative Edge topology."""
     graph = StateGraph(WorkflowState)
 
+    def add_node(name, node):
+        graph.add_node(name, bind_mcp_tools(name, node))
+
     # Nodes
-    graph.add_node("user_input", user_input_node)
-    graph.add_node("parse_input", parse_input_node)
+    add_node("user_input", user_input_node)
+    add_node("parse_input", parse_input_node)
 
-    graph.add_node(
-        "create_initial_final_validation_spec",
-        create_initial_final_validation_spec_node,
-    )
+    add_node("analysis", analysis_node)
+    add_node("logic_analysis", logic_analysis_node)
 
-    graph.add_node("generate_image", generate_image_node)
-    graph.add_node("design_game_logic", design_game_logic_node)
-    graph.add_node("generate_sound", generate_sound_node)
+    add_node("generate_image", generate_image_node)
+    add_node("design_game_logic", design_game_logic_node)
+    add_node("generate_sound", generate_sound_node)
 
-    graph.add_node("validate_game", validate_game_node)
+    add_node("validate_game", validate_game_node)
 
-    graph.add_node(
+    add_node(
         "create_asset_validation_spec",
         create_asset_validation_spec_node,
     )
 
-    graph.add_node("validate_image", validate_image_node)
-    graph.add_node("validate_sound", validate_sound_node)
+    add_node("validate_image", validate_image_node)
+    add_node("validate_sound", validate_sound_node)
 
-    graph.add_node(
+    add_node(
         "apply_assets_to_game",
         apply_assets_to_game_node,
     )
 
-    graph.add_node(
+    add_node(
         "final_validation",
         final_validation_node,
     )
@@ -700,27 +67,25 @@ def build_graph():
     graph.add_edge(START, "user_input")
     graph.add_edge("user_input", "parse_input")
 
-    # 최초 최종 검증서를 먼저 작성
+    # Parse the one-sentence condition before the parallel generation branches.
+    graph.add_edge("parse_input", "analysis")
+    graph.add_edge("analysis", "logic_analysis")
+
+    # 1. Design the Unity project and its explicit image/sound request JSON first.
     graph.add_edge(
-        "parse_input",
-        "create_initial_final_validation_spec",
+        "logic_analysis",
+        "design_game_logic",
     )
 
-    # 1. Image / Game / Sound generation in parallel
+    # 2. Image / game validation / sound work can proceed from the game design.
     graph.add_edge(
-        "create_initial_final_validation_spec",
+        "design_game_logic",
         "generate_image",
     )
     graph.add_edge(
-        "create_initial_final_validation_spec",
         "design_game_logic",
-    )
-    graph.add_edge(
-        "create_initial_final_validation_spec",
         "generate_sound",
     )
-
-    # 2. Game branch validation
     graph.add_edge(
         "design_game_logic",
         "validate_game",
@@ -761,7 +126,7 @@ def build_graph():
         "apply_assets_to_game",
     )
 
-    # 6. Final validation using the initial final validation spec
+    # 6. Final validation using LogicAnalysis criteria
     graph.add_edge(
         "apply_assets_to_game",
         "final_validation",
@@ -783,10 +148,7 @@ if __name__ == "__main__":
     print("최종 State:")
     print(final_state)
 
-    ###
     # app = build_graph()
-    #
     # png_data = app.get_graph().draw_mermaid_png()
-    #
-    # with open("docs/assets/langgraph_flow.png", "wb") as f:
-    #    f.write(png_data)
+    # with open("docs/assets/langgraph_flow.png", "wb") as file:
+    #     file.write(png_data)

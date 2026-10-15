@@ -23,6 +23,21 @@ env/
 .idea/
 .vscode/
 
+# LocalAI runtime data and model weights (kept in Docker named volumes)
+LocalAI/models/
+LocalAI/data/
+LocalAI/backends/
+
 # OS-generated files
 .DS_Store
 Thumbs.db
+
+# Unity template generated state
+unity_template/[Ll]ibrary/
+unity_template/[Tt]emp/
+unity_template/[Oo]bj/
+unity_template/[Ll]ogs/
+unity_template/[Uu]ser[Ss]ettings/
+unity_template/[Mm]emoryCaptures/
+unity_template/[Rr]ecordings/
+unity_template/[Bb]uilds/

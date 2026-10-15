@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -86,6 +87,48 @@ class ArtifactManagerTest(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=3) as executor:
             list(executor.map(write, jobs))
         self.assertEqual(len(self.manager.list_artifacts(project_id)), 3)
+
+    def test_mutable_project_files_use_safe_paths_and_optimistic_locking(self) -> None:
+        project_id = self.manager.create_project(date(2026, 9, 26))
+        relative_path = "game/working/notes.txt"
+
+        self.manager.write_project_text(project_id, relative_path, "first")
+        first_hash = hashlib.sha256(b"first").hexdigest()
+        self.manager.write_project_text(
+            project_id,
+            relative_path,
+            "second",
+            expected_sha256=first_hash,
+        )
+
+        self.assertEqual(self.manager.read_project_file(project_id, relative_path), b"second")
+        self.assertIn(Path(relative_path), self.manager.list_project_files(project_id, "game"))
+        with self.assertRaises(ValueError):
+            self.manager.write_project_text(
+                project_id,
+                relative_path,
+                "stale update",
+                expected_sha256=first_hash,
+            )
+        with self.assertRaises(ValueError):
+            self.manager.resolve_project_path(project_id, "../outside.txt")
+
+    def test_mutable_project_files_cannot_replace_registered_artifacts(self) -> None:
+        project_id = self.manager.create_project(date(2026, 9, 26))
+        reference = self.manager.write_text(
+            project_id,
+            "data",
+            "immutable.txt",
+            "original",
+            producer="test_agent",
+        )
+        with self.assertRaisesRegex(ValueError, "immutable"):
+            self.manager.write_project_text(
+                project_id,
+                reference["relative_path"],
+                "replacement",
+                expected_sha256=reference["sha256"],
+            )
 
 
 if __name__ == "__main__":

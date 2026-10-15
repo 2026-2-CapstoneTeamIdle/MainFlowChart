@@ -1,0 +1,79 @@
+"""Provider-neutral types used by the MCP-aware LLM runner."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Protocol
+
+from MCP.manager import MCPToolDefinition
+
+
+@dataclass(frozen=True)
+class LLMToolCall:
+    """One function call requested by an LLM provider."""
+
+    call_id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class LLMConversationMessage:
+    """Small common message format translated by each provider adapter."""
+
+    role: str
+    content: str = ""
+    tool_calls: tuple[LLMToolCall, ...] = ()
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    tool_result: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class LLMProviderResponse:
+    """Normalized response returned by Gemini, OpenAI, or a local model."""
+
+    text: str
+    tool_calls: tuple[LLMToolCall, ...] = ()
+
+
+@dataclass(frozen=True)
+class LLMToolExecution:
+    """Auditable MCP tool call made during one LLM run."""
+
+    call_id: str
+    name: str
+    arguments: dict[str, Any]
+    result: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class LLMRunResult:
+    """Final provider-independent value returned to a workflow node."""
+
+    text: str
+    provider: str
+    model: str
+    turns: int
+    tool_calls: tuple[LLMToolExecution, ...] = field(default_factory=tuple)
+
+
+class LLMProvider(Protocol):
+    """Adapter interface implemented by every supported model provider."""
+
+    name: str
+    model: str
+
+    async def complete(
+        self,
+        messages: list[LLMConversationMessage],
+        tools: list[MCPToolDefinition],
+        *,
+        system_prompt: str | None,
+        temperature: float,
+        require_tool: bool,
+    ) -> LLMProviderResponse:
+        """Generate one assistant turn, possibly containing tool calls."""
+
+    async def aclose(self) -> None:
+        """Release provider-owned network resources."""

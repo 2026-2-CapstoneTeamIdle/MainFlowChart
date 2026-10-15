@@ -1,0 +1,22 @@
+name: main-flow-chart-local-web
+
+services:
+  local-web:
+    build:
+      context: ../../..
+      dockerfile: CI/CD/LocalWeb/Dockerfile
+    image: main-flow-chart-local-web:local
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      MAINFLOW_GEMINI_MODEL: ${MAINFLOW_GEMINI_MODEL:-gemini-3-flash-preview}
+      MAINFLOW_GEMINI_TIMEOUT_SECONDS: ${MAINFLOW_GEMINI_TIMEOUT_SECONDS:-90}
+      MAINFLOW_GEMINI_THINKING_LEVEL: ${MAINFLOW_GEMINI_THINKING_LEVEL:-low}
+      MAINFLOW_GEMINI_MAX_OUTPUT_TOKENS: ${MAINFLOW_GEMINI_MAX_OUTPUT_TOKENS:-8192}
+      MAINFLOW_WORKSPACE: /app/workspace
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - type: bind
+        source: ../../../workspace
+        target: /app/workspace

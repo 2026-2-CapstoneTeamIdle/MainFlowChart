@@ -13,3 +13,12 @@ __pycache__/
 !.env.example
 workspace/*
 !workspace/.gitignore
+LocalAI/models/
+LocalAI/data/
+LocalAI/backends/
+unity_template/Library/
+unity_template/Temp/
+unity_template/Logs/
+unity_template/Obj/
+unity_template/UserSettings/
+unity_template/Builds/

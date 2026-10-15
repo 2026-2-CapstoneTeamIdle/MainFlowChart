@@ -12,7 +12,7 @@ workspace/                         # workspace/.gitignore로 내용 제외
    ├─ generated/
    │  ├─ images/                   # 이미지 파일과 image_draft.json
    │  └─ sounds/                   # 사운드 파일과 sound_draft.json
-   ├─ game/                        # 게임 코드, 프로젝트 파일, 통합 결과
+   ├─ game/                        # 게임 코드, asset_requests, Unity 프로젝트, 통합 결과
    ├─ data/                        # 요청/중간 데이터와 artifact_manifest.json
    └─ validation/                  # 검증 기준서와 검증 결과
 ```
@@ -23,10 +23,10 @@ workspace/                         # workspace/.gitignore로 내용 제외
 
 | Category | 실제 경로 | 주요 생산자 | 주요 소비자 |
 |---|---|---|---|
-| `image` | `generated/images/` | `generate_image` | `validate_image`, `apply_assets_to_game` |
+| `image` | `generated/images/` | `parse_input`(Custom 참고 이미지), `generate_image` | `generate_image`, `validate_image`, `apply_assets_to_game` |
 | `sound` | `generated/sounds/` | `generate_sound` | `validate_sound`, `apply_assets_to_game` |
-| `game` | `game/` | `design_game_logic`, `apply_assets_to_game` | `validate_game`, `final_validation` |
-| `data` | `data/` | `parse_input` 및 공통 시스템 | 요구사항을 읽는 모든 Agent |
+| `game` | `game/` | `design_game_logic`, `apply_assets_to_game` | 이미지·사운드 생성, `validate_game`, `final_validation` |
+| `data` | `data/` | `parse_input`, `analysis`, `logic_analysis` 및 공통 시스템 | 요구사항을 읽는 모든 Agent |
 | `validation` | `validation/` | 검증서/검증 Agent | 후속 검증 및 최종 검증 Agent |
 
 `data/artifact_manifest.json`은 `ArtifactManager`가 관리한다. Agent가 직접 편집하면 안 된다.
@@ -52,7 +52,12 @@ request_ref = manager.write_json(
     project_id,
     "data",
     "parsed_request.json",
-    {"contract_version": "2.0.0", "genre": "Action"},
+    {
+        "contract_version": "3.1.0",
+        "genre": "플랫포머",
+        "viewpoint": "사이드뷰",
+        "mood_style": "Fantasy",
+    },
     producer="parse_input",
 )
 
@@ -66,7 +71,7 @@ parsed_request = manager.read_json(request_ref)
 
 ```json
 {
-  "contract_version": "2.0.0",
+  "contract_version": "3.1.0",
   "artifact_id": "image-<uuid>",
   "project_id": "20260926_03",
   "category": "image",
@@ -79,7 +84,51 @@ parsed_request = manager.read_json(request_ref)
 }
 ```
 
+## Custom 이미지 전달
+
+`image_style=Custom`이면 `parse_input`이 외부 PNG/JPG를 다음 위치로 가져온다.
+
+```text
+workspace/{project_id}/generated/images/references/custom_style.{png|jpg|jpeg}
+```
+
+확장자뿐 아니라 PNG/JPEG 파일 signature를 검사한다. `parsed_request.json`에는 원본 절대 경로를
+남기지 않고 해당 파일의 `ArtifactReference`를 `custom_image` 필드에 기록한다. 게임 설계가
+만드는 `image_asset_request.json`에도 같은 참조를 `reference_image`로 전달한다. 이미지 Agent는
+이 참조를 `ArtifactManager.read_bytes()`로 읽어 생성 참고 자료로 사용한다.
+
+분석 중간 산출물은 다음 위치에 보관한다.
+
+```text
+workspace/{project_id}/data/analysis.json
+workspace/{project_id}/data/logic_analysis.json
+workspace/{project_id}/game/asset_requests/image_asset_request.json
+workspace/{project_id}/game/asset_requests/sound_asset_request.json
+```
+
+에셋 요청 JSON은 생성된 Unity 프로젝트의
+`Assets/GameTemplate/Generated/AssetRequests/`에도 같은 내용으로 포함된다. 이미지·사운드 Flow는
+State로 받은 `ArtifactReference`를 통해 workspace 사본을 읽으며 Unity 프로젝트 내부 경로에 직접
+의존하지 않는다.
+
+이미지 Flow는 `image_asset_request` State 참조를, 사운드 Flow는 `sound_asset_request` State 참조를
+`ArtifactManager.read_json()`에 넘긴다. 두 요청에는 공통 `image_style`, `genre`와 게임 설계가
+유지한 `viewpoint`가 포함되고, 각 에셋의 `asset_id`와 `unity_binding_key`는 결과 draft까지
+변경하지 않는다.
+
 참조의 `relative_path`를 직접 이어 붙여 읽지 않는다. 항상 `ArtifactManager`의 읽기 메서드를 사용한다.
+
+## MCP 작업 파일
+
+LLM이 MCP로 Unity 소스 등 생성 중인 작업 파일을 수정할 때도 `ArtifactManager`의 프로젝트 경계를
+사용한다. `resolve_project_path`, `list_project_files`, `read_project_file`, `write_project_file`,
+`write_project_text`가 이 용도다.
+
+- 작업 파일은 반드시 `workspace/{project_id}/` 내부에 둔다.
+- 기존 파일 수정에는 직전 읽기에서 얻은 SHA-256이 필요하다.
+- manifest와 등록된 Artifact는 MCP 작업 파일 API로 덮어쓸 수 없다.
+- 수정 가능한 작업 파일을 최종 산출물로 확정할 때 새 Artifact로 등록한다.
+- 세부 도구 사용법과 Node별 권한은 [`MCPManager.md`](MCPManager.md)를 따른다.
 
 ## 5. 파일명과 수정 규칙
 
@@ -93,7 +142,8 @@ parsed_request = manager.read_json(request_ref)
 
 ## 6. 병렬 실행과 안전성
 
-- 이미지, 게임, 사운드 Agent는 병렬 실행될 수 있으므로 서로 다른 category/파일을 쓴다.
+- 게임 설계가 두 에셋 요청을 만든 뒤 이미지 생성, 게임 검증, 사운드 생성은 병렬 실행될 수
+  있으므로 서로 다른 category/파일을 쓴다.
 - manifest 갱신은 `.artifact_manifest.lock`을 이용해 직렬화하며 완료 후 잠금 파일은 삭제된다.
 - 실제 파일과 manifest는 임시 파일에 먼저 쓴 뒤 원자적으로 게시한다.
 - 읽을 때 크기나 SHA-256이 다르면 손상 또는 외부 수정을 의미하므로 즉시 실패한다.
