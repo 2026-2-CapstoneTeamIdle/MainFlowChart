@@ -1,0 +1,3 @@
+# LocalAI integration v1.1.0 optional profile for GPUs with at least 24 GB VRAM.
+- url: https://raw.githubusercontent.com/mudler/LocalAI/v4.11.0/gallery/sglang-gemma-4-e4b-mtp.yaml
+  name: gemma4-e4b

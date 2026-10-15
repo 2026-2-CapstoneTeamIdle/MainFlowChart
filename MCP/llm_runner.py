@@ -108,6 +108,7 @@ async def run_node_llm(
     prompt: str,
     *,
     system_prompt: str | None = None,
+    ai: str | None = None,
     provider: str | None = None,
     model: str | None = None,
     temperature: float = 0.0,
@@ -117,11 +118,18 @@ async def run_node_llm(
     """Use the current node's MCP policy with a selected LLM provider."""
 
     manager = get_current_mcp_manager()
-    settings = LLMSettings.from_environment(
-        node_name=manager.node_name,
-        provider=provider,
-        model=model,
-    )
+    if ai is not None:
+        if provider is not None or model is not None:
+            raise ValueError("ai cannot be combined with provider or model")
+        from LocalAI.profiles import resolve_ai_settings
+
+        settings = resolve_ai_settings(ai, manager.node_name)
+    else:
+        settings = LLMSettings.from_environment(
+            node_name=manager.node_name,
+            provider=provider,
+            model=model,
+        )
     llm_provider = create_llm_provider(settings)
     runner = MCPToolLLMRunner(manager, llm_provider)
     try:
@@ -134,3 +142,28 @@ async def run_node_llm(
         )
     finally:
         await llm_provider.aclose()
+
+
+async def run_llm(
+    prompt: str,
+    *,
+    system_prompt: str | None = None,
+    ai: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    temperature: float = 0.0,
+    max_tool_rounds: int = 4,
+    require_tool: bool = False,
+) -> LLMRunResult:
+    """Convenience name for invoking an LLM from a bound workflow node."""
+
+    return await run_node_llm(
+        prompt,
+        system_prompt=system_prompt,
+        ai=ai,
+        provider=provider,
+        model=model,
+        temperature=temperature,
+        max_tool_rounds=max_tool_rounds,
+        require_tool=require_tool,
+    )
