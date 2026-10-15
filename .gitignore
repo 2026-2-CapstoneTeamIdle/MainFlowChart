@@ -23,6 +23,11 @@ env/
 .idea/
 .vscode/
 
+# LocalAI runtime data and model weights (kept in Docker named volumes)
+LocalAI/models/
+LocalAI/data/
+LocalAI/backends/
+
 # OS-generated files
 .DS_Store
 Thumbs.db

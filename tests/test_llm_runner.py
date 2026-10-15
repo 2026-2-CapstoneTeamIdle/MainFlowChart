@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from LocalAI.profiles import AI_MODEL_PROFILES, resolve_ai_settings
 from mainflow.ArtifactManager import ArtifactManager
 from MCP.llm_config import LLMSettings
 from MCP.llm_runner import MCPToolLLMRunner
@@ -161,6 +162,26 @@ class LLMRunnerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(local.provider, "local")
         self.assertEqual(local.model, "local-model")
         self.assertEqual(local.base_url, "http://local-model:11434/v1")
+
+    def test_named_local_ai_profile_resolves_model_and_endpoint(self) -> None:
+        environment = {
+            "LOCAL_LLM_BASE_URL": "http://Local-AIModel:8080/v1",
+            "LOCAL_LLM_API_KEY": "local-secret",
+            "LLM_TIMEOUT_SECONDS": "300",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            settings = resolve_ai_settings("Gemma4-E4B", "analysis")
+
+        self.assertIn("gemma4_e4b", AI_MODEL_PROFILES)
+        self.assertEqual(settings.provider, "local")
+        self.assertEqual(settings.model, "gemma4-e4b")
+        self.assertEqual(settings.base_url, "http://Local-AIModel:8080/v1")
+        self.assertEqual(settings.api_key, "local-secret")
+        self.assertEqual(settings.timeout_seconds, 300)
+
+    def test_unknown_local_ai_profile_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            resolve_ai_settings("not-registered", "analysis")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,19 @@
+# LocalAI integration v1.1.0 default for a 6 GB NVIDIA GPU.
+# Only the text model is downloaded; the 987 MB multimodal projector is omitted.
+- url: https://raw.githubusercontent.com/mudler/LocalAI/v4.11.0/gallery/gemma.yaml
+  name: gemma4-e2b-q4
+  files:
+    - filename: gemma-4-E2B_q4_0-it.gguf
+      uri: huggingface://google/gemma-4-E2B-it-qat-q4_0-gguf/gemma-4-E2B_q4_0-it.gguf
+      sha256: fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634
+  overrides:
+    context_size: 4096
+    gpu_layers: 99
+    low_vram: true
+    function:
+      automatic_tool_parsing_fallback: true
+      grammar:
+        disable: true
+    parameters:
+      model: gemma-4-E2B_q4_0-it.gguf
+      temperature: 0.2
