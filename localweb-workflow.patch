@@ -1,0 +1,1417 @@
+diff --git a/CI/CD/LocalWeb/Dockerfile b/CI/CD/LocalWeb/Dockerfile
+index 6362482..bfc5149 100644
+--- a/CI/CD/LocalWeb/Dockerfile
++++ b/CI/CD/LocalWeb/Dockerfile
+@@ -1,17 +1,24 @@
+ # syntax=docker/dockerfile:1
++# Build context: repository root (see compose.yaml). The image contains the
++# whole MainFlowChart workflow so the web server can run the LangGraph graph.
+ FROM python:3.11-slim-bookworm
+ 
+-ENV PYTHONDONTWRITEBYTECODE=1 \
+-    PYTHONUNBUFFERED=1 \
++COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /uvx /bin/
++
++ENV PYTHONUNBUFFERED=1 \
++    UV_COMPILE_BYTECODE=1 \
++    UV_LINK_MODE=copy \
++    UV_NO_DEV=1 \
+     MAINFLOW_WORKSPACE=/app/workspace
+ 
+ WORKDIR /app
+ 
+-COPY CI/CD/LocalWeb/requirements.txt ./requirements.txt
+-RUN python -m pip install --no-cache-dir -r requirements.txt
++# Same lockfile as the workflow image, plus the "web" dependency group (FastAPI).
++COPY pyproject.toml uv.lock ./
++RUN uv sync --locked --no-dev --group web --no-install-project
+ 
+-COPY CI/CD/LocalWeb/ ./
++COPY . .
+ 
+ EXPOSE 8000
+ 
+-CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
++CMD ["/app/.venv/bin/python", "-m", "uvicorn", "app:app", "--app-dir", "CI/CD/LocalWeb", "--host", "0.0.0.0", "--port", "8000"]
+diff --git a/CI/CD/LocalWeb/LocalWebManager.md b/CI/CD/LocalWeb/LocalWebManager.md
+index 8637d05..b6b9317 100644
+--- a/CI/CD/LocalWeb/LocalWebManager.md
++++ b/CI/CD/LocalWeb/LocalWebManager.md
+@@ -1,26 +1,40 @@
+ # Local Web Manager
+ 
+-`CI/CD/LocalWeb`은 MainFlowChart를 브라우저에서 확인하기 위한 로컬 전용 웹 골격이다.
+-현재 단계에서는 정적 입력 화면과 서버 상태 확인만 제공하며 LangGraph Workflow는 실행하지 않는다.
++`CI/CD/LocalWeb`은 MainFlowChart를 브라우저에서 실행하기 위한 로컬 전용 웹 계층이다.
++사용자 입력(계약 3.1.0)을 받아 LangGraph Workflow를 백그라운드에서 실행하고, Node 진행 상황·결과·생성 파일을 보여 준다.
+ 
+-## 현재 제공 범위
++## 제공 기능
+ 
+ - 로컬 웹 화면: `http://localhost:8000`
+ - FastAPI 문서: `http://localhost:8000/docs`
+-- 서버 상태 API: `http://localhost:8000/api/health`
+-- Workflow 입력 화면 골격
+-- 계약 3.1.0 입력 항목: 이미지 스타일, 분위기 스타일, 장르, 시점, 한 문장 조건
+-- Custom 이미지용 PNG/JPG 파일 선택 골격
+-- 호스트 `workspace/`와 컨테이너 `/app/workspace` 연결
++- 입력: 이미지 스타일, 분위기 스타일, 장르, 시점, 한 문장 조건, Custom 이미지(PNG/JPG, 10MB 이하)
++- 실행: `mainflow.langgraph_game_flow_skeleton.build_graph()`를 그대로 사용하고 `graph.stream(stream_mode="updates")`로 Node 완료를 실시간 표시
++- 결과: 게임 검증, 이미지·사운드 생성, 최종 검증 상태와 주요 issue
++- 생성 파일: 프로젝트 manifest 목록과 개별 파일 다운로드(`ArtifactManager`가 크기·SHA-256 검증 후 반환)
++- 실행은 한 번에 하나씩 순서대로 처리한다. 실행 중 추가 요청은 대기열에 들어간다.
+ 
+-`/api/health`의 `workflow` 값이 `not_connected`인 것은 의도한 현재 상태다.
++입력값 검증은 CLI와 같은 `mainflow.run_flow.load_request()`를 사용하므로 웹과 CLI의 규칙이 항상 같다.
++
++## API
++
++| Method | Path | 설명 |
++|---|---|---|
++| GET | `/api/health` | 서버 상태, Workflow 연결 여부(`connected`/`unavailable`), 실행 중 여부 |
++| GET | `/api/workflow` | 계약의 입력 선택지와 Graph Node 순서 |
++| POST | `/api/runs` | multipart form으로 실행 요청. `202`와 `run_id` 반환, 잘못된 입력은 `422` |
++| GET | `/api/runs` | 최근 실행 목록 |
++| GET | `/api/runs/{run_id}` | 상태(`queued`/`running`/`succeeded`/`failed`), Node 이벤트, 결과, 오류 |
++| GET | `/api/runs/{run_id}/artifacts` | 프로젝트 생성 파일 목록 |
++| GET | `/api/runs/{run_id}/artifacts/{artifact_id}` | 파일 다운로드 |
++
++`succeeded`인데 `outcome`이 `game_validation_failed`이면 Workflow는 끝까지 실행됐지만 Unity 검증을 통과하지 못한 것이다. CLI의 종료 코드 1과 같은 의미다.
+ 
+ ## 디렉터리
+ 
+ ```text
+ CI/CD/LocalWeb/
+-├─ app.py
+-├─ requirements.txt
++├─ app.py               # FastAPI 라우트, 입력 검증, Custom 이미지 저장
++├─ workflow_runner.py   # 백그라운드 실행, Node 이벤트 수집, 결과 요약
+ ├─ Dockerfile
+ ├─ compose.yaml
+ ├─ LocalWebManager.md
+@@ -38,34 +52,39 @@ CI/CD/LocalWeb/
+ docker compose -f "CI/CD/LocalWeb/compose.yaml" up --build
+ ```
+ 
+-브라우저에서 다음 주소를 연다.
+-
+-```text
+-http://localhost:8000
+-```
++브라우저에서 `http://localhost:8000`을 열면 상단에 `Workflow 연결됨`이 표시된다.
+ 
+-종료할 때는 다음 명령을 실행한다.
++종료:
+ 
+ ```powershell
+ docker compose -f "CI/CD/LocalWeb/compose.yaml" down
+ ```
+ 
+-Docker 포트는 호스트의 `127.0.0.1`에만 바인딩한다. 같은 네트워크의 다른 장치에서는
+-기본 설정으로 접근할 수 없다.
++이미지는 저장소 루트를 빌드 컨텍스트로 사용한다. 의존성은 루트의 `pyproject.toml`/`uv.lock`과 `web` 그룹(FastAPI)으로 설치하므로 Workflow 이미지와 버전이 같다. 의존성이나 Python 코드가 바뀌면 `--build`로 다시 빌드한다.
++
++LLM 관련 환경변수(`GEMINI_API_KEY`, `LLM_PROVIDER`, `OPENAI_API_KEY`, `LOCAL_LLM_*` 등)는 루트 `compose.yaml`의 `mainflow` 서비스와 같은 이름으로 전달된다. 키가 없어도 기본 Workflow는 끝까지 실행된다.
++
++Docker 포트는 호스트의 `127.0.0.1`에만 바인딩한다. 같은 네트워크의 다른 장치에서는 기본 설정으로 접근할 수 없다.
+ 
+ ## Python으로 직접 실행
+ 
+-Python 3.11 환경에서 다음 명령을 실행한다.
++저장소 최상위 디렉터리에서 실행한다.
+ 
+ ```powershell
+-Set-Location "CI/CD/LocalWeb"
+-py -3.11 -m venv .venv
+-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+-.\.venv\Scripts\python.exe -m uvicorn app:app --host 127.0.0.1 --port 8000 --reload
++uv sync --locked --group web
++uv run --locked --group web python -m uvicorn app:app --app-dir CI/CD/LocalWeb --host 127.0.0.1 --port 8000 --reload
+ ```
+ 
+ 종료는 실행 중인 터미널에서 `Ctrl+C`를 누른다.
+ 
++## 테스트
++
++```powershell
++uv run --locked --group web python -m unittest tests.test_local_web -v
++```
++
++테스트는 Graph를 간단한 stub으로 바꿔 실행·파일 목록·다운로드·입력 거부·실패 보고를 확인한다. `web` 그룹이 없으면 이 테스트는 건너뛴다.
++
+ ## 포트 충돌
+ 
+ 이미 8000번 포트를 사용하는 프로그램이 있으면 `compose.yaml`의 호스트 포트를 변경한다.
+@@ -75,31 +94,22 @@ ports:
+   - "127.0.0.1:8001:8000"
+ ```
+ 
+-이 경우 접속 주소는 `http://localhost:8001`이다.
++이 경우 접속 주소는 `http://localhost:8001`이다. 루트 `compose.yaml`의 MCP 서버도 8001을 사용하므로 함께 띄운다면 다른 포트를 고른다.
+ 
+ ## Workspace 연결
+ 
+-Docker 실행 시 다음 두 경로가 연결된다.
+-
+ ```text
+ 호스트:    ./workspace
+ 컨테이너: /app/workspace
+ ```
+ 
+-현재 웹 골격은 Workspace를 읽거나 변경하지 않는다. 이후 Workflow API를 연결하면 기존
+-`ArtifactManager`가 이 경로 아래에 프로젝트 파일을 생성한다.
+-
+-화면에 표시되는 입력 형식은 `mainflow/contracts.py`의 계약 3.1.0과 일치한다. 사용자는 각
+-항목을 선택하고 조건을 입력할 수 있으며, 이미지 스타일을 `Custom`으로 고르면 PNG/JPG 파일
+-선택도 활성화된다. 단, 실행 버튼은 의도적으로 비활성화돼 있어 선택한 값이나 파일을 서버로
+-전송하지 않는다. 실제 MainFlow 실행은 현재 CLI 또는 JSON 요청으로만 가능하다.
++웹에서 실행한 프로젝트는 CLI와 똑같이 `workspace/{project_id}/`에 생성된다. Custom 이미지는 `workspace/_uploads/upload-<id>/`에 저장한 뒤 그 경로를 Workflow 입력으로 전달한다.
+ 
+-## 다음 구현 단계
++## 현재 한계와 다음 단계
+ 
+-1. 웹 요청·응답 데이터 모델 정의
+-2. Workflow 실행 API 추가
+-3. `graph.stream()` 이벤트를 실행 상태로 변환
+-4. Artifact 목록과 미리보기 API 추가
+-5. 개별 파일 및 프로젝트 ZIP 다운로드 추가
++1. 실행 기록은 서버 메모리에만 있다. 컨테이너를 재시작하면 목록은 사라지지만 생성 파일은 `workspace`에 남는다.
++2. Node 진행은 "완료" 이벤트 단위로 표시한다. 병렬 Node의 "실행 중" 상태와 Node 내부 로그 스트리밍은 아직 없다.
++3. 프로젝트 ZIP 다운로드, 이미지·사운드 미리보기는 아직 없다.
++4. 실행 취소 기능이 없다.
+ 
+ Agent Node와 결정적인 Graph Edge는 이 로컬 웹 계층에서 변경하지 않는다.
+diff --git a/CI/CD/LocalWeb/app.py b/CI/CD/LocalWeb/app.py
+index 5022fdf..0246d81 100644
+--- a/CI/CD/LocalWeb/app.py
++++ b/CI/CD/LocalWeb/app.py
+@@ -1,22 +1,66 @@
+-"""Minimal local web entry point for MainFlowChart."""
++"""Local web entry point for MainFlowChart.
++
++Accepts the contract 3.1.0 request from the browser, runs the LangGraph
++workflow in the background and exposes progress, results and artifacts.
++"""
+ 
+ from __future__ import annotations
+ 
++import sys
++import uuid
+ from pathlib import Path
++from types import SimpleNamespace
++from typing import Annotated, Any, cast, get_args
++
++LOCAL_WEB_ROOT = Path(__file__).resolve().parent
++REPOSITORY_ROOT = LOCAL_WEB_ROOT.parents[2]
++if str(REPOSITORY_ROOT) not in sys.path:
++    sys.path.insert(0, str(REPOSITORY_ROOT))
+ 
+-from fastapi import FastAPI
+-from fastapi.responses import FileResponse
++from fastapi import FastAPI, File, Form, HTTPException, UploadFile
++from fastapi.responses import FileResponse, Response
+ from fastapi.staticfiles import StaticFiles
++from workflow_runner import WorkflowRunner, serialize
++
++from mainflow.ArtifactManager import ArtifactManager
++from mainflow.contracts import (
++    CONTRACT_VERSION,
++    GameGenre,
++    ImageStyle,
++    MoodStyle,
++    Viewpoint,
++)
++from mainflow.run_flow import load_request
+ 
+-LOCAL_WEB_ROOT = Path(__file__).resolve().parent
+ STATIC_ROOT = LOCAL_WEB_ROOT / "static"
++UPLOAD_DIRECTORY = "_uploads"
++MAX_UPLOAD_BYTES = 10 * 1024 * 1024
++MAX_CONDITION_LENGTH = 300
++IMAGE_SIGNATURES = {".png": (b"\x89PNG\r\n\x1a\n",), ".jpg": (b"\xff\xd8\xff",)}
+ 
+ app = FastAPI(
+     title="MainFlowChart Local Web",
+     description="Local-only web shell for the MainFlowChart workflow.",
+-    version="0.2.0",
++    version="0.3.0",
+ )
+ app.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
++runner = WorkflowRunner()
++
++
++def _options() -> dict[str, list[str]]:
++    return {
++        "image_style": list(get_args(ImageStyle)),
++        "mood_style": list(get_args(MoodStyle)),
++        "genre": list(get_args(GameGenre)),
++        "viewpoint": list(get_args(Viewpoint)),
++    }
++
++
++def _workflow_status() -> tuple[str, list[str], str | None]:
++    try:
++        return "connected", runner.node_names(), None
++    except Exception as error:  # noqa: BLE001 - reported through /api/health
++        return "unavailable", [], f"{type(error).__name__}: {error}"
+ 
+ 
+ @app.get("/", include_in_schema=False)
+@@ -26,11 +70,136 @@ def index() -> FileResponse:
+ 
+ 
+ @app.get("/api/health")
+-def health() -> dict[str, str]:
+-    """Report whether the local web server is available."""
++def health() -> dict[str, Any]:
++    """Report whether the server and the LangGraph workflow are available."""
++    workflow, _, error = _workflow_status()
+     return {
+         "service": "main-flow-chart-local-web",
+         "status": "ok",
+-        "workflow": "not_connected",
+-        "contract_version": "3.1.0",
++        "workflow": workflow,
++        "workflow_error": error,
++        "busy": runner.busy(),
++        "contract_version": CONTRACT_VERSION,
+     }
++
++
++@app.get("/api/workflow")
++def workflow() -> dict[str, Any]:
++    """Input options from the contract and the graph's node order."""
++    status, nodes, error = _workflow_status()
++    return {"status": status, "error": error, "nodes": nodes, "options": _options()}
++
++
++def _save_custom_image(run_key: str, upload: UploadFile) -> Path:
++    suffix = Path(upload.filename or "").suffix.lower()
++    suffix = ".jpg" if suffix == ".jpeg" else suffix
++    if suffix not in IMAGE_SIGNATURES:
++        raise HTTPException(422, "Custom 이미지는 PNG 또는 JPG 파일이어야 합니다.")
++    content = upload.file.read(MAX_UPLOAD_BYTES + 1)
++    if len(content) > MAX_UPLOAD_BYTES:
++        raise HTTPException(413, "Custom 이미지는 10MB 이하여야 합니다.")
++    if not content.startswith(IMAGE_SIGNATURES[suffix]):
++        raise HTTPException(422, "파일 내용이 PNG/JPG 형식이 아닙니다.")
++    directory = ArtifactManager().workspace_root / UPLOAD_DIRECTORY / run_key
++    directory.mkdir(parents=True, exist_ok=True)
++    target = directory / f"custom_reference{suffix}"
++    target.write_bytes(content)
++    return target
++
++
++@app.post("/api/runs", status_code=202)
++def create_run(
++    image_style: Annotated[str, Form()],
++    mood_style: Annotated[str, Form()],
++    genre: Annotated[str, Form()],
++    viewpoint: Annotated[str, Form()],
++    condition: Annotated[str, Form()],
++    custom_image: Annotated[UploadFile | None, File()] = None,
++) -> dict[str, Any]:
++    """Validate the request like the CLI does and start a workflow run."""
++    condition = condition.strip()
++    if len(condition) > MAX_CONDITION_LENGTH:
++        raise HTTPException(422, f"조건은 {MAX_CONDITION_LENGTH}자 이하로 입력하세요.")
++
++    custom_path = None
++    has_upload = custom_image is not None and bool(custom_image.filename)
++    if image_style == "Custom" and has_upload:
++        custom_path = _save_custom_image(f"upload-{uuid.uuid4().hex[:12]}", custom_image)  # type: ignore[arg-type]
++    arguments = SimpleNamespace(
++        request_file=None,
++        image_style=image_style,
++        mood_style=mood_style,
++        genre=genre,
++        viewpoint=viewpoint,
++        condition=condition,
++        custom_image=custom_path,
++    )
++    try:
++        initial_state = cast(dict[str, Any], load_request(arguments))  # type: ignore[arg-type]
++    except ValueError as error:
++        raise HTTPException(422, str(error)) from error
++
++    public_request = {
++        key: initial_state[key]
++        for key in ("image_style", "mood_style", "genre", "viewpoint", "condition")
++    }
++    public_request["custom_image"] = custom_image.filename if custom_path and custom_image else None
++    return serialize(runner.submit(initial_state, public_request))
++
++
++@app.get("/api/runs")
++def list_runs() -> list[dict[str, Any]]:
++    return [serialize(run) for run in runner.list()]
++
++
++def _run_or_404(run_id: str):
++    run = runner.get(run_id)
++    if run is None:
++        raise HTTPException(404, "Unknown run_id")
++    return run
++
++
++@app.get("/api/runs/{run_id}")
++def get_run(run_id: str) -> dict[str, Any]:
++    return serialize(_run_or_404(run_id))
++
++
++@app.get("/api/runs/{run_id}/artifacts")
++def list_run_artifacts(run_id: str) -> list[dict[str, Any]]:
++    run = _run_or_404(run_id)
++    if not run.project_id:
++        return []
++    return [
++        {
++            key: reference[key]
++            for key in (
++                "artifact_id",
++                "category",
++                "relative_path",
++                "media_type",
++                "size_bytes",
++                "producer",
++            )
++        }
++        for reference in ArtifactManager().list_artifacts(run.project_id)
++    ]
++
++
++@app.get("/api/runs/{run_id}/artifacts/{artifact_id}")
++def download_artifact(run_id: str, artifact_id: str) -> Response:
++    """Return an artifact after ArtifactManager verifies its size and SHA-256."""
++    run = _run_or_404(run_id)
++    if not run.project_id:
++        raise HTTPException(404, "Run has no project yet")
++    manager = ArtifactManager()
++    try:
++        reference = manager.get_artifact(run.project_id, artifact_id)
++    except (KeyError, ValueError) as error:
++        raise HTTPException(404, "Unknown artifact_id") from error
++    content = manager.read_bytes(reference)
++    filename = Path(reference["relative_path"]).name
++    return Response(
++        content,
++        media_type=reference["media_type"],
++        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
++    )
+diff --git a/CI/CD/LocalWeb/compose.yaml b/CI/CD/LocalWeb/compose.yaml
+index 31008ba..3b803af 100644
+--- a/CI/CD/LocalWeb/compose.yaml
++++ b/CI/CD/LocalWeb/compose.yaml
+@@ -12,10 +12,27 @@ services:
+       MAINFLOW_GEMINI_TIMEOUT_SECONDS: ${MAINFLOW_GEMINI_TIMEOUT_SECONDS:-90}
+       MAINFLOW_GEMINI_THINKING_LEVEL: ${MAINFLOW_GEMINI_THINKING_LEVEL:-low}
+       MAINFLOW_GEMINI_MAX_OUTPUT_TOKENS: ${MAINFLOW_GEMINI_MAX_OUTPUT_TOKENS:-8192}
++      MAINFLOW_UNITY_VALIDATION_MODE: ${MAINFLOW_UNITY_VALIDATION_MODE:-auto}
++      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
++      LLM_MODEL: ${LLM_MODEL:-}
++      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-120}
++      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3-flash-preview}
++      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
++      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
++      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
++      LOCAL_LLM_API_KEY: ${LOCAL_LLM_API_KEY:-}
++      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-gemma3}
++      LOCAL_LLM_BASE_URL: ${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+       MAINFLOW_WORKSPACE: /app/workspace
+       PYTHONUNBUFFERED: "1"
+     ports:
+       - "127.0.0.1:8000:8000"
++    healthcheck:
++      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
++      interval: 10s
++      timeout: 5s
++      retries: 5
++      start_period: 10s
+     volumes:
+       - type: bind
+         source: ../../../workspace
+diff --git a/CI/CD/LocalWeb/requirements.txt b/CI/CD/LocalWeb/requirements.txt
+deleted file mode 100644
+index aa889d1..0000000
+--- a/CI/CD/LocalWeb/requirements.txt
++++ /dev/null
+@@ -1,2 +0,0 @@
+-fastapi>=0.115.0,<1.0.0
+-uvicorn[standard]>=0.30.0,<1.0.0
+diff --git a/CI/CD/LocalWeb/static/app.js b/CI/CD/LocalWeb/static/app.js
+index 4937426..cebe2d4 100644
+--- a/CI/CD/LocalWeb/static/app.js
++++ b/CI/CD/LocalWeb/static/app.js
+@@ -1,42 +1,230 @@
+ const statusDot = document.querySelector("#status-dot");
+ const statusText = document.querySelector("#status-text");
++const phaseBadge = document.querySelector("#phase-badge");
+ const requestForm = document.querySelector("#request-form");
++const submitButton = document.querySelector("#submit-button");
++const formError = document.querySelector("#form-error");
+ const imageStyle = document.querySelector("#image-style");
+ const customImage = document.querySelector("#custom-image");
+ 
++const STATUS_LABEL = {
++  queued: "대기 중",
++  running: "실행 중",
++  succeeded: "완료",
++  failed: "실패",
++};
++const RESULT_LABEL = {
++  game_validation: "게임 검증",
++  image_generation: "이미지 생성",
++  sound_generation: "사운드 생성",
++  final_validation: "최종 검증",
++};
++
++let workflowNodes = [];
++let workflowReady = false;
++let pollTimer = null;
++
++function setText(selector, value) {
++  document.querySelector(selector).textContent = value;
++}
++
++function el(tag, className, text) {
++  const node = document.createElement(tag);
++  if (className) node.className = className;
++  if (text !== undefined) node.textContent = text;
++  return node;
++}
++
+ function updateCustomImageState() {
+   const customSelected = imageStyle.value === "Custom";
+   customImage.disabled = !customSelected;
++  customImage.required = customSelected;
+   if (!customSelected) {
+     customImage.value = "";
+   }
+ }
+ 
+-imageStyle.addEventListener("change", updateCustomImageState);
+-requestForm.addEventListener("submit", (event) => event.preventDefault());
+-updateCustomImageState();
++function fillOptions(select, values) {
++  const current = select.value;
++  select.replaceChildren(...values.map((value) => el("option", "", value)));
++  if (values.includes(current)) select.value = current;
++}
+ 
+-async function checkServerHealth() {
+-  try {
+-    const response = await fetch("/api/health", {
+-      headers: { Accept: "application/json" },
+-    });
++function setBusy(busy) {
++  submitButton.disabled = busy || !workflowReady;
++  submitButton.textContent = !workflowReady
++    ? "Workflow 연결 후 사용 가능"
++    : busy
++      ? "Workflow 실행 중…"
++      : "Workflow 실행";
++}
+ 
+-    if (!response.ok) {
+-      throw new Error(`health check failed: ${response.status}`);
++function showFormError(message) {
++  formError.hidden = !message;
++  formError.textContent = message || "";
++}
++
++async function loadWorkflow() {
++  try {
++    const [healthResponse, workflowResponse] = await Promise.all([
++      fetch("/api/health", { headers: { Accept: "application/json" } }),
++      fetch("/api/workflow", { headers: { Accept: "application/json" } }),
++    ]);
++    if (!healthResponse.ok || !workflowResponse.ok) {
++      throw new Error(`health check failed: ${healthResponse.status}/${workflowResponse.status}`);
+     }
++    const health = await healthResponse.json();
++    const workflow = await workflowResponse.json();
++
++    workflowReady = health.workflow === "connected";
++    workflowNodes = workflow.nodes;
++    fillOptions(imageStyle, workflow.options.image_style);
++    fillOptions(document.querySelector("#mood-style"), workflow.options.mood_style);
++    fillOptions(document.querySelector("#genre"), workflow.options.genre);
++    fillOptions(document.querySelector("#viewpoint"), workflow.options.viewpoint);
++    updateCustomImageState();
+ 
+-    const health = await response.json();
+-    statusDot.className = "status-dot status-dot--ready";
+-    statusText.textContent =
+-      health.workflow === "not_connected"
+-        ? "로컬 서버 정상 · Workflow 연결 전"
+-        : "로컬 서버 정상";
++    statusDot.className = workflowReady
++      ? "status-dot status-dot--ready"
++      : "status-dot status-dot--error";
++    statusText.textContent = workflowReady
++      ? `로컬 서버 정상 · Workflow 연결됨 (계약 ${health.contract_version})`
++      : `Workflow를 불러오지 못했습니다: ${health.workflow_error}`;
++    phaseBadge.textContent = workflowReady ? `Node ${workflowNodes.length}개 연결됨` : "실행 불가";
++    setBusy(health.busy);
+   } catch (error) {
+     statusDot.className = "status-dot status-dot--error";
+     statusText.textContent = "로컬 서버 상태를 확인할 수 없습니다.";
++    workflowReady = false;
++    setBusy(false);
+     console.error(error);
+   }
+ }
+ 
+-checkServerHealth();
++function elapsed(run) {
++  if (!run.started_at) return "-";
++  const end = run.finished_at ? new Date(run.finished_at) : new Date();
++  return `${((end - new Date(run.started_at)) / 1000).toFixed(1)}초`;
++}
++
++function renderNodes(run) {
++  const done = new Map(run.events.map((event) => [event.node, event]));
++  const list = document.querySelector("#node-list");
++  const items = workflowNodes.map((node) => {
++    const event = done.get(node);
++    const item = el("li", `node-item node-item--${event ? "done" : run.status === "failed" ? "stopped" : "waiting"}`);
++    item.append(el("span", "node-mark", event ? "✓" : run.status === "running" ? "…" : "·"));
++    item.append(el("span", "node-name", node));
++    item.append(el("span", "node-time", event ? `${(event.elapsed_ms / 1000).toFixed(2)}초` : ""));
++    return item;
++  });
++  list.replaceChildren(...items);
++}
++
++function renderResults(run) {
++  const container = document.querySelector("#result-list");
++  const cards = Object.entries(RESULT_LABEL)
++    .filter(([key]) => run.results[key])
++    .map(([key, label]) => {
++      const result = run.results[key];
++      const status = result.status || "-";
++      const card = el("div", `result-card result-card--${status}`);
++      card.append(el("span", "meta-label", label), el("strong", "", status));
++      const issues = (result.issues || []).slice(0, 3);
++      issues.forEach((issue) => card.append(el("p", "result-issue", `${issue.code}: ${issue.message}`)));
++      return card;
++    });
++  container.replaceChildren(...cards);
++}
++
++async function renderArtifacts(run) {
++  const container = document.querySelector("#artifact-list");
++  if (!run.project_id) {
++    container.replaceChildren(el("p", "muted", "프로젝트가 생성되면 파일 목록이 표시됩니다."));
++    return;
++  }
++  const response = await fetch(`/api/runs/${encodeURIComponent(run.run_id)}/artifacts`);
++  const artifacts = response.ok ? await response.json() : [];
++  if (!artifacts.length) {
++    container.replaceChildren(el("p", "muted", "아직 생성된 파일이 없습니다."));
++    return;
++  }
++  const rows = artifacts.map((artifact) => {
++    const row = el("a", "artifact-row");
++    row.href = `/api/runs/${encodeURIComponent(run.run_id)}/artifacts/${encodeURIComponent(artifact.artifact_id)}`;
++    row.append(
++      el("span", "artifact-category", artifact.category),
++      el("span", "artifact-path", artifact.relative_path),
++      el("span", "artifact-size", `${(artifact.size_bytes / 1024).toFixed(1)} KB`),
++    );
++    return row;
++  });
++  container.replaceChildren(...rows);
++}
++
++async function renderRun(run) {
++  document.querySelector("#empty-state").hidden = true;
++  document.querySelector("#run-view").hidden = false;
++  setText("#run-id", run.run_id);
++  setText("#run-project", run.project_id || "-");
++  const outcome =
++    run.status === "succeeded" && run.outcome === "game_validation_failed"
++      ? "완료 · 게임 검증 실패"
++      : STATUS_LABEL[run.status] || run.status;
++  setText("#run-status", outcome);
++  setText("#run-elapsed", elapsed(run));
++  const runError = document.querySelector("#run-error");
++  runError.hidden = !run.error;
++  runError.textContent = run.error || "";
++  renderNodes(run);
++  renderResults(run);
++  await renderArtifacts(run);
++}
++
++async function pollRun(runId) {
++  clearTimeout(pollTimer);
++  try {
++    const response = await fetch(`/api/runs/${encodeURIComponent(runId)}`);
++    if (!response.ok) throw new Error(`run lookup failed: ${response.status}`);
++    const run = await response.json();
++    await renderRun(run);
++    const active = run.status === "queued" || run.status === "running";
++    setBusy(active);
++    if (active) pollTimer = setTimeout(() => pollRun(runId), 1000);
++  } catch (error) {
++    console.error(error);
++    pollTimer = setTimeout(() => pollRun(runId), 3000);
++  }
++}
++
++async function submitRequest(event) {
++  event.preventDefault();
++  showFormError("");
++  setBusy(true);
++  try {
++    const response = await fetch("/api/runs", { method: "POST", body: new FormData(requestForm) });
++    const body = await response.json();
++    if (!response.ok) {
++      const detail = Array.isArray(body.detail)
++        ? body.detail.map((item) => item.msg).join(", ")
++        : body.detail;
++      throw new Error(detail || `요청 실패 (${response.status})`);
++    }
++    pollRun(body.run_id);
++  } catch (error) {
++    showFormError(error.message);
++    setBusy(false);
++  }
++}
++
++async function restoreLatestRun() {
++  const response = await fetch("/api/runs");
++  if (!response.ok) return;
++  const runs = await response.json();
++  if (runs.length) pollRun(runs[0].run_id);
++}
++
++imageStyle.addEventListener("change", updateCustomImageState);
++requestForm.addEventListener("submit", submitRequest);
++updateCustomImageState();
++loadWorkflow().then(restoreLatestRun);
+diff --git a/CI/CD/LocalWeb/static/index.html b/CI/CD/LocalWeb/static/index.html
+index 8a9d241..b6b5cae 100644
+--- a/CI/CD/LocalWeb/static/index.html
++++ b/CI/CD/LocalWeb/static/index.html
+@@ -13,8 +13,8 @@
+         <p class="eyebrow">TEAM IDLE · LOCAL WORKSPACE</p>
+         <h1>게임 제작 Workflow</h1>
+         <p class="hero-copy">
+-          이미지, 게임 로직, 사운드 Agent를 하나의 로컬 화면에서 실행하기 위한 기본
+-          화면입니다.
++          이미지, 게임 로직, 사운드 Agent를 하나의 로컬 화면에서 실행하고 진행 상황과
++          생성 파일을 확인합니다.
+         </p>
+         <div class="server-state" aria-live="polite">
+           <span id="status-dot" class="status-dot status-dot--pending"></span>
+@@ -28,7 +28,7 @@
+             <p class="section-label">NEW PROJECT</p>
+             <h2 id="request-heading">게임 생성 요청</h2>
+           </div>
+-          <span class="phase-badge">입력 선택 가능 · 실행 미연결</span>
++          <span id="phase-badge" class="phase-badge">Workflow 연결 확인 중</span>
+         </div>
+ 
+         <form id="request-form" class="request-grid">
+@@ -46,7 +46,7 @@
+ 
+           <label>
+             분위기 스타일
+-            <select name="mood_style">
++            <select id="mood-style" name="mood_style">
+               <option>Cyberpunk</option>
+               <option>Medieval</option>
+               <option>Modern</option>
+@@ -58,7 +58,7 @@
+ 
+           <label>
+             게임 장르
+-            <select name="genre">
++            <select id="genre" name="genre">
+               <option>플랫포머</option>
+               <option>타워 디펜스</option>
+               <option>카드</option>
+@@ -70,7 +70,7 @@
+ 
+           <label>
+             시점
+-            <select name="viewpoint">
++            <select id="viewpoint" name="viewpoint">
+               <option>사이드뷰</option>
+               <option>탑다운</option>
+               <option>쿼터뷰</option>
+@@ -83,6 +83,9 @@
+             <input
+               name="condition"
+               type="text"
++              required
++              maxlength="300"
++              value="공격과 8방향 이동이 가능한 게임"
+               placeholder="예: 공격과 8방향 이동이 가능한 게임"
+             />
+           </label>
+@@ -98,7 +101,8 @@
+             />
+           </label>
+ 
+-          <button type="submit" disabled>Workflow 연결 후 사용 가능</button>
++          <button id="submit-button" type="submit" disabled>Workflow 연결 확인 중</button>
++          <p id="form-error" class="form-error wide-field" role="alert" hidden></p>
+         </form>
+       </section>
+ 
+@@ -110,13 +114,27 @@
+           </div>
+         </div>
+ 
+-        <div class="empty-state">
++        <div id="empty-state" class="empty-state">
+           <div class="empty-icon">01</div>
+           <div>
+             <strong>아직 실행된 프로젝트가 없습니다.</strong>
+-            <p>다음 단계에서 LangGraph Stream과 Artifact 목록을 이 영역에 연결합니다.</p>
++            <p>요청을 실행하면 LangGraph Node 진행 상황과 생성 파일이 이 영역에 표시됩니다.</p>
+           </div>
+         </div>
++
++        <div id="run-view" hidden>
++          <div class="run-summary">
++            <div><span class="meta-label">실행 ID</span><strong id="run-id"></strong></div>
++            <div><span class="meta-label">프로젝트</span><strong id="run-project">-</strong></div>
++            <div><span class="meta-label">상태</span><strong id="run-status"></strong></div>
++            <div><span class="meta-label">경과</span><strong id="run-elapsed">-</strong></div>
++          </div>
++          <p id="run-error" class="form-error" role="alert" hidden></p>
++          <ol id="node-list" class="node-list" aria-label="Node 진행 상황"></ol>
++          <div id="result-list" class="result-list"></div>
++          <h3 class="sub-heading">생성 파일</h3>
++          <div id="artifact-list" class="artifact-list"></div>
++        </div>
+       </section>
+     </main>
+   </body>
+diff --git a/CI/CD/LocalWeb/static/styles.css b/CI/CD/LocalWeb/static/styles.css
+index e4a34db..ba5238d 100644
+--- a/CI/CD/LocalWeb/static/styles.css
++++ b/CI/CD/LocalWeb/static/styles.css
+@@ -11,6 +11,10 @@
+   box-sizing: border-box;
+ }
+ 
++[hidden] {
++  display: none !important;
++}
++
+ body {
+   min-width: 320px;
+   min-height: 100vh;
+@@ -191,6 +195,176 @@ button {
+   cursor: not-allowed;
+ }
+ 
++button:enabled {
++  border-color: #4b7dff;
++  background: #2f5fd6;
++  color: #ffffff;
++  cursor: pointer;
++}
++
++button:enabled:hover {
++  background: #3a6deb;
++}
++
++.form-error {
++  margin: 0;
++  padding: 12px 14px;
++  border: 1px solid #6b2a36;
++  border-radius: 12px;
++  background: rgb(255 102 122 / 10%);
++  color: #ffb3bd;
++  font-size: 0.88rem;
++  line-height: 1.5;
++}
++
++.run-summary {
++  display: grid;
++  grid-template-columns: repeat(4, minmax(0, 1fr));
++  gap: 12px;
++  margin-bottom: 18px;
++}
++
++.run-summary > div,
++.result-card {
++  padding: 14px;
++  border: 1px solid #26334b;
++  border-radius: 14px;
++  background: #101829;
++}
++
++.run-summary strong,
++.result-card strong {
++  display: block;
++  margin-top: 4px;
++  overflow-wrap: anywhere;
++}
++
++.meta-label {
++  color: #8491a8;
++  font-size: 0.75rem;
++  font-weight: 700;
++}
++
++.node-list {
++  display: grid;
++  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
++  gap: 8px;
++  margin: 18px 0;
++  padding: 0;
++  list-style: none;
++}
++
++.node-item {
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  padding: 10px 12px;
++  border: 1px solid #26334b;
++  border-radius: 12px;
++  color: #8491a8;
++  font-size: 0.86rem;
++}
++
++.node-item--done {
++  border-color: #23573f;
++  color: #d5f5e3;
++}
++
++.node-item--stopped {
++  border-style: dashed;
++}
++
++.node-mark {
++  width: 18px;
++  font-weight: 900;
++  text-align: center;
++}
++
++.node-item--done .node-mark {
++  color: #35d07f;
++}
++
++.node-name {
++  flex: 1;
++  overflow-wrap: anywhere;
++}
++
++.node-time {
++  color: #8491a8;
++  font-variant-numeric: tabular-nums;
++}
++
++.result-list {
++  display: grid;
++  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
++  gap: 10px;
++}
++
++.result-card--passed strong,
++.result-card--generated strong {
++  color: #35d07f;
++}
++
++.result-card--failed strong {
++  color: #ff8a99;
++}
++
++.result-card--pending strong {
++  color: #f4b740;
++}
++
++.result-issue {
++  margin: 8px 0 0;
++  color: #aab7ce;
++  font-size: 0.8rem;
++  line-height: 1.45;
++}
++
++.sub-heading {
++  margin: 24px 0 10px;
++  font-size: 1rem;
++}
++
++.artifact-list {
++  display: grid;
++  gap: 6px;
++}
++
++.artifact-row {
++  display: grid;
++  grid-template-columns: 90px 1fr auto;
++  gap: 12px;
++  padding: 9px 12px;
++  border: 1px solid #202b40;
++  border-radius: 10px;
++  color: #c8d2e5;
++  font-size: 0.85rem;
++  text-decoration: none;
++}
++
++.artifact-row:hover {
++  border-color: #4b7dff;
++}
++
++.artifact-category {
++  color: #7fa8ff;
++  font-weight: 700;
++}
++
++.artifact-path {
++  overflow-wrap: anywhere;
++}
++
++.artifact-size {
++  color: #8491a8;
++  font-variant-numeric: tabular-nums;
++}
++
++.muted {
++  margin: 0;
++  color: #8491a8;
++}
++
+ .empty-state {
+   display: flex;
+   align-items: center;
+@@ -235,10 +409,23 @@ button {
+     padding: 22px;
+   }
+ 
++  .request-grid,
++  .run-summary {
++    grid-template-columns: 1fr 1fr;
++  }
++
+   .request-grid {
+     grid-template-columns: 1fr;
+   }
+ 
++  .artifact-row {
++    grid-template-columns: 1fr auto;
++  }
++
++  .artifact-category {
++    grid-column: 1 / -1;
++  }
++
+   .panel-heading {
+     align-items: center;
+   }
+diff --git a/CI/CD/LocalWeb/workflow_runner.py b/CI/CD/LocalWeb/workflow_runner.py
+new file mode 100644
+index 0000000..1aca6d8
+--- /dev/null
++++ b/CI/CD/LocalWeb/workflow_runner.py
+@@ -0,0 +1,161 @@
++"""Run the MainFlowChart LangGraph workflow in the background for the local web UI.
++
++Runs execute one at a time in submission order. Each run streams per-node
++updates from ``graph.stream(..., stream_mode="updates")`` so the browser can
++show progress while the graph is still running. Agent nodes and graph edges
++are used exactly as ``mainflow.langgraph_game_flow_skeleton.build_graph``
++defines them.
++"""
++
++from __future__ import annotations
++
++import threading
++import time
++import traceback
++import uuid
++from collections.abc import Callable
++from concurrent.futures import ThreadPoolExecutor
++from copy import deepcopy
++from dataclasses import asdict, dataclass, field
++from datetime import UTC, datetime
++from typing import Any
++
++from mainflow.ArtifactManager import ArtifactManager
++
++GraphFactory = Callable[[], Any]
++
++# State keys whose artifacts summarize the outcome, mirroring mainflow.run_flow.
++RESULT_KEYS = {
++    "game_validation": "game_validation_result",
++    "image_generation": "image_draft",
++    "sound_generation": "sound_draft",
++    "final_validation": "final_validation_result",
++}
++
++
++def _now() -> str:
++    return datetime.now(UTC).isoformat()
++
++
++def default_graph_factory() -> Any:
++    from mainflow.langgraph_game_flow_skeleton import build_graph
++
++    return build_graph()
++
++
++@dataclass
++class NodeEvent:
++    node: str
++    finished_at: str
++    elapsed_ms: float
++    output_keys: list[str]
++
++
++@dataclass
++class WorkflowRun:
++    run_id: str
++    request: dict[str, Any]
++    status: str = "queued"
++    created_at: str = field(default_factory=_now)
++    started_at: str | None = None
++    finished_at: str | None = None
++    project_id: str | None = None
++    events: list[NodeEvent] = field(default_factory=list)
++    results: dict[str, Any] = field(default_factory=dict)
++    outcome: str | None = None
++    error: str | None = None
++
++
++class WorkflowRunner:
++    """Thread-safe run registry with a single background worker."""
++
++    def __init__(self, graph_factory: GraphFactory = default_graph_factory) -> None:
++        self._graph_factory = graph_factory
++        self._runs: dict[str, WorkflowRun] = {}
++        self._lock = threading.Lock()
++        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="workflow")
++        self._node_names: list[str] | None = None
++
++    def node_names(self) -> list[str]:
++        """Graph node order; building the graph also proves the workflow imports."""
++        if self._node_names is None:
++            graph = self._graph_factory().get_graph()
++            self._node_names = [name for name in graph.nodes if not name.startswith("__")]
++        return list(self._node_names)
++
++    def submit(self, initial_state: dict[str, Any], public_request: dict[str, Any]) -> WorkflowRun:
++        run = WorkflowRun(run_id=f"run-{uuid.uuid4().hex[:12]}", request=public_request)
++        with self._lock:
++            self._runs[run.run_id] = run
++        self._executor.submit(self._execute, run.run_id, initial_state)
++        return self.get(run.run_id)  # type: ignore[return-value]
++
++    def get(self, run_id: str) -> WorkflowRun | None:
++        with self._lock:
++            run = self._runs.get(run_id)
++            return deepcopy(run) if run else None
++
++    def list(self) -> list[WorkflowRun]:
++        with self._lock:
++            runs = [deepcopy(run) for run in self._runs.values()]
++        return sorted(runs, key=lambda run: run.created_at, reverse=True)
++
++    def busy(self) -> bool:
++        with self._lock:
++            return any(run.status in ("queued", "running") for run in self._runs.values())
++
++    def _update(self, run_id: str, **changes: Any) -> None:
++        with self._lock:
++            run = self._runs[run_id]
++            for key, value in changes.items():
++                setattr(run, key, value)
++
++    def _execute(self, run_id: str, initial_state: dict[str, Any]) -> None:
++        self._update(run_id, status="running", started_at=_now())
++        state: dict[str, Any] = dict(initial_state)
++        clock = time.perf_counter()
++        try:
++            graph = self._graph_factory()
++            for chunk in graph.stream(initial_state, stream_mode="updates"):
++                for node, update in chunk.items():
++                    now = time.perf_counter()
++                    update = update or {}
++                    state.update(update)
++                    event = NodeEvent(node, _now(), round((now - clock) * 1000, 1), sorted(update))
++                    clock = now
++                    with self._lock:
++                        run = self._runs[run_id]
++                        run.events.append(event)
++                        if "project_id" in update:
++                            run.project_id = update["project_id"]
++            results = self._summarize(state)
++            game_status = results.get("game_validation", {}).get("status")
++            self._update(
++                run_id,
++                status="succeeded",
++                finished_at=_now(),
++                results=results,
++                outcome="passed" if game_status == "passed" else "game_validation_failed",
++            )
++        except Exception as error:  # noqa: BLE001 - surfaced to the UI as the run error
++            traceback.print_exc()
++            self._update(
++                run_id,
++                status="failed",
++                finished_at=_now(),
++                error=f"{type(error).__name__}: {error}",
++            )
++
++    @staticmethod
++    def _summarize(state: dict[str, Any]) -> dict[str, Any]:
++        manager = ArtifactManager()
++        results: dict[str, Any] = {}
++        for name, key in RESULT_KEYS.items():
++            reference = state.get(key)
++            if reference:
++                results[name] = manager.read_json(reference)
++        return results
++
++
++def serialize(run: WorkflowRun) -> dict[str, Any]:
++    return asdict(run)
+diff --git a/pyproject.toml b/pyproject.toml
+index d32a60d..e78763d 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -13,6 +13,9 @@ dependencies = [
+ dev = [
+     "ruff==0.16.10",
+ ]
++web = [
++    "fastapi>=0.115.0,<1.0.0",
++]
+ 
+ [tool.uv]
+ package = false
+diff --git a/tests/test_local_web.py b/tests/test_local_web.py
+new file mode 100644
+index 0000000..3efdbe9
+--- /dev/null
++++ b/tests/test_local_web.py
+@@ -0,0 +1,159 @@
++"""Local web API tests with a stub graph (no LLM, Unity or MCP server needed)."""
++
++from __future__ import annotations
++
++import importlib
++import os
++import sys
++import tempfile
++import time
++import unittest
++from pathlib import Path
++
++try:
++    from fastapi.testclient import TestClient
++except ImportError:  # the "web" dependency group is not installed
++    TestClient = None  # type: ignore[assignment,misc]
++
++from mainflow.ArtifactManager import ArtifactManager
++
++LOCAL_WEB = Path(__file__).resolve().parents[1] / "CI" / "CD" / "LocalWeb"
++PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
++
++
++class StubGraph:
++    """Two nodes that behave like the real ones: create a project and write artifacts."""
++
++    def __init__(self, calls: list[dict]) -> None:
++        self.calls = calls
++
++    def get_graph(self):
++        return type(
++            "G", (), {"nodes": {"__start__": 0, "parse_input": 1, "validate_game": 2, "__end__": 3}}
++        )()
++
++    def stream(self, state, stream_mode):
++        assert stream_mode == "updates"
++        self.calls.append(dict(state))
++        manager = ArtifactManager()
++        project_id = manager.create_project()
++        yield {"parse_input": {"project_id": project_id}}
++        reference = manager.write_json(
++            project_id,
++            "validation",
++            "game_validation_result.json",
++            {"status": "passed", "issues": []},
++            producer="validate_game",
++        )
++        yield {"validate_game": {"game_validation_result": reference}}
++
++
++class FailingGraph(StubGraph):
++    def stream(self, state, stream_mode):
++        yield {"parse_input": {}}
++        raise RuntimeError("node exploded")
++
++
++@unittest.skipIf(TestClient is None, "install the web group: uv sync --group web")
++class LocalWebTest(unittest.TestCase):
++    def setUp(self) -> None:
++        self.tmp = tempfile.TemporaryDirectory()
++        self.previous_workspace = os.environ.get("MAINFLOW_WORKSPACE")
++        os.environ["MAINFLOW_WORKSPACE"] = self.tmp.name
++        sys.path.insert(0, str(LOCAL_WEB))
++        self.app_module = importlib.import_module("app")
++        runner_module = importlib.import_module("workflow_runner")
++        self.calls: list[dict] = []
++        self.app_module.runner = runner_module.WorkflowRunner(lambda: StubGraph(self.calls))
++        self.client = TestClient(self.app_module.app)
++        self.form = {
++            "image_style": "Pixel Art",
++            "mood_style": "Fantasy",
++            "genre": "플랫포머",
++            "viewpoint": "사이드뷰",
++            "condition": "공격과 8방향 이동이 가능한 게임",
++        }
++
++    def tearDown(self) -> None:
++        sys.path.remove(str(LOCAL_WEB))
++        if self.previous_workspace is None:
++            os.environ.pop("MAINFLOW_WORKSPACE", None)
++        else:
++            os.environ["MAINFLOW_WORKSPACE"] = self.previous_workspace
++        self.tmp.cleanup()
++
++    def wait(self, run_id: str) -> dict:
++        for _ in range(100):
++            run = self.client.get(f"/api/runs/{run_id}").json()
++            if run["status"] in ("succeeded", "failed"):
++                return run
++            time.sleep(0.02)
++        self.fail("run did not finish")
++
++    def test_health_reports_connected_workflow(self) -> None:
++        health = self.client.get("/api/health").json()
++        self.assertEqual(health["workflow"], "connected")
++        workflow = self.client.get("/api/workflow").json()
++        self.assertEqual(workflow["nodes"], ["parse_input", "validate_game"])
++        self.assertIn("Custom", workflow["options"]["image_style"])
++
++    def test_run_streams_nodes_and_exposes_artifacts(self) -> None:
++        response = self.client.post("/api/runs", data=self.form)
++        self.assertEqual(response.status_code, 202)
++        run = self.wait(response.json()["run_id"])
++        self.assertEqual(run["status"], "succeeded")
++        self.assertEqual(run["outcome"], "passed")
++        self.assertEqual([e["node"] for e in run["events"]], ["parse_input", "validate_game"])
++        self.assertEqual(self.calls[0]["genre"], "플랫포머")
++
++        artifacts = self.client.get(f"/api/runs/{run['run_id']}/artifacts").json()
++        self.assertEqual(artifacts[0]["relative_path"], "validation/game_validation_result.json")
++        download = self.client.get(
++            f"/api/runs/{run['run_id']}/artifacts/{artifacts[0]['artifact_id']}"
++        )
++        self.assertEqual(download.status_code, 200)
++        self.assertIn(b'"passed"', download.content)
++        self.assertEqual(
++            self.client.get(f"/api/runs/{run['run_id']}/artifacts/nope").status_code, 404
++        )
++
++    def test_invalid_requests_are_rejected_before_running(self) -> None:
++        bad_genre = self.client.post("/api/runs", data={**self.form, "genre": "레이싱"})
++        self.assertEqual(bad_genre.status_code, 422)
++        empty = self.client.post("/api/runs", data={**self.form, "condition": "   "})
++        self.assertEqual(empty.status_code, 422)
++        custom_without_file = self.client.post(
++            "/api/runs", data={**self.form, "image_style": "Custom"}
++        )
++        self.assertEqual(custom_without_file.status_code, 422)
++        fake_png = self.client.post(
++            "/api/runs",
++            data={**self.form, "image_style": "Custom"},
++            files={"custom_image": ("ref.png", b"not an image", "image/png")},
++        )
++        self.assertEqual(fake_png.status_code, 422)
++        self.assertEqual(self.calls, [])
++
++    def test_custom_image_is_saved_and_passed_to_the_graph(self) -> None:
++        response = self.client.post(
++            "/api/runs",
++            data={**self.form, "image_style": "Custom"},
++            files={"custom_image": ("ref.png", PNG, "image/png")},
++        )
++        self.assertEqual(response.status_code, 202)
++        self.wait(response.json()["run_id"])
++        saved = Path(self.calls[0]["custom_image_path"])
++        self.assertTrue(saved.is_file())
++        self.assertTrue(saved.is_relative_to(Path(self.tmp.name)))
++        self.assertEqual(saved.read_bytes(), PNG)
++
++    def test_node_failure_is_reported(self) -> None:
++        runner_module = importlib.import_module("workflow_runner")
++        self.app_module.runner = runner_module.WorkflowRunner(lambda: FailingGraph(self.calls))
++        run = self.wait(self.client.post("/api/runs", data=self.form).json()["run_id"])
++        self.assertEqual(run["status"], "failed")
++        self.assertIn("node exploded", run["error"])
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/uv.lock b/uv.lock
+index b32048d..4d00b90 100644
+--- a/uv.lock
++++ b/uv.lock
+@@ -2,6 +2,15 @@ version = 1
+ revision = 3
+ requires-python = "==3.11.*"
+ 
++[[package]]
++name = "annotated-doc"
++version = "0.0.5"
++source = { registry = "https://pypi.org/simple" }
++sdist = { url = "https://files.pythonhosted.org/packages/5a/8e/38aa427ed5402449e226975b649c5dc73ccadfefeb95e6aecb8f8ea4b6b6/annotated_doc-0.0.5.tar.gz", hash = "sha256:c7e58ce09192557605d8bbd92836d7e1d520ac9580096042c0bfd197efacf1bb", size = 10758, upload-time = "2026-07-28T13:50:58.129Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/3e/30/e900b21425a860e195f32e37657aa1f7c7f2b1bfb26f03ca209b90933c06/annotated_doc-0.0.5-py3-none-any.whl", hash = "sha256:117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101", size = 5302, upload-time = "2026-07-28T13:50:57.239Z" },
++]
++
+ [[package]]
+ name = "annotated-types"
+ version = "0.8.0"
+@@ -181,6 +190,23 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/12/b3/231ffd4ab1fc9d679809f356cebee130ac7daa00d6d6f3206dd4fd137e9e/distro-1.9.0-py3-none-any.whl", hash = "sha256:7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2", size = 20277, upload-time = "2023-12-24T09:54:30.421Z" },
+ ]
+ 
++[[package]]
++name = "fastapi"
++version = "0.143.2"
++source = { registry = "https://pypi.org/simple" }
++dependencies = [
++    { name = "annotated-doc" },
++    { name = "opentelemetry-api" },
++    { name = "pydantic" },
++    { name = "starlette" },
++    { name = "typing-extensions" },
++    { name = "typing-inspection" },
++]
++sdist = { url = "https://files.pythonhosted.org/packages/19/f5/4bbb2df9bb6f365151f2c02795ca3f17f78d08e670a394df963f3d8881ce/fastapi-0.143.2.tar.gz", hash = "sha256:e9e6d97018dcfd748da7d9e7c61cedefbe9eb91b1a3288e45b13fbae76df2d54", size = 468920, upload-time = "2026-10-15T13:34:21.679Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/d5/5a/9a5fd06659a63e13e876dd660347c044b3954ede3db928c69df879fac02c/fastapi-0.143.2-py3-none-any.whl", hash = "sha256:da2fe9893b7392ebce76d8c8511e3fa43e5a25f5852103aa2eee7cff3ab80b75", size = 144690, upload-time = "2026-10-15T13:34:19.861Z" },
++]
++
+ [[package]]
+ name = "google-auth"
+ version = "2.62.0"
+@@ -474,6 +500,9 @@ dependencies = [
+ dev = [
+     { name = "ruff" },
+ ]
++web = [
++    { name = "fastapi" },
++]
+ 
+ [package.metadata]
+ requires-dist = [
+@@ -484,6 +513,7 @@ requires-dist = [
+ 
+ [package.metadata.requires-dev]
+ dev = [{ name = "ruff", specifier = "==0.16.10" }]
++web = [{ name = "fastapi", specifier = ">=0.115.0,<1.0.0" }]
+ 
+ [[package]]
+ name = "mcp"
