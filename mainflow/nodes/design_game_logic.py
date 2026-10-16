@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import cast
 
 from game_pipeline import (
-    GeminiFeatureGenerator,
     UnityProjectGenerator,
     attach_generated_modules,
     build_game_logic_design,
+    create_feature_generator_from_environment,
     normalize_game_spec,
     plan_feature_mechanics,
 )
@@ -24,6 +25,8 @@ from mainflow.contracts import (
     ParsedRequest,
 )
 from mainflow.nodes._common import log
+from game_pipeline.feature_contract import build_feature_contract
+from game_pipeline.repair_loop import validate_and_repair
 
 
 # Node 계약
@@ -97,10 +100,12 @@ def design_game_logic_node(
         if asset["asset_type"] == "sound"
     ]
     request_references = [image_request_reference, sound_request_reference]
+    feature_provider = os.environ.get("MAINFLOW_FEATURE_PROVIDER", "local").strip().lower()
     try:
         if design["unsupported_mechanics"]:
-            log("기존 모듈에 없는 기능을 Gemini API로 생성합니다.")
-            generated_modules = GeminiFeatureGenerator.from_environment().generate(
+            log(f"기존 모듈에 없는 기능을 {feature_provider} 모델로 생성합니다.")
+            feature_generator = create_feature_generator_from_environment()
+            generated_modules = feature_generator.generate(
                 design,
                 feature_plan.generation_requirements,
             )
@@ -123,6 +128,37 @@ def design_game_logic_node(
             viewpoint=request["viewpoint"],
             reference_image=request["custom_image"],
         )
+        if design["generated_modules"]:
+            manager.write_json(
+                state["project_id"],
+                "game",
+                "feature_code_contract.json",
+                build_feature_contract(),
+                producer="design_game_logic",
+            )
+            log("Unity 컴파일·Play Mode 검증 후 필요하면 생성 코드를 수정합니다.")
+            design, generation = validate_and_repair(
+                design=design,
+                generation=generation,
+                request=request,
+                generator=unity_generator,
+                feature_generator=feature_generator,
+                max_repairs=int(os.environ.get("MAINFLOW_GAME_MAX_REPAIRS", "2")),
+                record=lambda name, data: manager.write_json(
+                    state["project_id"],
+                    "validation",
+                    f"repair/{name}.json",
+                    data,
+                    producer="design_game_logic",
+                ),
+            )
+            design_reference = manager.write_json(
+                state["project_id"],
+                "game",
+                "game_logic_design.json",
+                design,
+                producer="design_game_logic",
+            )
         manifest_reference = manager.import_file(
             state["project_id"],
             "game",
@@ -146,7 +182,7 @@ def design_game_logic_node(
         ]
         if design["generated_modules"]:
             notes.append(
-                "Gemini API 생성 모듈: "
+                f"{feature_provider} 생성 모듈: "
                 + ", ".join(module["module_id"] for module in design["generated_modules"])
             )
         draft: GameLogicDraft = {

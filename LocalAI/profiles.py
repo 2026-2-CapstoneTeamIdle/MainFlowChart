@@ -51,6 +51,13 @@ class LocalAIModelProfile:
 
 
 AI_MODEL_PROFILES: dict[str, LocalAIModelProfile] = {
+    "qwen_coder_7b": LocalAIModelProfile(
+        provider="local",
+        model="qwen2.5-coder-7b-q5-k-m",
+        base_url_environment="LOCAL_LLM_BASE_URL",
+        default_base_url="http://127.0.0.1:8080/v1",
+        api_key_environment="LOCAL_LLM_API_KEY",
+    ),
     "gemma4_e2b_q4": LocalAIModelProfile(
         provider="local",
         model="gemma4-e2b-q4",

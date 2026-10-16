@@ -106,7 +106,7 @@ class UnityProjectValidatorTest(unittest.TestCase):
         def run_unity(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
             log_path = Path(command[command.index("-logFile") + 1])
             log_path.write_text(
-                "\n".join(UnityProjectValidator.SUCCESS_MARKERS),
+                "\n".join((*UnityProjectValidator.SUCCESS_MARKERS, "UNITY_RUNTIME_SMOKE_OK:")),
                 encoding="utf-8",
             )
             return subprocess.CompletedProcess(command, 0, "", "")
@@ -244,7 +244,7 @@ class GameFailureIsolationTest(unittest.TestCase):
                     },
                 ),
                 patch(
-                    "mainflow.nodes.design_game_logic.GeminiFeatureGenerator.from_environment",
+                    "mainflow.nodes.design_game_logic.create_feature_generator_from_environment",
                     side_effect=RuntimeError("simulated game generation failure"),
                 ),
             ):
@@ -256,7 +256,7 @@ class GameFailureIsolationTest(unittest.TestCase):
                             "mood_style": "Fantasy",
                             "genre": "플랫포머",
                             "viewpoint": "사이드뷰",
-                            "condition": "플레이어가 좌우로 이동하고 점프하는 게임",
+                            "condition": "시간을 되돌릴 수 있는 게임",
                         }
                     ),
                 )
