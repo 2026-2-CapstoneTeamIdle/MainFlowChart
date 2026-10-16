@@ -13,8 +13,8 @@
         <p class="eyebrow">TEAM IDLE · LOCAL WORKSPACE</p>
         <h1>게임 제작 Workflow</h1>
         <p class="hero-copy">
-          이미지, 게임 로직, 사운드 Agent를 하나의 로컬 화면에서 실행하고 진행 상황과
-          생성 파일을 확인합니다.
+          이미지, 게임 로직, 사운드 Agent를 하나의 로컬 화면에서 실행하기 위한 기본
+          화면입니다.
         </p>
         <div class="server-state" aria-live="polite">
           <span id="status-dot" class="status-dot status-dot--pending"></span>
@@ -28,7 +28,7 @@
             <p class="section-label">NEW PROJECT</p>
             <h2 id="request-heading">게임 생성 요청</h2>
           </div>
-          <span id="phase-badge" class="phase-badge">Workflow 연결 확인 중</span>
+          <span class="phase-badge">입력 선택 가능 · 실행 미연결</span>
         </div>
 
         <form id="request-form" class="request-grid">
@@ -46,7 +46,7 @@
 
           <label>
             분위기 스타일
-            <select id="mood-style" name="mood_style">
+            <select name="mood_style">
               <option>Cyberpunk</option>
               <option>Medieval</option>
               <option>Modern</option>
@@ -58,7 +58,7 @@
 
           <label>
             게임 장르
-            <select id="genre" name="genre">
+            <select name="genre">
               <option>플랫포머</option>
               <option>타워 디펜스</option>
               <option>카드</option>
@@ -70,7 +70,7 @@
 
           <label>
             시점
-            <select id="viewpoint" name="viewpoint">
+            <select name="viewpoint">
               <option>사이드뷰</option>
               <option>탑다운</option>
               <option>쿼터뷰</option>
@@ -83,9 +83,6 @@
             <input
               name="condition"
               type="text"
-              required
-              maxlength="300"
-              value="공격과 8방향 이동이 가능한 게임"
               placeholder="예: 공격과 8방향 이동이 가능한 게임"
             />
           </label>
@@ -101,8 +98,7 @@
             />
           </label>
 
-          <button id="submit-button" type="submit" disabled>Workflow 연결 확인 중</button>
-          <p id="form-error" class="form-error wide-field" role="alert" hidden></p>
+          <button type="submit" disabled>Workflow 연결 후 사용 가능</button>
         </form>
       </section>
 
@@ -114,26 +110,12 @@
           </div>
         </div>
 
-        <div id="empty-state" class="empty-state">
+        <div class="empty-state">
           <div class="empty-icon">01</div>
           <div>
             <strong>아직 실행된 프로젝트가 없습니다.</strong>
-            <p>요청을 실행하면 LangGraph Node 진행 상황과 생성 파일이 이 영역에 표시됩니다.</p>
+            <p>다음 단계에서 LangGraph Stream과 Artifact 목록을 이 영역에 연결합니다.</p>
           </div>
-        </div>
-
-        <div id="run-view" hidden>
-          <div class="run-summary">
-            <div><span class="meta-label">실행 ID</span><strong id="run-id"></strong></div>
-            <div><span class="meta-label">프로젝트</span><strong id="run-project">-</strong></div>
-            <div><span class="meta-label">상태</span><strong id="run-status"></strong></div>
-            <div><span class="meta-label">경과</span><strong id="run-elapsed">-</strong></div>
-          </div>
-          <p id="run-error" class="form-error" role="alert" hidden></p>
-          <ol id="node-list" class="node-list" aria-label="Node 진행 상황"></ol>
-          <div id="result-list" class="result-list"></div>
-          <h3 class="sub-heading">생성 파일</h3>
-          <div id="artifact-list" class="artifact-list"></div>
         </div>
       </section>
     </main>
