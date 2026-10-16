@@ -37,6 +37,8 @@ COMMON_MODULES = [
 
 MECHANIC_TO_MODULE = {
     "platformer_movement": "platformer_movement",
+    "wall_climb": "wall_climb",
+    "air_dash": "air_dash",
     "collectible": "collectible_system",
     "goal": "goal_system",
     "wave_spawn": "wave_spawner",

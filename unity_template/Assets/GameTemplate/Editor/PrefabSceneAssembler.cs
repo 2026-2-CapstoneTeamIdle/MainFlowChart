@@ -274,6 +274,8 @@ namespace TeamIdle.GameTemplate.Editor
 
             var movement = GetModule<PlatformerMovementModule>(context);
             movement?.Bind(playerBody, groundCheck);
+            GetModule<WallClimbModule>(context)?.Bind(playerBody);
+            GetModule<AirDashModule>(context)?.Bind(playerBody, groundCheck);
             var collectibleCount = context.Plan.Count("collectible", 8);
             SetInt(GetModule<CollectibleSystemModule>(context), "requiredCount", collectibleCount);
 

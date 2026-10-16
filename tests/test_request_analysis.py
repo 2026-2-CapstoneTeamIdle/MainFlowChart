@@ -88,11 +88,11 @@ class RequestAnalysisTest(unittest.TestCase):
 
                 self.assertEqual(
                     [feature["name"] for feature in analysis["features"]],
-                    ["점프", "사용자 지정 조건"],
+                    ["점프", "벽 타기"],
                 )
                 self.assertEqual(
                     analysis["features"][1]["description"],
-                    "벽을 타고 올라간다",
+                    "플레이어가 벽을 감지하고 벽면을 따라 오르내릴 수 있다.",
                 )
 
     def test_analysis_splits_connective_into_separate_dynamic_features(self) -> None:
@@ -116,8 +116,8 @@ class RequestAnalysisTest(unittest.TestCase):
             descriptions,
             [
                 "플레이어가 점프할 수 있다.",
-                "벽을 타",
-                "공중 대시를 사용할 수 있는 게임",
+                "플레이어가 벽을 감지하고 벽면을 따라 오르내릴 수 있다.",
+                "플레이어가 공중에서 입력 방향으로 제한된 횟수만큼 대시할 수 있다.",
             ],
         )
 

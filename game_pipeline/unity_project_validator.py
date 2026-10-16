@@ -486,6 +486,67 @@ class UnityProjectValidator:
             "Unity compilation and scene assembly succeeded" if passed else detail,
             error_code="UNITY_BATCH_VALIDATION_FAILED",
         )
+        if passed and os.environ.get("MAINFLOW_UNITY_RUNTIME_TESTS", "1") == "1":
+            self._run_runtime_tests(outcome, root, editor)
+
+    def _run_runtime_tests(self, outcome: UnityValidationOutcome, root: Path, editor: Path) -> None:
+        """A separate Play Mode process; no -quit until the host-owned test exits."""
+        temporary = Path(tempfile.mkdtemp(prefix="mainflow-playtest-"))
+        log_path = temporary / "playtest.log"
+        try:
+            try:
+                completed = subprocess.run(
+                    [
+                        str(editor),
+                        "-batchmode",
+                        "-nographics",
+                        "-projectPath",
+                        str(root),
+                        "-executeMethod",
+                        "TeamIdle.GameTemplate.Editor.RuntimeSmokeValidator.RunForBatch",
+                        "-logFile",
+                        str(log_path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=self.timeout_seconds,
+                    check=False,
+                )
+                log = (
+                    log_path.read_text(encoding="utf-8", errors="replace")
+                    if log_path.exists()
+                    else ""
+                )
+                log += (completed.stdout or "") + (completed.stderr or "")
+                outcome.unity_log += "\n--- PLAY MODE ---\n" + log
+                passed = completed.returncode == 0 and "UNITY_RUNTIME_SMOKE_OK:" in log
+                self._add_check(
+                    outcome,
+                    "unity.runtime_smoke",
+                    passed,
+                    "Play Mode smoke tests passed"
+                    if passed
+                    else "Play Mode smoke tests failed; inspect log",
+                    error_code="UNITY_RUNTIME_TEST_FAILED",
+                )
+            except (subprocess.TimeoutExpired, OSError) as error:
+                if log_path.exists():
+                    outcome.unity_log += "\n" + log_path.read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                self._add_check(
+                    outcome,
+                    "unity.runtime_smoke",
+                    False,
+                    str(error),
+                    error_code="UNITY_RUNTIME_EXECUTION_FAILED",
+                )
+        finally:
+            # Unity may release its Windows log handle shortly after the process exits.
+            # A best-effort cleanup must never overwrite the actual Play Mode result.
+            shutil.rmtree(temporary, ignore_errors=True)
 
     @staticmethod
     def find_unity_editor(required_version: str | None = None) -> Path | None:
