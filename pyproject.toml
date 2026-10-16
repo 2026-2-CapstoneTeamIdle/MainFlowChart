@@ -13,6 +13,9 @@ dependencies = [
 dev = [
     "ruff==0.16.10",
 ]
+web = [
+    "fastapi>=0.115.0,<1.0.0",
+]
 
 [tool.uv]
 package = false

@@ -8,14 +8,39 @@ services:
     image: main-flow-chart-local-web:local
     environment:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      SOUND_PROVIDER: ${SOUND_PROVIDER:-auto}
+      SOUND_FALLBACK: ${SOUND_FALLBACK:-procedural}
+      SOUND_BGM_SECONDS: ${SOUND_BGM_SECONDS:-30}
+      ELEVENLABS_OUTPUT_FORMAT: ${ELEVENLABS_OUTPUT_FORMAT:-mp3_44100_128}
+      ELEVENLABS_SFX_MODEL: ${ELEVENLABS_SFX_MODEL:-}
+      ELEVENLABS_MUSIC_MODEL: ${ELEVENLABS_MUSIC_MODEL:-}
+      ELEVENLABS_BGM_ENDPOINT: ${ELEVENLABS_BGM_ENDPOINT:-auto}
       MAINFLOW_GEMINI_MODEL: ${MAINFLOW_GEMINI_MODEL:-gemini-3-flash-preview}
       MAINFLOW_GEMINI_TIMEOUT_SECONDS: ${MAINFLOW_GEMINI_TIMEOUT_SECONDS:-90}
       MAINFLOW_GEMINI_THINKING_LEVEL: ${MAINFLOW_GEMINI_THINKING_LEVEL:-low}
       MAINFLOW_GEMINI_MAX_OUTPUT_TOKENS: ${MAINFLOW_GEMINI_MAX_OUTPUT_TOKENS:-8192}
+      MAINFLOW_UNITY_VALIDATION_MODE: ${MAINFLOW_UNITY_VALIDATION_MODE:-auto}
+      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-120}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3-flash-preview}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      LOCAL_LLM_API_KEY: ${LOCAL_LLM_API_KEY:-}
+      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-gemma3}
+      LOCAL_LLM_BASE_URL: ${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
       MAINFLOW_WORKSPACE: /app/workspace
       PYTHONUNBUFFERED: "1"
     ports:
       - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     volumes:
       - type: bind
         source: ../../../workspace
