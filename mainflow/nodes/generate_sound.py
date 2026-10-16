@@ -87,6 +87,7 @@ def generate_sound_node(
                 "file_format": result.file_format,
                 "duration_seconds": duration,
                 "prompt": plan.prompt,
+                "provider": used.name,
             }
         )
         notes.append(

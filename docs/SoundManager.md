@@ -66,12 +66,13 @@ uv run --locked python -m mainflow.run_flow --image-style "Pixel Art" --mood-sty
   --genre "비주얼 노벨" --viewpoint "고정 화면" --condition "선택지에 따라 엔딩이 달라지는 게임"
 
 # 테스트 (API 호출은 mock)
-uv run --locked python -m unittest tests.test_sound_generation -v
+uv run --locked python -m unittest tests.test_sound_generation tests.test_sound_validation -v
 ```
 
 ## 5. 현재 한계
 
-- `validate_sound`는 아직 placeholder라서 결과가 `pending`이다. 그래서 `apply_assets_to_game` 단계의 사운드 적용 여부는 아직 검증 결과에 연결되지 않는다.
+- `validate_sound`는 `sound_pipeline/SoundValidationPlan.md`의 G1(기술 QC)·G2(DSP 보정)·중복 검사·판정까지 구현돼 있다 (`sound_pipeline/validation.py`). 결과는 `validation/sound_validation_result.json`·`validation/sound_profile.json`, 보정본은 `generated/sounds/processed/<asset>.wav`에 저장한다. MP3 디코딩에는 ffmpeg가 필요하다 (Docker 이미지에 포함).
+- G3(내용 적합성 모델)·후보 선택·G5 믹스 테스트·라우드니스 위계는 아직 없다. `apply_assets_to_game`도 아직 검증 결과와 보정본을 반영하지 않는다.
 - 프롬프트에는 요청서의 한국어 설명과 조건이 그대로 들어간다. 영어 번역 단계를 추가하면 ElevenLabs 결과가 더 안정적일 수 있다.
 - 비용 기록과 재생성 루프는 없다. 평가 가이드라인(PASS / REGENERATE / REVIEW)을 연결할 때 함께 추가한다.
 - ElevenLabs 음악 API의 `model_id`와 `output_format` 세부 값은 최신 API 문서로 확인한 뒤 환경변수로 지정한다.
