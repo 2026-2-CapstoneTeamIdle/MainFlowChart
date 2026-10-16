@@ -14,6 +14,8 @@ from PIL import Image, ImageDraw
 
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.image_backends import (
+    LOCAL_FLAT_BACKGROUND_PROMPT,
+    LocalImageGenerator,
     OpenAIImageGenerator,
     create_image_generator,
     postprocess,
@@ -294,6 +296,121 @@ class OpenAIGraphNodeTest(unittest.TestCase):
         (call,) = client.calls
         self.assertEqual(call["endpoint"], "edit")
         self.assertEqual(call["image"][1], self.manager.read_bytes(reference))
+
+
+class FakeLocalImagesClient:
+    """Mimics a LocalAI-style server: no alpha output, b64_json or URL replies."""
+
+    def __init__(self, reply_with_url: bool = False) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.reply_with_url = reply_with_url
+        self.images = self
+
+    def generate(self, **kwargs: Any) -> SimpleNamespace:
+        self.calls.append(kwargs)
+        if self.reply_with_url:
+            return SimpleNamespace(
+                data=[SimpleNamespace(b64_json=None, url="http://localai:8080/generated/a.png")]
+            )
+        encoded = base64.b64encode(sprite_png(512, transparent=False)).decode("ascii")
+        return SimpleNamespace(data=[SimpleNamespace(b64_json=encoded, url=None)])
+
+
+LOCAL_ENVIRONMENT_KEYS = (
+    "MAINFLOW_LOCAL_IMAGE_MODEL",
+    "MAINFLOW_LOCAL_IMAGE_BASE_URL",
+    "LOCAL_LLM_BASE_URL",
+    "MAINFLOW_LOCAL_IMAGE_SIZE",
+    "MAINFLOW_LOCAL_IMAGE_STEPS",
+)
+
+
+class LocalImageGeneratorTest(unittest.TestCase):
+    def setUp(self) -> None:
+        cleared = {key: "" for key in LOCAL_ENVIRONMENT_KEYS}
+        self.environment = mock.patch.dict(os.environ, cleared)
+        self.environment.start()
+
+    def tearDown(self) -> None:
+        self.environment.stop()
+
+    def test_model_is_required(self) -> None:
+        with self.assertRaisesRegex(ValueError, "MAINFLOW_LOCAL_IMAGE_MODEL"):
+            LocalImageGenerator(client=FakeLocalImagesClient())
+
+    def test_base_url_falls_back_to_team_local_llm_url(self) -> None:
+        self.assertEqual(
+            LocalImageGenerator("m", client=FakeLocalImagesClient()).base_url,
+            "http://127.0.0.1:8080/v1",
+        )
+        os.environ["LOCAL_LLM_BASE_URL"] = "http://Local-AIModel:8080/v1"
+        self.assertEqual(
+            LocalImageGenerator("m", client=FakeLocalImagesClient()).base_url,
+            "http://Local-AIModel:8080/v1",
+        )
+        os.environ["MAINFLOW_LOCAL_IMAGE_BASE_URL"] = "http://image-server:9000/v1"
+        self.assertEqual(
+            LocalImageGenerator("m", client=FakeLocalImagesClient()).base_url,
+            "http://image-server:9000/v1",
+        )
+
+    def test_request_uses_local_settings_and_flat_background(self) -> None:
+        os.environ.update(
+            {"MAINFLOW_LOCAL_IMAGE_SIZE": "768x768", "MAINFLOW_LOCAL_IMAGE_STEPS": "20"}
+        )
+        client = FakeLocalImagesClient()
+        generator = LocalImageGenerator("flux.1-dev-ggml", client=client)
+
+        sprite = generator.generate(make_request("hero"))
+        generator.generate(make_request("stage"))
+
+        sprite_call, scene_call = client.calls
+        self.assertEqual(sprite_call["model"], "flux.1-dev-ggml")
+        self.assertEqual(sprite_call["size"], "768x768")
+        self.assertEqual(sprite_call["response_format"], "b64_json")
+        self.assertEqual(sprite_call["extra_body"], {"step": 20})
+        self.assertNotIn("background", sprite_call)
+        self.assertTrue(sprite_call["prompt"].endswith(LOCAL_FLAT_BACKGROUND_PROMPT))
+        self.assertFalse(scene_call["prompt"].endswith(LOCAL_FLAT_BACKGROUND_PROMPT))
+        # The white background is removed by post-processing.
+        self.assertTrue(inspect_png(sprite).has_transparent_pixel)
+
+    def test_url_response_is_downloaded(self) -> None:
+        generator = LocalImageGenerator("m", client=FakeLocalImagesClient(reply_with_url=True))
+        with mock.patch(
+            "mainflow.image_backends._download", return_value=sprite_png(256)
+        ) as download:
+            content = generator.generate(make_request("hero"))
+        download.assert_called_once_with("http://localai:8080/generated/a.png")
+        self.assertTrue(inspect_png(content).has_transparent_pixel)
+
+    def test_invalid_settings_are_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            LocalImageGenerator("m", client=FakeLocalImagesClient(), size="big")
+        with self.assertRaises(ValueError):
+            LocalImageGenerator("m", client=FakeLocalImagesClient(), steps=0)
+
+    def test_factory_selects_local_backend(self) -> None:
+        os.environ["MAINFLOW_LOCAL_IMAGE_MODEL"] = "flux.1-dev-ggml"
+        generator = create_image_generator("local")
+        self.assertIsInstance(generator, LocalImageGenerator)
+
+    def test_local_assets_pass_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            os.environ["MAINFLOW_WORKSPACE"] = str(Path(directory) / "workspace")
+            manager = ArtifactManager()
+            project_id = manager.create_project()
+            state = write_image_inputs(manager, project_id, image_asset_request(ASSETS))
+            client = FakeLocalImagesClient()
+            state["image_draft"] = generate_image_node(
+                state, LocalImageGenerator("m", client=client)
+            )["image_draft"]
+
+            self.assertEqual(len(client.calls), len(ASSETS))
+            draft = manager.read_json(state["image_draft"])
+            self.assertIn("generator=local", draft["notes"])
+            result = manager.read_json(validate_image_node(state)["image_validation_result"])
+            self.assertEqual(result["status"], "passed", result["issues"])
 
 
 if __name__ == "__main__":

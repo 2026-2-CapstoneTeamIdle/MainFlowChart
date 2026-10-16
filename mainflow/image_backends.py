@@ -8,6 +8,10 @@ Select a backend with ``MAINFLOW_IMAGE_BACKEND``:
   rendering quality can be overridden with ``MAINFLOW_OPENAI_IMAGE_MODEL`` and
   ``MAINFLOW_OPENAI_IMAGE_QUALITY``.  A reference image (``Custom`` style) is
   sent through the image edit endpoint.
+- ``local``: a local OpenAI-compatible image server such as the team's LocalAI
+  (``/v1/images/generations``).  Requires ``MAINFLOW_LOCAL_IMAGE_MODEL`` to name
+  an image model installed on that server; text models such as Gemma cannot
+  generate images.  See ``LocalImageGenerator`` for the other settings.
 
 API keys are read from the environment only and are never written to the
 workspace, the manifest or the logs.
@@ -18,6 +22,8 @@ from __future__ import annotations
 import base64
 import io
 import os
+import re
+import urllib.request
 from typing import Any
 
 from PIL import Image, ImageDraw
@@ -131,6 +137,126 @@ class OpenAIImageGenerator:
         return postprocess(base64.b64decode(response.data[0].b64_json), request)
 
 
+LOCAL_BASE_URL_ENVIRONMENT_KEY = "MAINFLOW_LOCAL_IMAGE_BASE_URL"
+# The team's LocalAI compose file sets LOCAL_LLM_BASE_URL for the mainflow
+# service, so the image backend reuses it when no image-specific URL is given.
+SHARED_LOCAL_BASE_URL_ENVIRONMENT_KEY = "LOCAL_LLM_BASE_URL"
+DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:8080/v1"
+LOCAL_MODEL_ENVIRONMENT_KEY = "MAINFLOW_LOCAL_IMAGE_MODEL"
+LOCAL_API_KEY_ENVIRONMENT_KEY = "LOCAL_LLM_API_KEY"
+LOCAL_SIZE_ENVIRONMENT_KEY = "MAINFLOW_LOCAL_IMAGE_SIZE"
+DEFAULT_LOCAL_SIZE = "512x512"
+LOCAL_STEPS_ENVIRONMENT_KEY = "MAINFLOW_LOCAL_IMAGE_STEPS"
+LOCAL_TIMEOUT_ENVIRONMENT_KEY = "MAINFLOW_LOCAL_IMAGE_TIMEOUT_SECONDS"
+# Local diffusion on a single GPU can take minutes per image.
+DEFAULT_LOCAL_TIMEOUT_SECONDS = 600.0
+# Diffusion models cannot output alpha, so sprites are drawn on a flat
+# background that postprocess() removes afterwards.
+LOCAL_FLAT_BACKGROUND_PROMPT = " Plain solid white background, no shadow, no scenery."
+SIZE_PATTERN = re.compile(r"^[1-9][0-9]*x[1-9][0-9]*$")
+
+
+class LocalImageGenerator:
+    """Generate images with a local OpenAI-compatible image server.
+
+    Settings (environment):
+
+    - ``MAINFLOW_LOCAL_IMAGE_MODEL``: required, e.g. ``flux.1-dev-ggml`` in LocalAI.
+    - ``MAINFLOW_LOCAL_IMAGE_BASE_URL``: falls back to ``LOCAL_LLM_BASE_URL`` and
+      then ``http://127.0.0.1:8080/v1``.
+    - ``LOCAL_LLM_API_KEY``: optional, only if the server requires one.
+    - ``MAINFLOW_LOCAL_IMAGE_SIZE``: generation size, default ``512x512``.
+    - ``MAINFLOW_LOCAL_IMAGE_STEPS``: optional diffusion step count.
+    - ``MAINFLOW_LOCAL_IMAGE_TIMEOUT_SECONDS``: default 600.
+
+    A ``Custom`` reference image is not sent; the style comes from the prompt.
+    """
+
+    name = "local"
+
+    def __init__(
+        self,
+        model: str | None = None,
+        *,
+        base_url: str | None = None,
+        client: Any | None = None,
+        size: str | None = None,
+        steps: int | None = None,
+        timeout_seconds: float | None = None,
+    ) -> None:
+        self.model = (model or os.environ.get(LOCAL_MODEL_ENVIRONMENT_KEY) or "").strip()
+        if not self.model:
+            raise ValueError(
+                f"Set {LOCAL_MODEL_ENVIRONMENT_KEY} to an image model installed on the local "
+                "server (for example flux.1-dev-ggml in LocalAI). Text models such as "
+                "Gemma cannot generate images."
+            )
+        self.base_url = (
+            base_url
+            or os.environ.get(LOCAL_BASE_URL_ENVIRONMENT_KEY)
+            or os.environ.get(SHARED_LOCAL_BASE_URL_ENVIRONMENT_KEY)
+            or DEFAULT_LOCAL_BASE_URL
+        ).strip()
+        self.size = (
+            size or os.environ.get(LOCAL_SIZE_ENVIRONMENT_KEY) or DEFAULT_LOCAL_SIZE
+        ).strip()
+        if not SIZE_PATTERN.fullmatch(self.size):
+            raise ValueError(
+                f"{LOCAL_SIZE_ENVIRONMENT_KEY} must look like 512x512, got {self.size!r}"
+            )
+        steps_value = steps if steps is not None else os.environ.get(LOCAL_STEPS_ENVIRONMENT_KEY)
+        self.steps = int(steps_value) if steps_value not in (None, "") else None
+        if self.steps is not None and self.steps < 1:
+            raise ValueError(f"{LOCAL_STEPS_ENVIRONMENT_KEY} must be at least 1")
+        if timeout_seconds is None:
+            timeout_seconds = float(
+                os.environ.get(LOCAL_TIMEOUT_ENVIRONMENT_KEY) or DEFAULT_LOCAL_TIMEOUT_SECONDS
+            )
+        if client is None:
+            from openai import OpenAI
+
+            client = OpenAI(
+                base_url=self.base_url,
+                # The SDK requires a key even when the local server does not.
+                api_key=os.environ.get(LOCAL_API_KEY_ENVIRONMENT_KEY) or "not-needed",
+                timeout=timeout_seconds,
+                max_retries=1,
+            )
+        self.client = client
+
+    def generate(self, request: ImageRequest) -> bytes:
+        prompt = request.prompt
+        if request.plan.transparent:
+            prompt += LOCAL_FLAT_BACKGROUND_PROMPT
+        extra_body = {"step": self.steps} if self.steps is not None else None
+        response = self.client.images.generate(
+            model=self.model,
+            prompt=prompt,
+            size=self.size,
+            response_format="b64_json",
+            n=1,
+            extra_body=extra_body,
+        )
+        if not response.data:
+            raise RuntimeError("Local image server response did not contain image data")
+        item = response.data[0]
+        if getattr(item, "b64_json", None):
+            content = base64.b64decode(item.b64_json)
+        elif getattr(item, "url", None):
+            # Some servers ignore response_format and return a file URL instead.
+            content = _download(item.url)
+        else:
+            raise RuntimeError("Local image server response did not contain image data")
+        return postprocess(content, request)
+
+
+def _download(url: str, timeout_seconds: float = 60.0) -> bytes:
+    if not url.startswith(("http://", "https://")):
+        raise RuntimeError(f"Unsupported image URL from local server: {url!r}")
+    with urllib.request.urlopen(url, timeout=timeout_seconds) as response:  # noqa: S310
+        return response.read()
+
+
 def create_image_generator(backend: str | None = None) -> ImageGenerator:
     backend = backend or os.environ.get(BACKEND_ENVIRONMENT_KEY) or "placeholder"
     backend = backend.strip().lower()
@@ -138,8 +264,11 @@ def create_image_generator(backend: str | None = None) -> ImageGenerator:
         return PlaceholderImageGenerator()
     if backend == "openai":
         return OpenAIImageGenerator()
+    if backend == "local":
+        return LocalImageGenerator()
     raise ValueError(
-        f"Unsupported {BACKEND_ENVIRONMENT_KEY}: {backend!r} (expected 'placeholder' or 'openai')"
+        f"Unsupported {BACKEND_ENVIRONMENT_KEY}: {backend!r} "
+        "(expected 'placeholder', 'openai' or 'local')"
     )
 
 
