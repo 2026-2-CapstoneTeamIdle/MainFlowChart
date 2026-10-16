@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from mainflow.contracts import AssetGenerationItem, AssetGenerationRequest, ParsedRequest
+from mainflow.keywords import has_keyword
 
 SoundKind = Literal["bgm", "sfx"]
 SfxCategory = Literal["ui", "impact", "explosion", "ambience", "action"]
@@ -93,10 +94,10 @@ def _text(item: AssetGenerationItem) -> str:
 
 def classify(item: AssetGenerationItem) -> tuple[SoundKind, str]:
     text = _text(item)
-    if any(keyword in text for keyword in BGM_KEYWORDS):
+    if has_keyword(text, BGM_KEYWORDS):
         return "bgm", "bgm"
     for category, keywords in SFX_CATEGORY_KEYWORDS:
-        if any(keyword in text for keyword in keywords):
+        if has_keyword(text, keywords):
             return "sfx", category
     return "sfx", "action"
 
@@ -116,7 +117,7 @@ def plan_sound_assets(request: AssetGenerationRequest, parsed: ParsedRequest) ->
         kind, category = classify(item)
         text = _text(item)
         if kind == "bgm":
-            loop = not any(keyword in text for keyword in NO_LOOP_KEYWORDS)
+            loop = not has_keyword(text, NO_LOOP_KEYWORDS)
             duration = bgm_seconds()
             parts = [
                 (
@@ -131,7 +132,7 @@ def plan_sound_assets(request: AssetGenerationRequest, parsed: ParsedRequest) ->
                 "No vocals, no speech",
             ]
         else:
-            loop = category == "ambience" or any(keyword in text for keyword in LOOP_KEYWORDS)
+            loop = category == "ambience" or has_keyword(text, LOOP_KEYWORDS)
             duration = SFX_DURATIONS[category]  # type: ignore[index]
             parts = [
                 (

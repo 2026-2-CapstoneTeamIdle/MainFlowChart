@@ -99,6 +99,15 @@ class PlannerTest(unittest.TestCase):
             classify(item("bgm_like_id", "수확", "짧은 수확 효과음")), ("sfx", "action")
         )
 
+    def test_english_keywords_match_whole_words_only(self):
+        # "white" contains "hit", "ghost" contains "ost", "descending" contains "ending".
+        self.assertEqual(classify(item("w", "white flash", "glow")), ("sfx", "action"))
+        self.assertEqual(classify(item("g", "ghost", "whisper")), ("sfx", "action"))
+        self.assertEqual(classify(item("h", "Hits", "sword hits")), ("sfx", "impact"))
+        self.assertEqual(classify(item("k", "공격음", "")), ("sfx", "impact"))
+        (plan,) = plan_sound_assets(request(item("d", "music", "descending theme")), PARSED)
+        self.assertTrue(plan.loop)
+
     def test_prompt_reflects_user_input(self):
         bgm, sfx = plan_sound_assets(
             request(
