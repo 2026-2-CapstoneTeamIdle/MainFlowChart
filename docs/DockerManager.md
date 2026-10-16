@@ -59,6 +59,70 @@ docker compose run --rm mainflow `
   --condition "타워를 배치해 적을 막는 게임"
 ```
 
+## 이미지 생성 백엔드
+
+`generate_image`는 게임 설계가 만든 `image_asset_request`의 이미지 에셋마다 PNG를 만든다.
+생성기는 `MAINFLOW_IMAGE_BACKEND`로 고른다.
+
+| 값 | 동작 | 필요 조건 |
+|---|---|---|
+| `placeholder` (기본) | 스타일별 도형 PNG를 결정적으로 생성 | 없음 |
+| `openai` | OpenAI Images API로 생성 후 리사이즈·투명화·Pixel Art 팔레트 축소 | `OPENAI_API_KEY` |
+| `local` | 로컬 OpenAI 호환 이미지 서버(LocalAI 등)로 생성 후 동일한 후처리 | 서버에 설치된 이미지 모델 |
+
+- `MAINFLOW_OPENAI_IMAGE_MODEL`: 모델, 기본값 `gpt-image-1`
+- `MAINFLOW_OPENAI_IMAGE_QUALITY`: `low | medium | high`, 기본값 `medium`
+- `Custom` 스타일의 참고 이미지(`reference_image`)는 이미지 편집 endpoint로 함께 전달한다.
+- 결과가 안전 필터에 차단되면 프롬프트를 바꿔 최대 3회 시도하고, 실패는 draft `notes`에 남긴다.
+
+에셋 종류(스프라이트, 초상화, UI, 타일셋, 일러스트, 배경)는 `asset_id`가 아니라 요청의
+`purpose`와 `description`으로 판단하며 종류에 따라 크기와 투명 배경 여부가 정해진다.
+`unity_binding_key`와 생성하지 못한 필수 에셋은 계약에 전용 필드가 생기기 전까지 draft `notes`에
+`unity_binding:`, `missing_required_asset:` 접두어로 기록한다.
+
+```powershell
+$env:MAINFLOW_IMAGE_BACKEND = "openai"
+$env:OPENAI_API_KEY = "<개인 키>"
+uv run --locked python -m mainflow.run_flow `
+  --image-style "Pixel Art" `
+  --mood-style Fantasy `
+  --genre "플랫포머" `
+  --viewpoint "사이드뷰" `
+  --condition "점프와 공격이 가능한 게임"
+```
+
+Compose는 호스트 셸 또는 `.env`에서 위 변수를 읽는다. 실제 키는 저장소에 커밋하지 않는다.
+테스트는 가짜 클라이언트를 사용하므로 API 키 없이 실행된다.
+
+### 로컬 이미지 서버 (`local`)
+
+LocalAI처럼 `/v1/images/generations`를 제공하는 OpenAI 호환 서버에 연결한다. 팀 LocalAI가 기본으로
+올리는 Gemma는 텍스트 모델이라 이미지를 만들 수 없으므로, 같은 서버에 이미지 모델(예:
+LocalAI 갤러리의 `flux.1-dev-ggml`)을 설치하고 그 이름을 지정해야 한다.
+
+| 변수 | 설명 | 기본값 |
+|---|---|---|
+| `MAINFLOW_LOCAL_IMAGE_MODEL` | 서버에 설치된 이미지 모델 이름 (필수) | 없음 |
+| `MAINFLOW_LOCAL_IMAGE_BASE_URL` | 이미지 서버 주소 | `LOCAL_LLM_BASE_URL`, 없으면 `http://127.0.0.1:8080/v1` |
+| `LOCAL_LLM_API_KEY` | 서버가 키를 요구할 때만 사용 | 없음 |
+| `MAINFLOW_LOCAL_IMAGE_SIZE` | 생성 크기 | `512x512` |
+| `MAINFLOW_LOCAL_IMAGE_STEPS` | diffusion step 수 | 서버 기본값 |
+| `MAINFLOW_LOCAL_IMAGE_TIMEOUT_SECONDS` | 요청 제한 시간 | `600` |
+
+로컬 diffusion 모델은 투명 배경을 출력하지 못하므로 스프라이트·초상화·UI는 흰 단색 배경으로
+요청한 뒤 후처리에서 배경을 제거한다. `Custom` 참고 이미지는 로컬 서버로 전달하지 않는다.
+
+```powershell
+$env:MAINFLOW_IMAGE_BACKEND = "local"
+$env:MAINFLOW_LOCAL_IMAGE_MODEL = "flux.1-dev-ggml"
+uv run --locked python -m mainflow.run_flow `
+  --image-style "Pixel Art" `
+  --mood-style Fantasy `
+  --genre "플랫포머" `
+  --viewpoint "사이드뷰" `
+  --condition "점프와 공격이 가능한 게임"
+```
+
 ## 테스트
 
 ```powershell

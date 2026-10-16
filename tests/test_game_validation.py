@@ -277,7 +277,9 @@ class GameFailureIsolationTest(unittest.TestCase):
                 )
                 self.assertGreater(len(image_request["assets"]), 0)
                 self.assertGreater(len(sound_request["assets"]), 0)
-                self.assertEqual(image_draft["status"], "pending")
+                # The image branch generates every requested asset on its own.
+                self.assertEqual(image_draft["status"], "generated")
+                self.assertEqual(len(image_draft["assets"]), len(image_request["assets"]))
                 self.assertEqual(sound_draft["status"], "pending")
                 self.assertEqual(integrated_game["status"], "failed")
                 self.assertEqual(final_validation["status"], "failed")

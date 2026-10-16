@@ -11,9 +11,21 @@ from mainflow.contracts import (
     AssetGenerationRequest,
     GenerateImageAgentInput,
     GenerateImageAgentOutput,
+    ImageAsset,
     ImageDraft,
     LogicAnalysis,
     ParsedRequest,
+)
+from mainflow.image_backends import create_image_generator
+from mainflow.image_generation import (
+    BINDING_NOTE_PREFIX,
+    MISSING_REQUIRED_NOTE_PREFIX,
+    PNG_MEDIA_TYPE,
+    ImageGenerator,
+    ImageRequest,
+    ReferenceImage,
+    build_prompt,
+    plan_assets,
 )
 from mainflow.nodes._common import log
 
@@ -21,15 +33,17 @@ from mainflow.nodes._common import log
 # Node 계약
 # - 이전 Node: design_game_logic
 # - 입력 State: project_id, parsed_request, analysis, logic_analysis, image_asset_request
-# - 입력 파일: data/*.json, game/asset_requests/image_asset_request.json
+# - 입력 파일: data/*.json, game/asset_requests/image_asset_request.json,
+#   generated/images/references/custom_style.*(Custom 스타일일 때)
 # - 출력 State: image_draft(ArtifactReference)
-# - 출력 파일: generated/images/image_draft.json 및 향후 이미지 에셋
+# - 출력 파일: generated/images/{suggested_filename}, generated/images/image_draft.json
 # - 다음 Node: validate_image (asset_validation_spec과 합류)
 def generate_image_node(
     state: GenerateImageAgentInput,
+    generator: ImageGenerator | None = None,
 ) -> GenerateImageAgentOutput:
     """Generate image artifacts and return their immutable draft reference."""
-    log("이미지 에셋을 생성합니다. (현재는 뼈대만 실행)")
+    log("이미지 에셋을 생성합니다.")
 
     manager = ArtifactManager()
     cast(ParsedRequest, manager.read_json(state["parsed_request"]))
@@ -40,15 +54,67 @@ def generate_image_node(
         manager.read_json(state["image_asset_request"]),
     )
 
-    # TODO: 실제 이미지 생성
+    reference = None
+    if asset_request["reference_image"] is not None:
+        reference = ReferenceImage(
+            content=manager.read_bytes(asset_request["reference_image"]),
+            media_type=asset_request["reference_image"]["media_type"],
+        )
+
+    # MAINFLOW_IMAGE_BACKEND로 생성기 선택 (기본값 placeholder)
+    generator = generator or create_image_generator()
+    assets: list[ImageAsset] = []
+    notes = [f"generator={generator.name}"]
+    missing_required = False
+    for plan in plan_assets(asset_request):
+        width, height = plan.size
+        image_request = ImageRequest(
+            plan=plan,
+            style=asset_request["image_style"],
+            mood_style=asset_request["mood_style"],
+            viewpoint=asset_request["viewpoint"],
+            genre=asset_request["genre"],
+            width=width,
+            height=height,
+            prompt=build_prompt(plan, asset_request),
+            reference=reference,
+        )
+        try:
+            content = generator.generate(image_request)
+        except Exception as error:  # 개별 에셋 실패는 draft notes로 기록
+            notes.append(f"{plan.asset_id} 생성 실패: {error}")
+            if plan.required:
+                missing_required = True
+                notes.append(f"{MISSING_REQUIRED_NOTE_PREFIX}{plan.asset_id}")
+            continue
+        artifact = manager.write_bytes(
+            state["project_id"],
+            "image",
+            plan.filename,
+            content,
+            producer="generate_image",
+            media_type=PNG_MEDIA_TYPE,
+        )
+        assets.append(
+            {
+                "asset_id": plan.asset_id,
+                "name": plan.purpose,
+                "artifact": artifact,
+                "file_format": "png",
+                "width": width,
+                "height": height,
+                "prompt": image_request.prompt,
+            }
+        )
+        notes.append(f"{BINDING_NOTE_PREFIX}{plan.asset_id}={plan.unity_binding_key}")
+        log(f"  - {plan.asset_id} ({plan.kind}, {width}x{height}) 저장")
+
     draft: ImageDraft = {
         "contract_version": CONTRACT_VERSION,
         "draft_id": "image-draft",
-        "status": "pending",
-        "assets": [],
-        "notes": [
-            f"이미지 생성 Agent 구현 전 placeholder: {len(asset_request['assets'])}개 요청 수신"
-        ],
+        "status": "failed" if missing_required else "generated",
+        "assets": assets,
+        "notes": notes,
     }
     return {
         "image_draft": manager.write_json(
