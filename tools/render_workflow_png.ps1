@@ -92,7 +92,7 @@ Node $nodes.apply_assets "apply_assets_to_game" $nodeBrush
 Node $nodes.final_validation "final_validation" $validationBrush
 Node $nodes.end "END" $terminalBrush
 
-$graphics.DrawString("MainFlowChart contract 3.1.0", $smallFont, $textBrush, 20, 1255)
+$graphics.DrawString("MainFlowChart contract 3.3.0", $smallFont, $textBrush, 20, 1255)
 $target = Join-Path $PSScriptRoot "..\docs\assets\langgraph_flow.png"
 $bitmap.Save($target, [System.Drawing.Imaging.ImageFormat]::Png)
 

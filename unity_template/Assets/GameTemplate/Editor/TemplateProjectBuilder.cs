@@ -73,7 +73,7 @@ namespace TeamIdle.GameTemplate.Editor
                     ? config.SelectedModules
                     : new[] { "game_bootstrap", "validation_probe" };
             config.Configure(
-                "3.1.0",
+                "3.3.0",
                 config.GameTitle,
                 config.Genre,
                 config.Viewpoint,
@@ -81,6 +81,9 @@ namespace TeamIdle.GameTemplate.Editor
                 configuredModules
             );
             EditorUtility.SetDirty(config);
+
+            GeneratedAssetBinder.ImportAndConfigureAssets();
+            AssetDatabase.Refresh();
 
             var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
             scene.name = "Bootstrap";
@@ -113,6 +116,10 @@ namespace TeamIdle.GameTemplate.Editor
             camera.backgroundColor = new Color(0.035f, 0.04f, 0.055f, 1f);
 
             PrefabSceneAssembler.Assemble(config, moduleRoot, camera, validationProbe);
+            GeneratedAssetBinder.BindSceneAssets(
+                moduleRoot,
+                GameObject.Find("GeneratedGame").transform
+            );
 
             if (!EditorSceneManager.SaveScene(scene, ScenePath))
             {

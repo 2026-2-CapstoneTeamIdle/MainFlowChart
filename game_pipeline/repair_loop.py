@@ -71,7 +71,16 @@ def validate_and_repair(
             line
             for line in lines
             if any(
-                token in line for token in ("error CS", "Exception", "Error", "FAILED", "runtime.")
+                token in line
+                for token in (
+                    "error CS",
+                    "Exception",
+                    "Error",
+                    "FAILED",
+                    "runtime.",
+                    "Tag:",
+                    "CompareTag",
+                )
             )
         ]
         feedback = {

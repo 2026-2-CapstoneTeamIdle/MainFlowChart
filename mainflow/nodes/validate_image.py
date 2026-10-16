@@ -7,6 +7,7 @@ from typing import cast
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
+    AssetGenerationRequest,
     AssetValidationSpec,
     ImageDraft,
     ImageValidationResult,
@@ -28,8 +29,9 @@ from mainflow.nodes._common import log
 
 # Node 계약
 # - 이전 Node: generate_image + create_asset_validation_spec (join)
-# - 입력 State: project_id, parsed_request, image_draft, asset_validation_spec
-# - 입력 파일: data/parsed_request.json,
+# - 입력 State: project_id, parsed_request, image_asset_request, image_draft,
+#   asset_validation_spec
+# - 입력 파일: data/parsed_request.json, game/asset_requests/image_asset_request.json,
 #   generated/images/image_draft.json, validation/asset_validation_spec.json
 # - 출력 State: image_validation_result(ArtifactReference)
 # - 출력 파일: validation/image_validation_result.json
@@ -43,17 +45,24 @@ def validate_image_node(
     manager = ArtifactManager()
     cast(ParsedRequest, manager.read_json(state["parsed_request"]))
     draft = cast(ImageDraft, manager.read_json(state["image_draft"]))
+    request = cast(
+        AssetGenerationRequest,
+        manager.read_json(state["image_asset_request"]),
+    )
     spec = cast(AssetValidationSpec, manager.read_json(state["asset_validation_spec"]))
 
     # TODO: 비전 모델을 이용한 스타일 일치 검증 추가
     issues: list[ValidationIssue] = []
-    # The node contract does not include image_asset_request, so missing
-    # required assets are read from the markers generate_image leaves in notes.
-    missing_ids = [
-        note.removeprefix(MISSING_REQUIRED_NOTE_PREFIX)
-        for note in draft["notes"]
-        if note.startswith(MISSING_REQUIRED_NOTE_PREFIX)
-    ]
+    generated_ids = {asset["asset_id"] for asset in draft["assets"]}
+    requested_assets = {item["asset_id"]: item for item in request["assets"]}
+    missing_ids = sorted(
+        {
+            item["asset_id"]
+            for item in request["assets"]
+            if item["required"] and item["asset_id"] not in generated_ids
+        }
+        | set(draft["missing_required_asset_ids"])
+    )
     for asset_id in missing_ids:
         issues.append(
             {
@@ -71,6 +80,26 @@ def validate_image_node(
     for asset in draft["assets"]:
         asset_id = asset["asset_id"]
         errors: list[tuple[str, str]] = list(sheet_errors.get(asset_id, []))
+        requested = requested_assets.get(asset_id)
+        if requested is None:
+            errors.append(("image-plan-complete", "요청에 없는 이미지 에셋입니다."))
+        else:
+            generation_spec = requested["generation_spec"]
+            if asset["unity_binding_key"] != requested["unity_binding_key"]:
+                errors.append(("image-plan-complete", "Unity 바인딩 키가 요청과 다릅니다."))
+            if asset["kind"] != generation_spec["kind"]:
+                errors.append(("image-plan-complete", "이미지 종류가 요청과 다릅니다."))
+            expected_size = generation_spec.get("width"), generation_spec.get("height")
+            if (asset["width"], asset["height"]) != expected_size:
+                errors.append(
+                    (
+                        "image-size-match",
+                        (
+                            f"요청 {expected_size[0]}x{expected_size[1]}, "
+                            f"결과 {asset['width']}x{asset['height']}"
+                        ),
+                    )
+                )
         try:
             info = inspect_png(manager.read_bytes(asset["artifact"]))
         except (OSError, ValueError) as error:
@@ -83,7 +112,10 @@ def validate_image_node(
                         f"선언 {asset['width']}x{asset['height']}, 실제 {info.width}x{info.height}",
                     )
                 )
-            if TRANSPARENT_PROMPT in asset["prompt"] and not info.has_transparent_pixel:
+            requires_transparency = bool(
+                requested and requested["generation_spec"].get("transparent", False)
+            )
+            if requires_transparency and not info.has_transparent_pixel:
                 errors.append(("image-transparency", "투명 배경이 필요한 에셋입니다."))
         for code, message in errors:
             failed.setdefault(code, set()).add(asset_id)

@@ -34,11 +34,16 @@
 ## 자동 생성 프로젝트
 
 `UnityProjectGenerator`는 이 템플릿을 `workspace/{project_id}/game/unity_project`로 복사하고
-`GameTemplateConfig.asset`, `GameLogicDesign.json`, `GenerationManifest.json`을 생성한다. 생성된
+`GameTemplateConfig.asset`, `GameLogicDesign.json`, `GameBlueprint.json`, `GenerationManifest.json`을 생성한다. 생성된
 프로젝트에는 `GenerationRequest.json`이 포함되며, Unity에서 처음 열면
 `TemplateProjectBuilder`가 요청을 감지한다. 이어서 `PrefabSceneAssembler`가 선택된 모듈을
 Bootstrap 씬에 배치하고 장르별 Environment, Entities, UI 계층과 테스트용 prefab을 생성한다.
 이미지 Agent의 최종 에셋을 적용하기 전에는 자동 생성된 단색 placeholder sprite가 사용된다.
+검증된 에셋이 적용되면 `GeneratedAssetBinder`가 `AssetBindingManifest.json`을 읽어 Texture/Audio
+Importer 설정, AssetRegistry 등록, 장르별 씬 Sprite 및 AudioSource 연결을 수행한다. 타일셋 분할은
+Sprite Editor data provider가 프레임 생성 capability를 제공할 때만 실행하며, 제공하지 않는 Unity
+버전에서는 단일 Sprite로 안전하게 유지한다. 사운드의 요청 mixer group은 report에 기록하지만
+기존 AudioMixer 구성이 확인되지 않은 상태에서는 자동 생성하거나 임의로 라우팅하지 않는다.
 
 Play 모드의 왼쪽 테스트 HUD에서는 장르에 따라 이동·점프, 웨이브 시작, 카드 사용, 대화 진행,
 육성 행동, 경험치 및 강화 선택을 확인할 수 있다. 생성 결과와 prefab 목록은

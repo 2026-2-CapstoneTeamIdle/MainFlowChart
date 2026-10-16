@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from game_pipeline import (
     UnityProjectGenerator,
@@ -230,6 +231,70 @@ class ValidateGameNodeTest(unittest.TestCase):
 
 
 class GameFailureIsolationTest(unittest.TestCase):
+    def test_repair_failure_reuses_existing_blueprint_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory) / "workspace"
+            feature_generator = MagicMock()
+
+            def generated_modules(_design, requirements):
+                modules = []
+                for module_id, requirement in requirements.items():
+                    source = "// validation is deliberately replaced by this test\n"
+                    modules.append(
+                        {
+                            "module_id": module_id,
+                            "feature_id": requirement["feature_id"],
+                            "feature_description": requirement["feature_description"],
+                            "class_name": "GeneratedFeature01Module",
+                            "source_code": source,
+                            "source_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+                        }
+                    )
+                return modules
+
+            feature_generator.generate.side_effect = generated_modules
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "MAINFLOW_WORKSPACE": str(workspace),
+                        "MAINFLOW_UNITY_VALIDATION_MODE": "static",
+                    },
+                ),
+                patch(
+                    "mainflow.nodes.design_game_logic.create_feature_generator_from_environment",
+                    return_value=feature_generator,
+                ),
+                patch(
+                    "mainflow.nodes.design_game_logic.validate_and_repair",
+                    side_effect=RuntimeError("simulated repair exhaustion"),
+                ),
+            ):
+                final_state = cast(
+                    WorkflowState,
+                    build_graph().invoke(
+                        {
+                            "image_style": "Pixel Art",
+                            "mood_style": "Fantasy",
+                            "genre": "플랫포머",
+                            "viewpoint": "사이드뷰",
+                            "condition": "시간을 되돌릴 수 있는 게임",
+                        }
+                    ),
+                )
+
+                manager = ArtifactManager()
+                game_draft = manager.read_json(final_state["game_logic_draft"])
+                blueprint_artifacts = [
+                    artifact
+                    for artifact in manager.list_artifacts(final_state["project_id"], "game")
+                    if artifact["relative_path"] == "game/game_blueprint.json"
+                ]
+
+                self.assertEqual(game_draft["status"], "failed")
+                self.assertEqual(len(blueprint_artifacts), 1)
+                self.assertIn("simulated repair exhaustion", " ".join(game_draft["notes"]))
+
     def test_image_and_sound_branches_complete_when_game_generation_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             workspace = Path(temporary_directory) / "workspace"

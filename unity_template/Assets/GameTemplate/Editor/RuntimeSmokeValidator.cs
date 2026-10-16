@@ -16,6 +16,7 @@ namespace TeamIdle.GameTemplate.Editor
         private static double started;
         private static int frames;
         private static bool failed;
+        private static string failureDetail = string.Empty;
         private static Vector3 initialPosition;
         private static Vector3 phaseStartPosition;
         private static GameObject player;
@@ -40,6 +41,13 @@ namespace TeamIdle.GameTemplate.Editor
 
         public static void RunForBatch()
         {
+            started = EditorApplication.timeSinceStartup;
+            frames = 0;
+            failed = false;
+            failureDetail = string.Empty;
+            traversalPhase = 0;
+            movementTest = false;
+            airDashObserved = false;
             SessionState.SetBool(Active, true);
             EditorSceneManager.OpenScene(TemplateProjectBuilder.ScenePath);
             EditorApplication.EnterPlaymode();
@@ -47,8 +55,18 @@ namespace TeamIdle.GameTemplate.Editor
 
         private static void OnLog(string message, string stack, LogType type)
         {
-            if (type == LogType.Exception || type == LogType.Error || type == LogType.Assert)
+            if (
+                !failed
+                && (type == LogType.Exception || type == LogType.Error || type == LogType.Assert)
+            )
+            {
                 failed = true;
+                failureDetail = "runtime.exception: " + message;
+                if (!string.IsNullOrWhiteSpace(stack))
+                {
+                    failureDetail += " | " + stack.Replace('\n', ' ').Replace('\r', ' ');
+                }
+            }
         }
 
         private static void Tick()
@@ -62,7 +80,12 @@ namespace TeamIdle.GameTemplate.Editor
                 return;
             if (failed)
             {
-                Finish(false, "runtime.exception: inspect Unity log");
+                Finish(
+                    false,
+                    string.IsNullOrWhiteSpace(failureDetail)
+                        ? "runtime.exception: unknown Unity error"
+                        : failureDetail
+                );
                 return;
             }
             frames++;

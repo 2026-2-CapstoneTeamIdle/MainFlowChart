@@ -21,8 +21,6 @@ from mainflow.contracts import (
 )
 from mainflow.image_backends import create_image_generator
 from mainflow.image_generation import (
-    BINDING_NOTE_PREFIX,
-    MISSING_REQUIRED_NOTE_PREFIX,
     PNG_MEDIA_TYPE,
     SPRITE_SHEET_NOTE_PREFIX,
     ImageGenerator,
@@ -81,7 +79,7 @@ def generate_image_node(
     generator = generator or create_image_generator()
     assets: list[ImageAsset] = []
     notes = [f"generator={generator.name}"]
-    missing_required = False
+    missing_required_asset_ids: list[str] = []
     for plan in plan_assets(asset_request):
         width, height = plan.size
         image_request = ImageRequest(
@@ -100,8 +98,7 @@ def generate_image_node(
         except Exception as error:  # 개별 에셋 실패는 draft notes로 기록
             notes.append(f"{plan.asset_id} 생성 실패: {error}")
             if plan.required:
-                missing_required = True
-                notes.append(f"{MISSING_REQUIRED_NOTE_PREFIX}{plan.asset_id}")
+                missing_required_asset_ids.append(plan.asset_id)
             continue
         artifact = manager.write_bytes(
             state["project_id"],
@@ -115,6 +112,8 @@ def generate_image_node(
             {
                 "asset_id": plan.asset_id,
                 "name": plan.purpose,
+                "kind": plan.kind,
+                "unity_binding_key": plan.unity_binding_key,
                 "artifact": artifact,
                 "file_format": "png",
                 "width": width,
@@ -122,7 +121,6 @@ def generate_image_node(
                 "prompt": image_request.prompt,
             }
         )
-        notes.append(f"{BINDING_NOTE_PREFIX}{plan.asset_id}={plan.unity_binding_key}")
         log(f"  - {plan.asset_id} ({plan.kind}, {width}x{height}) 저장")
 
         # MAINFLOW_IMAGE_SPRITE_SHEETS=off로 끌 수 있다 (기본값 on)
@@ -179,8 +177,9 @@ def generate_image_node(
     draft: ImageDraft = {
         "contract_version": CONTRACT_VERSION,
         "draft_id": "image-draft",
-        "status": "failed" if missing_required else "generated",
+        "status": "failed" if missing_required_asset_ids else "generated",
         "assets": assets,
+        "missing_required_asset_ids": missing_required_asset_ids,
         "notes": notes,
     }
     return {

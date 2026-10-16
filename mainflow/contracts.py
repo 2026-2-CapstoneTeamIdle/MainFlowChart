@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import Literal, NotRequired, TypedDict
 
-ContractVersion = Literal["3.1.0"]
-CONTRACT_VERSION: ContractVersion = "3.1.0"
+ContractVersion = Literal["3.3.0"]
+CONTRACT_VERSION: ContractVersion = "3.3.0"
 
 ImageStyle = Literal["Pixel Art", "Anime", "Cartoon", "Realistic", "Low Poly", "Custom"]
 MoodStyle = Literal["Cyberpunk", "Medieval", "Modern", "Fantasy", "Horror", "Cozy"]
@@ -31,6 +31,11 @@ GenreProfile = Literal[
     "RaisingSimulation",
 ]
 AssetType = Literal["image", "sound"]
+ImageAssetKind = Literal["sprite", "portrait", "ui", "tileset", "illustration", "background"]
+SoundAssetKind = Literal["bgm", "sfx", "ui", "voice", "ambience"]
+UnitySpriteMode = Literal["single", "multiple"]
+UnityAudioLoadType = Literal["decompress_on_load", "compressed_in_memory", "streaming"]
+AudioChannelMode = Literal["mono", "stereo"]
 DraftStatus = Literal["pending", "generated", "failed"]
 ValidationStatus = Literal["pending", "passed", "failed", "needs_revision"]
 Severity = Literal["info", "warning", "error"]
@@ -69,9 +74,34 @@ class AssetRequirement(TypedDict):
     required: bool
 
 
+class ImageGenerationSpec(TypedDict):
+    kind: ImageAssetKind
+    width: int
+    height: int
+    transparent: bool
+    sprite_mode: UnitySpriteMode
+    pixels_per_unit: int
+    tile_width: NotRequired[int]
+    tile_height: NotRequired[int]
+    columns: NotRequired[int]
+    rows: NotRequired[int]
+
+
+class SoundGenerationSpec(TypedDict):
+    kind: SoundAssetKind
+    target_duration_seconds: float
+    loop: bool
+    channels: AudioChannelMode
+    sample_rate_hz: int
+    unity_load_type: UnityAudioLoadType
+    mixer_group: str
+    spatial_blend: float
+
+
 class AssetGenerationItem(AssetRequirement):
     suggested_filename: str
     unity_binding_key: str
+    generation_spec: ImageGenerationSpec | SoundGenerationSpec
 
 
 class AssetGenerationRequest(TypedDict):
@@ -142,6 +172,47 @@ class GameImplementationPlan(TypedDict):
     playtest_scenarios: list[PlaytestScenario]
 
 
+class BlueprintContentDirective(TypedDict):
+    archetype: str
+    count: int
+    purpose: str
+
+
+class BlueprintEntity(TypedDict):
+    entity_id: str
+    display_name: str
+    archetype: str
+    position_x: float
+    position_y: float
+    scale_x: float
+    scale_y: float
+    color_hex: str
+    behavior_tags: list[str]
+
+
+class BlueprintProgressionOption(TypedDict):
+    option_id: str
+    display_name: str
+    description: str
+    rarity: Literal["common", "rare", "epic", "legendary"]
+
+
+class GameBlueprint(TypedDict):
+    blueprint_version: Literal["1.0.0"]
+    blueprint_id: str
+    source: Literal["deterministic", "local", "gemini"]
+    title: str
+    summary: str
+    scene_width: float
+    scene_height: float
+    background_color_hex: str
+    core_loop: list[str]
+    content: list[BlueprintContentDirective]
+    entities: list[BlueprintEntity]
+    progression_options: list[BlueprintProgressionOption]
+    ui_labels: list[str]
+
+
 class GameLogicDesign(TypedDict):
     contract_version: ContractVersion
     design_id: str
@@ -152,6 +223,7 @@ class GameLogicDesign(TypedDict):
     unsupported_mechanics: list[str]
     generated_modules: list[GeneratedGameModule]
     implementation_plan: GameImplementationPlan
+    game_blueprint: GameBlueprint
 
 
 class ParsedRequest(TypedDict):
@@ -215,6 +287,8 @@ class ValidationIssue(ValidationIssueRequired, total=False):
 class ImageAsset(TypedDict):
     asset_id: str
     name: str
+    kind: ImageAssetKind
+    unity_binding_key: str
     artifact: ArtifactReference
     file_format: str
     width: int
@@ -227,15 +301,20 @@ class ImageDraft(TypedDict):
     draft_id: str
     status: DraftStatus
     assets: list[ImageAsset]
+    missing_required_asset_ids: list[str]
     notes: list[str]
 
 
 class SoundAssetRequired(TypedDict):
     asset_id: str
     name: str
+    kind: SoundAssetKind
+    unity_binding_key: str
     artifact: ArtifactReference
     file_format: str
     duration_seconds: float
+    loop: bool
+    mixer_group: str
     prompt: str
 
 
@@ -248,6 +327,7 @@ class SoundDraft(TypedDict):
     draft_id: str
     status: DraftStatus
     assets: list[SoundAsset]
+    missing_required_asset_ids: list[str]
     notes: list[str]
 
 
@@ -291,6 +371,35 @@ class SoundValidationResult(TypedDict):
     checks: list[ValidationCheckResult]
     issues: list[ValidationIssue]
     validated_asset_ids: list[str]
+
+
+class AssetBindingEntry(TypedDict):
+    asset_id: str
+    asset_type: AssetType
+    kind: str
+    unity_binding_key: str
+    unity_path: str
+    required: bool
+    sprite_mode: str
+    pixels_per_unit: int
+    transparent: bool
+    tile_width: int
+    tile_height: int
+    columns: int
+    rows: int
+    loop: bool
+    unity_load_type: str
+    mixer_group: str
+    spatial_blend: float
+
+
+class AssetBindingManifest(TypedDict):
+    binding_version: Literal["1.0.0"]
+    contract_version: ContractVersion
+    image_style: ImageStyle
+    entries: list[AssetBindingEntry]
+    missing_required_asset_ids: list[str]
+    warnings: list[str]
 
 
 class IntegratedGame(TypedDict):
@@ -455,6 +564,7 @@ class AssetValidationSpecAgentOutput(TypedDict):
 class ValidateImageAgentInput(TypedDict):
     project_id: str
     parsed_request: ArtifactReference
+    image_asset_request: ArtifactReference
     image_draft: ArtifactReference
     asset_validation_spec: ArtifactReference
 
@@ -478,6 +588,8 @@ class ValidateSoundAgentOutput(TypedDict):
 class ApplyAssetsAgentInput(TypedDict):
     project_id: str
     game_logic_draft: ArtifactReference
+    image_asset_request: ArtifactReference
+    sound_asset_request: ArtifactReference
     image_draft: ArtifactReference
     sound_draft: ArtifactReference
     image_validation_result: ArtifactReference

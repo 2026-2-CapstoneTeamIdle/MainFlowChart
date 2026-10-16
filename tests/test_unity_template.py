@@ -37,6 +37,8 @@ class UnityTemplateTest(unittest.TestCase):
             "Assets/GameTemplate/Editor/TemplateProjectBuilder.cs",
             "Assets/GameTemplate/Editor/ModuleComponentCatalog.cs",
             "Assets/GameTemplate/Editor/PrefabSceneAssembler.cs",
+            "Assets/GameTemplate/Editor/GameBlueprint.cs",
+            "Assets/GameTemplate/Editor/GeneratedAssetBinder.cs",
             "Assets/GameTemplate/Editor/GameImplementationPlan.cs",
             "Assets/GameTemplate/Runtime/Prototype/PrototypeSceneController.cs",
             "Assets/GameTemplate/Runtime/Prototype/PlatformerPrototypeActors.cs",
@@ -55,14 +57,41 @@ class UnityTemplateTest(unittest.TestCase):
         assembler = (
             TEMPLATE_ROOT / "Assets/GameTemplate/Editor/PrefabSceneAssembler.cs"
         ).read_text(encoding="utf-8")
+        asset_binder = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Editor/GeneratedAssetBinder.cs"
+        ).read_text(encoding="utf-8")
+        runtime_smoke = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Editor/RuntimeSmokeValidator.cs"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("PrefabSceneAssembler.Assemble", builder)
+        self.assertIn("GeneratedAssetBinder.ImportAndConfigureAssets", builder)
+        self.assertIn("GeneratedAssetBinder.BindSceneAssets", builder)
+        self.assertIn("ISpriteEditorDataProvider", asset_binder)
+        self.assertIn("ISpriteNameFileIdDataProvider", asset_binder)
+        self.assertIn("CreateAndDeleteSprite", asset_binder)
+        self.assertNotIn(".meta", asset_binder)
+        self.assertNotIn("AudioMixerController", asset_binder)
+        self.assertIn('failureDetail = "runtime.exception: " + message', runtime_smoke)
+        self.assertNotIn("runtime.exception: inspect Unity log", runtime_smoke)
         self.assertIn("ValidateCurrentSceneForBatch", builder)
         self.assertIn("ModuleComponentCatalog.ValidateForBatch", builder)
         self.assertIn("AttachGeneratedFeatureBinder", assembler)
         self.assertIn("IGeneratedFeatureModule", assembler)
         self.assertIn("GameImplementationPlan.Load()", assembler)
+        self.assertIn("GameBlueprint.Load()", assembler)
+        self.assertIn("ApplyBlueprintEntities", assembler)
+        self.assertIn("PlatformerRoutePosition", assembler)
+        self.assertIn("PlatformerLandingWidth", assembler)
+        self.assertIn("ValidatePlatformerTraversal", assembler)
+        self.assertIn("UNITY_PLATFORMER_TRAVERSAL_OK", assembler)
+        self.assertIn("PlatformerMinimumLandingWidth", assembler)
+        self.assertIn("playerSpawn.x + PlatformerPlayerWidth * 4f", assembler)
+        self.assertIn("BlueprintNoise", assembler)
+        self.assertIn("ConfigureUpgradePool(", assembler)
+        self.assertIn("context.Blueprint", assembler)
         self.assertIn("UNITY_IMPLEMENTATION_PLAN_OK", assembler)
+        self.assertIn("UNITY_GAME_BLUEPRINT_OK", assembler)
         for genre in (
             "Platformer",
             "TowerDefense",

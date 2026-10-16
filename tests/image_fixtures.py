@@ -1,9 +1,10 @@
-"""Shared contract-3.1.0 payloads for the image node tests."""
+"""Shared contract-3.3.0 payloads for the image node tests."""
 
 from __future__ import annotations
 
 from typing import Any
 
+from game_pipeline.asset_specs import build_image_generation_spec
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -29,6 +30,7 @@ def asset_item(
         "required": required,
         "suggested_filename": f"{asset_id}.png",
         "unity_binding_key": f"asset_registry:{asset_id}",
+        "generation_spec": build_image_generation_spec(purpose, description),
     }
 
 

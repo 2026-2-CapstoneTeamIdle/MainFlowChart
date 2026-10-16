@@ -21,6 +21,7 @@ from mainflow.contracts import (
     Viewpoint,
 )
 from game_pipeline.implementation_planner import build_implementation_plan
+from game_pipeline.game_blueprint import build_game_blueprint
 
 COMMON_MODULES = [
     "game_bootstrap",
@@ -448,7 +449,7 @@ def normalize_game_spec(
     }
 
 
-def build_game_logic_design(game_spec: GameSpec) -> GameLogicDesign:
+def build_game_logic_design(game_spec: GameSpec, *, design_intent: str = "") -> GameLogicDesign:
     """Map normalized mechanics to the reusable Unity module catalog."""
 
     genre_modules = _unique_strings(
@@ -471,4 +472,5 @@ def build_game_logic_design(game_spec: GameSpec) -> GameLogicDesign:
         "unsupported_mechanics": unsupported,
         "generated_modules": [],
         "implementation_plan": build_implementation_plan(game_spec, unsupported),
+        "game_blueprint": build_game_blueprint(game_spec, design_intent),
     }

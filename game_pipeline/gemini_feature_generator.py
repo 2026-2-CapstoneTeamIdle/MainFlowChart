@@ -321,6 +321,8 @@ class GeminiFeatureGenerator:
         "RaycastHit ",
         "Rigidbody ",
         "Collider ",
+        "CompareTag(",
+        ".tag",
         "File.",
         "Directory.",
         "Process.",
