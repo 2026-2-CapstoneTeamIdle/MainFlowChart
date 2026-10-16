@@ -75,10 +75,10 @@ docker compose run --rm mainflow `
 - `Custom` 스타일의 참고 이미지(`reference_image`)는 이미지 편집 endpoint로 함께 전달한다.
 - 결과가 안전 필터에 차단되면 프롬프트를 바꿔 최대 3회 시도하고, 실패는 draft `notes`에 남긴다.
 
-에셋 종류(스프라이트, 초상화, UI, 타일셋, 일러스트, 배경)는 `asset_id`가 아니라 요청의
-`purpose`와 `description`으로 판단하며 종류에 따라 크기와 투명 배경 여부가 정해진다.
-`unity_binding_key`와 생성하지 못한 필수 에셋은 계약에 전용 필드가 생기기 전까지 draft `notes`에
-`unity_binding:`, `missing_required_asset:` 접두어로 기록한다.
+에셋 종류(스프라이트, 초상화, UI, 타일셋, 일러스트, 배경), 크기와 투명 배경 여부는 게임 설계가
+요청의 `generation_spec`에 명시한다. 생성 결과는 `unity_binding_key`를 에셋 필드로 그대로 반환하며,
+생성하지 못한 필수 에셋은 draft의 `missing_required_asset_ids`에 기록한다. 타일셋 기본 규격은
+32×32 타일 4열×4행(전체 128×128)이다.
 
 ```powershell
 $env:MAINFLOW_IMAGE_BACKEND = "openai"

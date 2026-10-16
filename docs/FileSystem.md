@@ -53,7 +53,7 @@ request_ref = manager.write_json(
     "data",
     "parsed_request.json",
     {
-        "contract_version": "3.1.0",
+        "contract_version": "3.3.0",
         "genre": "플랫포머",
         "viewpoint": "사이드뷰",
         "mood_style": "Fantasy",
@@ -71,7 +71,7 @@ parsed_request = manager.read_json(request_ref)
 
 ```json
 {
-  "contract_version": "3.1.0",
+  "contract_version": "3.3.0",
   "artifact_id": "image-<uuid>",
   "project_id": "20260926_03",
   "category": "image",
@@ -104,6 +104,7 @@ workspace/{project_id}/data/analysis.json
 workspace/{project_id}/data/logic_analysis.json
 workspace/{project_id}/game/asset_requests/image_asset_request.json
 workspace/{project_id}/game/asset_requests/sound_asset_request.json
+workspace/{project_id}/game/game_blueprint.json
 ```
 
 에셋 요청 JSON은 생성된 Unity 프로젝트의
@@ -113,8 +114,17 @@ State로 받은 `ArtifactReference`를 통해 workspace 사본을 읽으며 Unit
 
 이미지 Flow는 `image_asset_request` State 참조를, 사운드 Flow는 `sound_asset_request` State 참조를
 `ArtifactManager.read_json()`에 넘긴다. 두 요청에는 공통 `image_style`, `genre`와 게임 설계가
-유지한 `viewpoint`가 포함되고, 각 에셋의 `asset_id`와 `unity_binding_key`는 결과 draft까지
-변경하지 않는다.
+유지한 `viewpoint`가 포함되고, 각 에셋의 `asset_id`, `unity_binding_key`, `generation_spec`은
+결과 draft 및 Unity 적용 단계까지 변경하지 않는다. 이미지 draft는 `kind`와 바인딩 키를 에셋별로,
+생성 실패한 필수 ID를 `missing_required_asset_ids`로 전달한다. 사운드 요청은 목표 길이, 반복 여부,
+채널, sample rate, Unity load type, mixer group, spatial blend를 구조화해 전달한다.
+
+`apply_assets_to_game`은 이미지·사운드 검증 결과의 `validated_asset_ids`에 포함된 파일만
+`game/unity_project/Assets/GameTemplate/Generated/AppliedAssets/`로 복사한다. 동시에
+`AssetBindingManifest.json`을 Unity 프로젝트와 `game/asset_binding_manifest.json`에 기록하고,
+에셋이 포함된 최종 결과를 `game/integrated_unity_project.zip`으로 만든다. 필수 에셋 중 검증을
+통과하지 못한 ID는 manifest의 `missing_required_asset_ids`에 남으므로 일부 에셋 실패가 다른
+에셋의 적용을 막지 않는다.
 
 참조의 `relative_path`를 직접 이어 붙여 읽지 않는다. 항상 `ArtifactManager`의 읽기 메서드를 사용한다.
 

@@ -13,6 +13,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
+from game_pipeline.asset_specs import (
+    build_image_generation_spec,
+    build_sound_generation_spec,
+)
 from mainflow.contracts import (
     CONTRACT_VERSION,
     ArtifactReference,
@@ -32,6 +36,7 @@ class UnityGenerationResult:
     entry_scene: Path
     manifest_path: Path
     build_request_path: Path
+    game_blueprint_path: Path
     image_asset_request_path: Path
     sound_asset_request_path: Path
 
@@ -42,6 +47,7 @@ class UnityProjectGenerator:
     GENERATED_ROOT = Path("Assets/GameTemplate/Generated")
     CONFIG_ASSET = GENERATED_ROOT / "GameTemplateConfig.asset"
     DESIGN_PATH = GENERATED_ROOT / "GameLogicDesign.json"
+    BLUEPRINT_PATH = GENERATED_ROOT / "GameBlueprint.json"
     IMPLEMENTATION_PLAN_PATH = GENERATED_ROOT / "GameImplementationPlan.json"
     BUILD_REQUEST_PATH = GENERATED_ROOT / "GenerationRequest.json"
     ASSET_REQUEST_ROOT = GENERATED_ROOT / "AssetRequests"
@@ -111,6 +117,7 @@ class UnityProjectGenerator:
             entry_scene=destination_path / self.ENTRY_SCENE,
             manifest_path=destination_path / self.MANIFEST_PATH,
             build_request_path=destination_path / self.BUILD_REQUEST_PATH,
+            game_blueprint_path=destination_path / self.BLUEPRINT_PATH,
             image_asset_request_path=destination_path / self.IMAGE_ASSET_REQUEST_PATH,
             sound_asset_request_path=destination_path / self.SOUND_ASSET_REQUEST_PATH,
         )
@@ -222,6 +229,7 @@ class UnityProjectGenerator:
         generated_root.mkdir(parents=True, exist_ok=True)
         self._write_generated_modules(project_root, design)
         self._write_json(generated_root / self.DESIGN_PATH.name, design)
+        self._write_json(generated_root / self.BLUEPRINT_PATH.name, design["game_blueprint"])
         self._write_json(
             project_root / self.IMPLEMENTATION_PLAN_PATH,
             design["implementation_plan"],
@@ -233,6 +241,7 @@ class UnityProjectGenerator:
             "entry_scene": self.ENTRY_SCENE.as_posix(),
             "selected_modules": design["selected_modules"],
             "implementation_plan": self.IMPLEMENTATION_PLAN_PATH.as_posix(),
+            "game_blueprint": self.BLUEPRINT_PATH.as_posix(),
         }
         self._write_json(project_root / self.BUILD_REQUEST_PATH, request)
 
@@ -266,6 +275,7 @@ class UnityProjectGenerator:
             "entry_scene": self.ENTRY_SCENE.as_posix(),
             "selected_modules": design["selected_modules"],
             "implementation_plan": self.IMPLEMENTATION_PLAN_PATH.as_posix(),
+            "game_blueprint": self.BLUEPRINT_PATH.as_posix(),
             "generated_modules": [
                 {
                     "module_id": module["module_id"],
@@ -329,6 +339,15 @@ class UnityProjectGenerator:
                     **requirement,
                     "suggested_filename": f"{requirement['asset_id']}.{extension}",
                     "unity_binding_key": f"asset_registry:{requirement['asset_id']}",
+                    "generation_spec": (
+                        build_image_generation_spec(
+                            requirement["purpose"], requirement["description"]
+                        )
+                        if asset_type == "image"
+                        else build_sound_generation_spec(
+                            requirement["purpose"], requirement["description"]
+                        )
+                    ),
                 }
             )
 

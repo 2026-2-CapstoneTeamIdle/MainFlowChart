@@ -14,19 +14,22 @@ from __future__ import annotations
 import struct
 import zlib
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Protocol, cast
 
+from game_pipeline.asset_specs import IMAGE_SIZES, classify_image_kind
 from mainflow.contracts import (
     AssetGenerationItem,
     AssetGenerationRequest,
     GenreProfile,
+    ImageAssetKind,
+    ImageGenerationSpec,
     ImageStyle,
     MoodStyle,
     ValidationCriterion,
     Viewpoint,
 )
 
-ImageKind = Literal["sprite", "portrait", "ui", "tileset", "illustration", "background"]
+ImageKind = ImageAssetKind
 RGBA = tuple[int, int, int, int]
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -34,27 +37,8 @@ PNG_MEDIA_TYPE = "image/png"
 # Kinds drawn over a game scene must keep a transparent background.
 TRANSPARENT_KINDS: frozenset[ImageKind] = frozenset({"sprite", "portrait", "ui"})
 
-# The contract forbids inferring an asset's kind from its opaque asset_id, so
-# the kind is read from the human-written purpose/description.  Checked in
-# order; the first match wins and "sprite" is the fallback.
-# TODO: replace with an explicit field once the team adds one to the contract.
-KIND_KEYWORDS: tuple[tuple[ImageKind, tuple[str, ...]], ...] = (
-    ("tileset", ("타일", "tile")),
-    ("ui", ("ui", "테두리", "프레임", "frame", "아이콘", "icon", "버튼", "button")),
-    ("illustration", ("일러스트", "illustration")),
-    ("portrait", ("초상화", "portrait")),
-    ("background", ("배경", "background", "맵", "map", "스테이지", "stage")),
-)
-
-# Output size in pixels per kind.
-KIND_SIZES: dict[ImageKind, tuple[int, int]] = {
-    "sprite": (64, 64),
-    "portrait": (256, 384),
-    "ui": (128, 128),
-    "tileset": (128, 128),
-    "illustration": (256, 256),
-    "background": (512, 384),
-}
+# Backwards-compatible exports for image backends and focused tests.
+KIND_SIZES = IMAGE_SIZES
 
 KIND_PROMPTS: dict[ImageKind, str] = {
     "sprite": "A 2D game sprite",
@@ -109,12 +93,6 @@ OPAQUE_PROMPT = "fills the whole canvas, no transparency"
 # famous franchise characters, which the provider's output moderation blocks.
 ORIGINAL_DESIGN_PROMPT = "original design, not based on any existing game, franchise or character"
 
-# ImageAsset has no field for these yet, so generate_image records them as
-# draft notes with fixed prefixes that validate_image can read back.
-# TODO: move to ImageAsset/ImageDraft fields once the contract carries them.
-BINDING_NOTE_PREFIX = "unity_binding:"
-MISSING_REQUIRED_NOTE_PREFIX = "missing_required_asset:"
-
 
 @dataclass(frozen=True)
 class ImageAssetPlan:
@@ -127,6 +105,7 @@ class ImageAssetPlan:
     filename: str
     unity_binding_key: str
     kind: ImageKind
+    generation_spec: ImageGenerationSpec
 
     @property
     def transparent(self) -> bool:
@@ -134,21 +113,18 @@ class ImageAssetPlan:
 
     @property
     def size(self) -> tuple[int, int]:
-        return KIND_SIZES[self.kind]
+        return self.generation_spec["width"], self.generation_spec["height"]
 
 
 def classify_kind(purpose: str, description: str) -> ImageKind:
-    text = f"{purpose} {description}".lower()
-    for kind, keywords in KIND_KEYWORDS:
-        if any(keyword in text for keyword in keywords):
-            return kind
-    return "sprite"
+    return classify_image_kind(purpose, description)
 
 
 def plan_from_item(item: AssetGenerationItem) -> ImageAssetPlan:
     filename = item["suggested_filename"]
     if not filename.lower().endswith(".png"):
         filename = f"{item['asset_id']}.png"
+    spec = cast(ImageGenerationSpec, item["generation_spec"])
     return ImageAssetPlan(
         asset_id=item["asset_id"],
         purpose=item["purpose"],
@@ -156,7 +132,8 @@ def plan_from_item(item: AssetGenerationItem) -> ImageAssetPlan:
         required=item["required"],
         filename=filename,
         unity_binding_key=item["unity_binding_key"],
-        kind=classify_kind(item["purpose"], item["description"]),
+        kind=spec["kind"],
+        generation_spec=spec,
     )
 
 

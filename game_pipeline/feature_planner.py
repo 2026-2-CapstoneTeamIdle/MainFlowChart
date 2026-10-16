@@ -48,7 +48,7 @@ def plan_feature_mechanics(
                 "required": True,
             }
         )
-        mapped = _mapped_mechanics(feature["name"], genre)
+        mapped = _mapped_mechanics(feature["name"], genre, feature["description"])
         if mapped:
             mechanics.extend(mapped)
             continue
@@ -76,9 +76,28 @@ def plan_feature_mechanics(
     )
 
 
-def _mapped_mechanics(name: str, genre: GameGenre) -> tuple[str, ...]:
+def _mapped_mechanics(name: str, genre: GameGenre, description: str = "") -> tuple[str, ...]:
     if name == "성장":
         return ("experience",) if genre == "뱀서류" else ("stats",)
+    if genre == "플랫포머" and name == "사용자 지정 조건":
+        normalized = description.replace(" ", "")
+        destination_words = ("목적지", "목표지점", "도착점", "스테이지클리어")
+        hazard_words = ("장애물", "가시", "함정", "위험", "피해")
+        collectible_words = ("보석", "수집물", "아이템을모", "모두모")
+        checkpoint_words = ("체크포인트", "저장지점", "부활지점", "리스폰")
+        mapped: list[str] = []
+        if any(word in normalized for word in hazard_words):
+            mapped.append("health_damage")
+        if any(word in normalized for word in collectible_words):
+            mapped.append("collectible")
+        if any(word in normalized for word in checkpoint_words):
+            # Checkpoint/respawn actors are assembled with the platformer stage controller.
+            # The health module supplies the damage lifecycle they recover from.
+            mapped.append("health_damage")
+        if any(word in normalized for word in destination_words):
+            mapped.append("goal")
+        if mapped:
+            return tuple(dict.fromkeys(mapped))
     return FEATURE_MODULE_MECHANICS.get(name, ())
 
 

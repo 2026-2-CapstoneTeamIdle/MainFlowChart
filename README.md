@@ -43,10 +43,20 @@ MainFlowChart/
 └─ uv.lock
 ```
 
-## 입력 계약 3.1.0
+## 입력 계약 3.3.0
 
 - 이미지 스타일: `Pixel Art`, `Anime`, `Cartoon`, `Realistic`, `Low Poly`, `Custom`
 - 분위기 스타일: `Cyberpunk`, `Medieval`, `Modern`, `Fantasy`, `Horror`, `Cozy`
+
+### 요청별 씬 구성 LLM 사용
+
+기본값은 빠르고 재현 가능한 규칙 기반 `GameBlueprint`이다. LocalAI가 실행 중일 때만 아래처럼
+선택적으로 켤 수 있다. 모델 출력이 검증에 실패하면 자동으로 기본 Blueprint를 사용한다.
+
+```powershell
+$env:MAINFLOW_BLUEPRINT_PROVIDER="local"
+uv run --locked python -m mainflow.run_flow ...
+```
 - 장르: `플랫포머`, `타워 디펜스`, `카드`, `비주얼 노벨`, `육성 시뮬레이션`, `뱀서류`
 - 시점: `사이드뷰`, `탑다운`, `쿼터뷰`, `고정 화면`
 - 조건: 비어 있지 않은 한 문장

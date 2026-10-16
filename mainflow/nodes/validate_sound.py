@@ -144,7 +144,6 @@ def validate_sound_node(
                 "message": "실패: " + ", ".join(failing) if failing else "통과",
             }
         )
-
     result: SoundValidationResult = {
         "contract_version": CONTRACT_VERSION,
         "status": status,

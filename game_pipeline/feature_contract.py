@@ -38,6 +38,7 @@ def build_feature_contract() -> dict[str, Any]:
         "constraints": [
             "Never reference TestInputEnabled, TestMovement or UNITY_* validation markers in generated code.",
             "Do not invent APIs, layers, tags, assets, packages or scene objects.",
+            "Never use CompareTag or GameObject.tag; generated projects define no custom tags.",
             "Exclude the player's own collider in wall and ground detection.",
             "Use ForceMode2D and linearVelocity; restore gravity/state on exit and disable.",
             "Null-check dependencies. No behavior before initialization and binding.",
@@ -116,5 +117,6 @@ def build_generation_contract() -> dict[str, Any]:
             "A generated module implements only its one requested feature.",
             "Store dependencies in private fields during BindGeneratedFeature.",
             "Never invent a member that is absent from project_types.",
+            "Never use CompareTag or GameObject.tag; identify objects through bound references and components.",
         ],
     }

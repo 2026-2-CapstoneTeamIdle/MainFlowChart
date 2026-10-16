@@ -45,6 +45,7 @@ class UnityProjectValidator:
     REQUIRED_JSON_PATHS: ClassVar[dict[str, Path]] = {
         "design": Path("Assets/GameTemplate/Generated/GameLogicDesign.json"),
         "implementation_plan": Path("Assets/GameTemplate/Generated/GameImplementationPlan.json"),
+        "game_blueprint": Path("Assets/GameTemplate/Generated/GameBlueprint.json"),
         "manifest": Path("GenerationManifest.json"),
         "image_request": Path(
             "Assets/GameTemplate/Generated/AssetRequests/image_asset_request.json"
@@ -60,6 +61,8 @@ class UnityProjectValidator:
         "builder": Path("Assets/GameTemplate/Editor/TemplateProjectBuilder.cs"),
         "module_catalog": Path("Assets/GameTemplate/Editor/ModuleComponentCatalog.cs"),
         "scene_assembler": Path("Assets/GameTemplate/Editor/PrefabSceneAssembler.cs"),
+        "blueprint_loader": Path("Assets/GameTemplate/Editor/GameBlueprint.cs"),
+        "asset_binder": Path("Assets/GameTemplate/Editor/GeneratedAssetBinder.cs"),
         "generated_feature_contract": Path(
             "Assets/GameTemplate/Runtime/Core/IGeneratedFeatureModule.cs"
         ),
@@ -69,6 +72,7 @@ class UnityProjectValidator:
         "UNITY_GENERATED_FEATURE_BINDINGS_OK",
         "UNITY_IMPLEMENTATION_PLAN_OK",
         "UNITY_SCENE_ASSEMBLY_OK",
+        "UNITY_GAME_BLUEPRINT_OK",
         "UNITY_TEMPLATE_BUILD_OK",
     )
 
@@ -200,6 +204,7 @@ class UnityProjectValidator:
         required_payloads = {
             "design",
             "implementation_plan",
+            "game_blueprint",
             "manifest",
             "image_request",
             "sound_request",
@@ -212,6 +217,7 @@ class UnityProjectValidator:
         image_request = payloads["image_request"]
         sound_request = payloads["sound_request"]
         implementation_plan = payloads["implementation_plan"]
+        game_blueprint = payloads["game_blueprint"]
         game_spec = design.get("game_spec")
         if not isinstance(game_spec, dict):
             self._add_check(
@@ -264,6 +270,15 @@ class UnityProjectValidator:
             design,
             implementation_plan,
             manifest,
+        )
+        blueprint_valid = (
+            design.get("game_blueprint") == game_blueprint
+            and manifest.get("game_blueprint") == "Assets/GameTemplate/Generated/GameBlueprint.json"
+            and game_blueprint.get("blueprint_version") == "1.0.0"
+            and isinstance(game_blueprint.get("entities"), list)
+            and len(game_blueprint["entities"]) >= 2
+            and isinstance(game_blueprint.get("content"), list)
+            and len(game_blueprint["content"]) >= 3
         )
 
         image_ids = self._asset_ids(image_request, "image")
@@ -320,6 +335,15 @@ class UnityProjectValidator:
             plan_valid,
             plan_message,
             error_code="GAME_IMPLEMENTATION_PLAN_INVALID",
+        )
+        self._add_check(
+            outcome,
+            "game.blueprint",
+            blueprint_valid,
+            "Game blueprint is complete and matches the generated design"
+            if blueprint_valid
+            else "Game blueprint is missing, incomplete, or inconsistent",
+            error_code="GAME_BLUEPRINT_INVALID",
         )
         self._add_check(
             outcome,

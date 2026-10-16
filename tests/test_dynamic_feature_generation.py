@@ -367,6 +367,43 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
         self.assertEqual(plan.mechanics, ["wall_climb", "air_dash"])
         self.assertFalse(plan.generation_requirements)
 
+    def test_platformer_destination_and_hazards_reuse_existing_modules(self) -> None:
+        features: list[FeatureRequirement] = [
+            {
+                "feature_id": "feature-03",
+                "name": "사용자 지정 조건",
+                "description": "적과 장애물을 피해 목적지에 도달하는 게임",
+                "source_text": "적과 장애물을 피해 목적지에 도달한다.",
+            }
+        ]
+
+        plan = plan_feature_mechanics(features, "플랫포머")
+
+        self.assertEqual(plan.mechanics, ["health_damage", "goal"])
+        self.assertFalse(plan.generation_requirements)
+
+    def test_platformer_stage_content_reuses_existing_modules(self) -> None:
+        descriptions = [
+            "가시 함정",
+            "수집 가능한 보석",
+            "체크포인트가 있으",
+            "보석을 모두 모은 뒤 목적지에 도달하면 스테이지를 클리어한다.",
+        ]
+        features: list[FeatureRequirement] = [
+            {
+                "feature_id": f"feature-{index:02d}",
+                "name": "사용자 지정 조건",
+                "description": description,
+                "source_text": description,
+            }
+            for index, description in enumerate(descriptions, start=1)
+        ]
+
+        plan = plan_feature_mechanics(features, "플랫포머")
+
+        self.assertEqual(plan.mechanics, ["health_damage", "collectible", "goal"])
+        self.assertFalse(plan.generation_requirements)
+
     def test_unknown_feature_is_generated_and_written_to_unity_project(self) -> None:
         features: list[FeatureRequirement] = [
             {
@@ -559,6 +596,25 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
         }
 
         with self.assertRaisesRegex(ValueError, "method-local context"):
+            GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+                module,
+                {"generated_feature_01": requirement},
+            )
+
+    def test_generated_source_rejects_custom_tag_lookup(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "벽을 탄다."}
+        invalid_source = GENERATED_SOURCE.replace(
+            "var direction = Vector2.right * Mathf.Sign(input.Movement.x);",
+            'var direction = gameObject.CompareTag("Wall") ? Vector2.up : Vector2.right;',
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": invalid_source,
+        }
+
+        with self.assertRaisesRegex(ValueError, "banned APIs"):
             GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
                 module,
                 {"generated_feature_01": requirement},

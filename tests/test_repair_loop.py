@@ -26,7 +26,7 @@ class RepairLoopTest(unittest.TestCase):
                 project_root=root, entry_scene=root / "Assets/Scenes/Bootstrap.unity"
             )
             design = {
-                "contract_version": "3.1.0",
+                "contract_version": "3.3.0",
                 "game_spec": {"asset_requirements": []},
                 "generated_modules": [{"module_id": "example"}],
             }
@@ -84,6 +84,21 @@ class RepairLoopTest(unittest.TestCase):
         result, model, _ = self.run_loop([failure("UNITY_RUNTIME_TEST_FAILED", "FAILED")] * 3)
         self.assertIsNone(result)
         self.assertEqual(model.repair.call_count, 2)
+
+    def test_undefined_tag_error_is_preserved_for_model_feedback(self):
+        result, model, _ = self.run_loop(
+            [
+                failure(
+                    "UNITY_RUNTIME_TEST_FAILED",
+                    "runtime.exception: Tag: Enemy is not defined. CompareTag",
+                ),
+                UnityValidationOutcome(),
+            ]
+        )
+
+        self.assertIsNotNone(result)
+        diagnostics = model.repair.call_args.args[1]["diagnostics"]
+        self.assertIn("Tag: Enemy is not defined", diagnostics)
 
     def test_contract_contains_real_api_and_test_limits(self):
         contract = build_feature_contract()

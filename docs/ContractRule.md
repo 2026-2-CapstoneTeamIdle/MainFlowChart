@@ -1,7 +1,7 @@
 # Agent 데이터 계약 규칙
 
 이 문서는 Agent 사이에서 교환하는 State와 파일 payload 규격을 정의한다. 기계 판독 기준은
-`mainflow/contracts.py`이며, 현재 계약 버전은 **3.1.0**이다.
+`mainflow/contracts.py`이며, 현재 계약 버전은 **3.3.0**이다.
 
 ## 공통 원칙
 
@@ -9,7 +9,7 @@
 2. 실제 파일 내용이나 임의 경로 대신 `ArtifactReference`를 State로 전달한다.
 3. 파일은 반드시 `ArtifactManager`로 저장하고 읽는다.
 4. payload와 `ArtifactReference`에는 `contract_version`을 기록한다.
-5. 계약 `3.1.0`은 팀의 Input/Output 합의에 따라 시점과 에셋 생성 공통 문맥을 추가했다.
+5. 계약 `3.3.0`은 입력별 게임 구조를 `GameBlueprint`로 분리해 Unity Scene 조립에 전달한다.
 6. `condition`은 비어 있지 않은 한 문장으로 보관하며, Analysis가 기능 요구사항으로 변환한다.
 7. `image_style`이 `Custom`이면 PNG/JPG 파일을 함께 제공해야 한다.
 
@@ -68,8 +68,13 @@ Analysis 구현은 알려진 기능 표현을 규칙 기반으로 추출하고, 
 
 - 공통: `request_id`, `source_design_id`, `game_title`, `genre`, `asset_type`
 - 생성 문맥: `image_style`, `mood_style`, `viewpoint`, `reference_image`, `output_directory`
-- `assets`: `asset_id`, 용도, 설명, 필수 여부, 권장 파일명, `unity_binding_key`
+- `assets`: `asset_id`, 용도, 설명, 필수 여부, 권장 파일명, `unity_binding_key`, `generation_spec`
 - 생성 Flow는 `asset_id`와 `unity_binding_key`를 변경하지 않고 결과 draft에 반환한다.
+- 이미지 `generation_spec`: 종류, 출력 크기, 투명도, Sprite Mode, Pixels Per Unit을 포함한다.
+  타일셋은 32×32 타일을 4열×4행으로 배치한 128×128 PNG를 기본값으로 사용한다.
+- 사운드 `generation_spec`: 종류, 목표 길이(초), loop, mono/stereo, sample rate, Unity load type,
+  mixer group, 2D/3D 혼합값(`spatial_blend`)을 포함한다. 기본값은 BGM 90초 loop/streaming,
+  환경음 60초 loop/streaming, 효과음 1초 non-loop/decompress-on-load이다.
 - 같은 JSON은 workspace와 생성된 Unity 프로젝트의 `AssetRequests/` 양쪽에 저장한다.
 - 이미지 요청의 `reference_image`에는 Custom 참고 이미지의 `ArtifactReference`가 들어가며,
   참고 이미지가 없거나 사운드 요청이면 `null`이다.
@@ -89,6 +94,20 @@ Analysis 구현은 알려진 기능 표현을 규칙 기반으로 추출하고, 
 
 기존 `InitialFinalValidationSpec`은 제거됐다. 최종 검증 기준은 `LogicAnalysis.criteria`에서 읽는다.
 
+### `GameBlueprint`
+
+`design_game_logic`은 장르 프리셋을 최소 실행 기반으로만 사용하고, 요청 문장별 Blueprint를 만들어
+Unity 조립기에 전달한다. Blueprint에는 장면 크기·배경 색, 콘텐츠 밀도, 엔티티 위치·색·역할,
+핵심 루프, 성장 선택지, UI 라벨이 포함된다. Unity는 고정 샘플 씬 대신 이 Blueprint를 읽어
+기존 모듈의 콘텐츠 수를 조정하고 추가 엔티티를 배치한다. 플랫폼 게임은 안전한 점프 범위 안에서
+경로·수집물·위험물·목표 위치를 다시 조립하고, 타워 디펜스는 적 경로를, 뱀서류는 맵 반경과
+특전 풀을 Blueprint에 맞게 바꾼다.
+
+기본 제공자는 `deterministic`이며 외부 모델 호출 없이 항상 실행된다. `MAINFLOW_BLUEPRINT_PROVIDER`
+를 `local` 또는 `gemini`로 설정하면 해당 모델이 Blueprint만 제안한다. 제안은 JSON Schema와
+필수 콘텐츠·엔티티 검증을 통과해야 하며, 실패·시간 초과 시에는 전체 파이프라인을 중단하지 않고
+기본 Blueprint를 유지한다. 모델은 C# 코드, 파일 경로, Unity 패키지를 생성할 수 없다.
+
 ## Node별 Input/Output
 
 | Node | 입력 State | 출력 State | 출력 파일 |
@@ -102,8 +121,8 @@ Analysis 구현은 알려진 기능 표현을 규칙 기반으로 추출하고, 
 | `generate_sound` | 분석 참조와 `sound_asset_request` | `sound_draft` | `generated/sounds/sound_draft.json` |
 | `validate_game` | `parsed_request`, `logic_analysis`, 게임 draft | `game_validation_result` | validation 결과 |
 | `create_asset_validation_spec` | 요청, 게임 검증 결과 | `asset_validation_spec` | validation 기준 |
-| `validate_image` | 요청, 이미지 draft, 에셋 기준 | `image_validation_result` | validation 결과 |
-| `validate_sound` | 요청, 사운드 draft, 에셋 기준 | `sound_validation_result` | validation 결과 |
+| `validate_image` | 요청, 이미지 에셋 요청, 이미지 draft, 에셋 기준 | `image_validation_result` | validation 결과 |
+| `validate_sound` | 요청, 사운드 에셋 요청, 사운드 draft, 에셋 기준 | `sound_validation_result` | validation 결과 |
 | `apply_assets_to_game` | 세 draft와 이미지·사운드 검증 결과 | `integrated_game` | 통합 게임 |
 | `final_validation` | `logic_analysis`, 통합 게임 | `final_validation_result` | 최종 검증 결과 |
 

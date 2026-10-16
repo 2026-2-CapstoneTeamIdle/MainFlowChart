@@ -17,6 +17,12 @@ namespace TeamIdle.GameTemplate.Editor
 {
     public static class PrefabSceneAssembler
     {
+        private const float PlatformerPlayerWidth = 0.8f;
+        private const float PlatformerPlayerHeight = 1.2f;
+        private const float PlatformerMinimumLandingWidth = 2.4f;
+        private const float PlatformerMaximumHorizontalGap = 1.35f;
+        private const float PlatformerMaximumStepUp = 1.15f;
+
         public const string GeneratedPrefabRoot = "Assets/GameTemplate/Generated/Prefabs";
         public const string GeneratedVisualRoot =
             "Assets/GameTemplate/Generated/PlaceholderVisuals";
@@ -36,6 +42,7 @@ namespace TeamIdle.GameTemplate.Editor
         {
             public GameTemplateConfig Config;
             public GameImplementationPlan Plan;
+            public GameBlueprint Blueprint;
             public Transform Modules;
             public Transform Environment;
             public Transform Entities;
@@ -84,6 +91,7 @@ namespace TeamIdle.GameTemplate.Editor
             {
                 Config = config,
                 Plan = GameImplementationPlan.Load(),
+                Blueprint = GameBlueprint.Load(),
                 Modules = moduleRoot,
                 Environment = environment,
                 Entities = entities,
@@ -92,7 +100,12 @@ namespace TeamIdle.GameTemplate.Editor
                 Report = report,
             };
 
-            CreateBackground(context, new Color(0.055f, 0.065f, 0.09f, 1f));
+            context.Blueprint.ApplyContentTo(context.Plan);
+
+            CreateBackground(
+                context,
+                context.Blueprint.BackgroundColor(new Color(0.055f, 0.065f, 0.09f, 1f))
+            );
             switch (config.Genre)
             {
                 case "Platformer":
@@ -118,6 +131,7 @@ namespace TeamIdle.GameTemplate.Editor
                     break;
             }
 
+            ApplyBlueprintEntities(context);
             AttachGeneratedFeatureBinder(context, generatedRoot.gameObject);
             report.sceneObjectCount = generatedRoot.GetComponentsInChildren<Transform>(true).Length;
             File.WriteAllText(ReportPath, JsonUtility.ToJson(report, true));
@@ -142,6 +156,8 @@ namespace TeamIdle.GameTemplate.Editor
             var featureBinder = generatedRoot.GetComponent<GeneratedFeatureBinder>();
             RequireObject(featureBinder, "GeneratedFeatureBinder");
             var implementationPlan = GameImplementationPlan.Load();
+            var blueprint = GameBlueprint.Load();
+            blueprint.ApplyContentTo(implementationPlan);
             if (implementationPlan.playtest_scenarios.Count < 3)
             {
                 throw new InvalidOperationException(
@@ -201,6 +217,11 @@ namespace TeamIdle.GameTemplate.Editor
                 RequireObject(FindChildByName(generatedRoot.transform, name), name);
             }
 
+            if (config.Genre == "Platformer")
+            {
+                ValidatePlatformerTraversal(generatedRoot.transform);
+            }
+
             if (!File.Exists(ReportPath))
             {
                 throw new InvalidOperationException(
@@ -214,6 +235,51 @@ namespace TeamIdle.GameTemplate.Editor
                     + implementationPlan.playtest_scenarios.Count
             );
             Debug.Log($"UNITY_SCENE_ASSEMBLY_OK:{config.Genre}:{names.Length}");
+            Debug.Log(
+                $"UNITY_GAME_BLUEPRINT_OK:{blueprint.blueprint_id}:{blueprint.entities.Count}"
+            );
+        }
+
+        private static void ApplyBlueprintEntities(AssemblyContext context)
+        {
+            foreach (var entity in context.Blueprint.entities)
+            {
+                if (string.IsNullOrWhiteSpace(entity.entity_id))
+                {
+                    continue;
+                }
+
+                if (entity.archetype == "player_anchor")
+                {
+                    var player = FindChildByName(context.Entities, "Player");
+                    if (player != null && context.Config.Genre != "Platformer")
+                    {
+                        player.position = new Vector2(entity.position_x, entity.position_y);
+                    }
+                    continue;
+                }
+
+                var color = ColorUtility.TryParseHtmlString(entity.color_hex, out var parsedColor)
+                    ? parsedColor
+                    : Color.white;
+                var parent =
+                    entity.archetype == "landmark" ? context.Environment : context.Entities;
+                var marker = CreateSpriteObject(
+                    $"Blueprint_{entity.entity_id}",
+                    parent,
+                    new Vector2(entity.position_x, entity.position_y),
+                    new Vector2(Mathf.Max(0.1f, entity.scale_x), Mathf.Max(0.1f, entity.scale_y)),
+                    color,
+                    $"blueprint-{entity.entity_id}",
+                    entity.archetype == "landmark" ? -5 : 1
+                );
+                marker.name = $"Blueprint_{entity.display_name}";
+            }
+
+            context.Camera.orthographicSize = Mathf.Max(
+                context.Camera.orthographicSize,
+                context.Blueprint.scene_height * 0.34f
+            );
         }
 
         private static void AttachGeneratedFeatureBinder(
@@ -236,11 +302,13 @@ namespace TeamIdle.GameTemplate.Editor
         {
             context.Camera.orthographicSize = 5.5f;
             context.Camera.transform.position = new Vector3(0f, 0f, -10f);
+            var stageWidth = Mathf.Max(30f, context.Blueprint.scene_width);
+            var playerSpawn = new Vector2(-stageWidth * 0.5f + 2.5f, -2.75f);
             var player = CreateSpriteObject(
                 "Player",
                 context.Entities,
-                new Vector2(-6f, -2.5f),
-                new Vector2(0.9f, 1.4f),
+                playerSpawn,
+                new Vector2(PlatformerPlayerWidth, PlatformerPlayerHeight),
                 new Color(0.25f, 0.75f, 1f),
                 "platformer-player"
             );
@@ -256,19 +324,18 @@ namespace TeamIdle.GameTemplate.Editor
             context.Camera.gameObject.AddComponent<PrototypeCameraFollow>().Bind(player.transform);
             var groundCheck = new GameObject("GroundCheck").transform;
             groundCheck.SetParent(player.transform, false);
-            groundCheck.localPosition = new Vector3(0f, -0.75f, 0f);
+            groundCheck.localPosition = new Vector3(0f, -PlatformerPlayerHeight * 0.55f, 0f);
 
-            CreatePlatform(context, "Ground", new Vector2(4f, -4f), new Vector2(28f, 1f));
+            CreatePlatform(context, "Ground", new Vector2(0f, -4f), new Vector2(stageWidth, 1f));
             var platformCount = context.Plan.Count("platform", 10);
             for (var index = 0; index < platformCount; index++)
             {
-                var column = index % 5;
-                var tier = index / 5;
+                var position = PlatformerRoutePosition(context, index, platformCount);
                 CreatePlatform(
                     context,
                     $"Platform_{index + 1}",
-                    new Vector2(-4f + column * 3.2f, -1.6f + tier * 2.2f),
-                    new Vector2(2.2f + (index % 2) * 0.8f, 0.45f)
+                    position,
+                    new Vector2(PlatformerLandingWidth(context, platformCount, index), 0.45f)
                 );
             }
 
@@ -281,10 +348,16 @@ namespace TeamIdle.GameTemplate.Editor
 
             for (var index = 0; index < collectibleCount; index++)
             {
+                var platformPosition = PlatformerRoutePosition(
+                    context,
+                    index % platformCount,
+                    platformCount
+                );
                 var collectible = CreateSpriteObject(
                     $"Collectible_{index + 1}",
                     context.Entities,
-                    new Vector2(-4f + (index % 5) * 3.2f, -0.8f + (index / 5) * 2.2f),
+                    platformPosition
+                        + new Vector2(0f, 0.75f + BlueprintNoise(context, index + 40, 0.2f)),
                     Vector2.one * 0.45f,
                     new Color(1f, 0.82f, 0.2f),
                     "collectible"
@@ -296,11 +369,20 @@ namespace TeamIdle.GameTemplate.Editor
 
             for (var index = 0; index < context.Plan.Count("hazard", 5); index++)
             {
+                var hazardCount = context.Plan.Count("hazard", 5);
+                var progress = (index + 1f) / (hazardCount + 1f);
                 var hazard = CreateSpriteObject(
                     $"Hazard_{index + 1}",
                     context.Entities,
-                    new Vector2(-2.5f + index * 3.1f, -3.3f),
-                    new Vector2(1.2f, 0.35f),
+                    new Vector2(
+                        Mathf.Lerp(
+                            playerSpawn.x + PlatformerPlayerWidth * 4f,
+                            stageWidth * 0.5f - 4.5f,
+                            progress
+                        ),
+                        -3.3f
+                    ),
+                    new Vector2(0.9f, 0.35f),
                     new Color(1f, 0.2f, 0.25f),
                     "hazard"
                 );
@@ -311,10 +393,14 @@ namespace TeamIdle.GameTemplate.Editor
 
             for (var index = 0; index < context.Plan.Count("checkpoint", 2); index++)
             {
+                var progress = (index + 1f) / (context.Plan.Count("checkpoint", 2) + 1f);
                 var checkpoint = CreateSpriteObject(
                     $"Checkpoint_{index + 1}",
                     context.Entities,
-                    new Vector2(index == 0 ? 0f : 7f, -2.8f),
+                    new Vector2(
+                        Mathf.Lerp(-stageWidth * 0.25f, stageWidth * 0.3f, progress),
+                        -2.8f
+                    ),
                     new Vector2(0.45f, 1.8f),
                     new Color(0.25f, 0.9f, 0.95f),
                     "checkpoint"
@@ -326,10 +412,15 @@ namespace TeamIdle.GameTemplate.Editor
 
             for (var index = 0; index < context.Plan.Count("enemy", 3); index++)
             {
+                var platformPosition = PlatformerRoutePosition(
+                    context,
+                    (index + 2) % platformCount,
+                    platformCount
+                );
                 var enemy = CreateSpriteObject(
                     $"PatrolEnemy_{index + 1}",
                     context.Entities,
-                    new Vector2(1f + index * 3.5f, -2.9f),
+                    platformPosition + new Vector2(0.25f, 0.65f),
                     new Vector2(0.8f, 0.8f),
                     new Color(0.95f, 0.35f, 0.4f),
                     "platformer-enemy"
@@ -343,7 +434,7 @@ namespace TeamIdle.GameTemplate.Editor
             var goal = CreateSpriteObject(
                 "StageGoal",
                 context.Entities,
-                new Vector2(12f, -2.5f),
+                new Vector2(stageWidth * 0.5f - 2.25f, -2.5f),
                 new Vector2(0.8f, 2f),
                 new Color(0.2f, 1f, 0.45f),
                 "goal"
@@ -366,6 +457,13 @@ namespace TeamIdle.GameTemplate.Editor
                 new Vector2(2.5f, 2f),
                 new Vector2(8f, 2f),
             };
+            for (var index = 1; index < waypointPositions.Length - 1; index++)
+            {
+                waypointPositions[index] += new Vector2(
+                    BlueprintNoise(context, index + 100, 0.8f),
+                    BlueprintNoise(context, index + 120, 0.65f)
+                );
+            }
             var waypoints = new List<Transform>();
             for (var index = 0; index < waypointPositions.Length; index++)
             {
@@ -397,7 +495,7 @@ namespace TeamIdle.GameTemplate.Editor
             var towerVisual = CreateSpriteObject(
                 "Tower",
                 context.Entities,
-                new Vector2(0f, 0f),
+                new Vector2(BlueprintNoise(context, 140, 1.2f), BlueprintNoise(context, 141, 0.8f)),
                 new Vector2(1.2f, 1.6f),
                 new Color(0.3f, 0.8f, 1f),
                 "tower"
@@ -502,19 +600,19 @@ namespace TeamIdle.GameTemplate.Editor
                 lines.GetArrayElementAtIndex(0),
                 "intro-1",
                 "Guide",
-                "Welcome to the generated visual novel prototype."
+                context.Blueprint.summary
             );
             SetDialogueLine(
                 lines.GetArrayElementAtIndex(1),
                 "intro-2",
                 "Hero",
-                "The final artwork and script can replace these placeholders."
+                context.Blueprint.core_loop[0]
             );
             SetDialogueLine(
                 lines.GetArrayElementAtIndex(2),
                 "intro-3",
                 "Guide",
-                "Choose an option to test the branching flag system."
+                context.Blueprint.core_loop[1]
             );
             for (var index = 3; index < lines.arraySize; index++)
             {
@@ -522,7 +620,8 @@ namespace TeamIdle.GameTemplate.Editor
                     lines.GetArrayElementAtIndex(index),
                     $"generated-{index + 1}",
                     index % 2 == 0 ? "Hero" : "Guide",
-                    $"Generated story beat {index + 1}: choices and flags continue the scene."
+                    $"{context.Blueprint.core_loop[index % context.Blueprint.core_loop.Count]}: "
+                        + $"generated story beat {index + 1}."
                 );
             }
             serialized.ApplyModifiedPropertiesWithoutUndo();
@@ -629,7 +728,10 @@ namespace TeamIdle.GameTemplate.Editor
             SetObject(autoTarget, "origin", player.transform);
             SetObject(autoTarget, "projectilePrefab", projectilePrefab);
             SetInt(autoTarget, "enemyMask", 1 << 8);
-            ConfigureUpgradePool(GetModule<UpgradeSelectionSystemModule>(context));
+            ConfigureUpgradePool(
+                GetModule<UpgradeSelectionSystemModule>(context),
+                context.Blueprint
+            );
 
             var arenaMarkerCount = context.Plan.Count("arena_marker", 20);
             for (var index = 0; index < arenaMarkerCount; index++)
@@ -638,7 +740,12 @@ namespace TeamIdle.GameTemplate.Editor
                 CreateSpriteObject(
                     $"ArenaMarker_{index + 1}",
                     context.Environment,
-                    new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * 8f,
+                    new Vector2(Mathf.Cos(angle), Mathf.Sin(angle))
+                        * (
+                            Mathf.Min(context.Blueprint.scene_width, context.Blueprint.scene_height)
+                                * 0.42f
+                            + BlueprintNoise(context, index + 180, 0.8f)
+                        ),
                     Vector2.one * 0.2f,
                     new Color(0.3f, 0.35f, 0.45f),
                     "arena-marker"
@@ -729,24 +836,32 @@ namespace TeamIdle.GameTemplate.Editor
             return saved.GetComponent<T>();
         }
 
-        private static void ConfigureUpgradePool(UpgradeSelectionSystemModule upgrades)
+        private static void ConfigureUpgradePool(
+            UpgradeSelectionSystemModule upgrades,
+            GameBlueprint blueprint
+        )
         {
             if (upgrades == null)
             {
                 return;
             }
 
-            var entries = new[]
+            var entries = new List<(string Id, string Name, string Description)>();
+            foreach (var option in blueprint.progression_options)
             {
-                ("wing-power", "Stronger Wings", "Increase feather attack power."),
-                ("wing-speed", "Swift Wings", "Increase movement speed."),
-                ("attack-speed", "Rapid Feathers", "Increase attack speed."),
-                ("feather-count", "Many Feathers", "Fire one additional feather."),
-            };
+                entries.Add((option.option_id, option.display_name, option.description));
+            }
+            if (entries.Count == 0)
+            {
+                entries.Add(("wing-power", "Stronger Wings", "Increase feather attack power."));
+                entries.Add(("wing-speed", "Swift Wings", "Increase movement speed."));
+                entries.Add(("attack-speed", "Rapid Feathers", "Increase attack speed."));
+                entries.Add(("feather-count", "Many Feathers", "Fire one additional feather."));
+            }
             var serialized = new SerializedObject(upgrades);
             var pool = serialized.FindProperty("upgradePool");
-            pool.arraySize = entries.Length;
-            for (var index = 0; index < entries.Length; index++)
+            pool.arraySize = entries.Count;
+            for (var index = 0; index < entries.Count; index++)
             {
                 var entry = pool.GetArrayElementAtIndex(index);
                 entry.FindPropertyRelative("upgradeId").stringValue = entries[index].Item1;
@@ -755,6 +870,145 @@ namespace TeamIdle.GameTemplate.Editor
             }
 
             serialized.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static Vector2 PlatformerRoutePosition(
+            AssemblyContext context,
+            int index,
+            int platformCount
+        )
+        {
+            var stageWidth = Mathf.Max(30f, context.Blueprint.scene_width);
+            var spacing = (stageWidth - 9.5f) / Mathf.Max(1, platformCount - 1);
+            var routeLevels = new[] { -2.15f, -1.05f, 0.05f, -1.05f, -2.15f };
+            return new Vector2(
+                -stageWidth * 0.5f + 5f + spacing * index,
+                routeLevels[index % routeLevels.Length] + BlueprintNoise(context, index + 20, 0.04f)
+            );
+        }
+
+        private static float PlatformerLandingWidth(
+            AssemblyContext context,
+            int platformCount,
+            int index
+        )
+        {
+            var stageWidth = Mathf.Max(30f, context.Blueprint.scene_width);
+            var spacing = (stageWidth - 9.5f) / Mathf.Max(1, platformCount - 1);
+            var variation = BlueprintNoise(context, index, 0.16f);
+            return Mathf.Max(
+                PlatformerMinimumLandingWidth,
+                spacing - PlatformerMaximumHorizontalGap + variation
+            );
+        }
+
+        private static void ValidatePlatformerTraversal(Transform generatedRoot)
+        {
+            Physics2D.SyncTransforms();
+            var player = FindChildByName(generatedRoot, "Player");
+            var playerCollider = player == null ? null : player.GetComponent<BoxCollider2D>();
+            RequireObject(playerCollider, "Player BoxCollider2D");
+
+            foreach (var hazard in generatedRoot.GetComponentsInChildren<PrototypeHazard>(true))
+            {
+                var hazardCollider = hazard.GetComponent<Collider2D>();
+                if (
+                    hazardCollider != null
+                    && hazardCollider.bounds.Intersects(playerCollider.bounds)
+                )
+                {
+                    throw new InvalidOperationException(
+                        $"Platformer spawn overlaps hazard: {hazard.name}"
+                    );
+                }
+            }
+
+            foreach (var collider in generatedRoot.GetComponentsInChildren<Collider2D>(true))
+            {
+                if (
+                    collider == playerCollider
+                    || collider.isTrigger
+                    || !collider.bounds.Intersects(playerCollider.bounds)
+                )
+                {
+                    continue;
+                }
+
+                throw new InvalidOperationException(
+                    $"Platformer spawn overlaps solid collider: {collider.name}"
+                );
+            }
+
+            var platforms = new List<BoxCollider2D>();
+            foreach (var collider in generatedRoot.GetComponentsInChildren<BoxCollider2D>(true))
+            {
+                if (collider.name.StartsWith("Platform_", StringComparison.Ordinal))
+                {
+                    platforms.Add(collider);
+                }
+            }
+
+            platforms.Sort((left, right) => left.bounds.center.x.CompareTo(right.bounds.center.x));
+            if (platforms.Count < 2)
+            {
+                throw new InvalidOperationException(
+                    "Platformer route needs at least two platforms."
+                );
+            }
+
+            var minimumLandingWidth = playerCollider.bounds.size.x * 2.5f;
+            for (var index = 0; index < platforms.Count; index++)
+            {
+                var current = platforms[index].bounds;
+                if (current.size.x < minimumLandingWidth)
+                {
+                    throw new InvalidOperationException(
+                        $"Platform_{index + 1} is narrower than the player-safe landing width."
+                    );
+                }
+
+                if (index == 0)
+                {
+                    continue;
+                }
+
+                var previous = platforms[index - 1].bounds;
+                var horizontalGap = current.min.x - previous.max.x;
+                var stepUp = current.max.y - previous.max.y;
+                if (horizontalGap > PlatformerMaximumHorizontalGap)
+                {
+                    throw new InvalidOperationException(
+                        $"Platformer route gap {index} is too wide: {horizontalGap:F2}."
+                    );
+                }
+
+                if (stepUp > PlatformerMaximumStepUp)
+                {
+                    throw new InvalidOperationException(
+                        $"Platformer route step {index} is too high: {stepUp:F2}."
+                    );
+                }
+            }
+
+            Debug.Log(
+                $"UNITY_PLATFORMER_TRAVERSAL_OK:{platforms.Count}:"
+                    + $"{playerCollider.bounds.size.x:F2}x{playerCollider.bounds.size.y:F2}"
+            );
+        }
+
+        private static float BlueprintNoise(AssemblyContext context, int sample, float amplitude)
+        {
+            unchecked
+            {
+                uint hash = 2166136261;
+                foreach (var character in context.Blueprint.blueprint_id)
+                {
+                    hash = (hash ^ character) * 16777619;
+                }
+                hash = (hash ^ (uint)sample) * 16777619;
+                var normalized = (hash & 0xFFFF) / 65535f;
+                return (normalized * 2f - 1f) * amplitude;
+            }
         }
 
         private static void SetDialogueLine(
@@ -775,7 +1029,10 @@ namespace TeamIdle.GameTemplate.Editor
                 "Background",
                 context.Environment,
                 Vector2.zero,
-                new Vector2(30f, 20f),
+                new Vector2(
+                    Mathf.Max(30f, context.Blueprint.scene_width),
+                    Mathf.Max(20f, context.Blueprint.scene_height)
+                ),
                 color,
                 "background",
                 -100

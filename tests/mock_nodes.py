@@ -222,6 +222,8 @@ def mock_generate_image_node(
             {
                 "asset_id": asset_request["assets"][0]["asset_id"],
                 "name": "Mock Player",
+                "kind": "sprite",
+                "unity_binding_key": asset_request["assets"][0]["unity_binding_key"],
                 "artifact": image_reference,
                 "file_format": "svg",
                 "width": 64,
@@ -229,6 +231,7 @@ def mock_generate_image_node(
                 "prompt": f"{request['image_style']} player character",
             }
         ],
+        "missing_required_asset_ids": [],
         "notes": [],
     }
     return {
@@ -291,6 +294,14 @@ def mock_design_game_logic_node(
                 "required": True,
                 "suggested_filename": "player-image.png",
                 "unity_binding_key": "asset_registry:player-image",
+                "generation_spec": {
+                    "kind": "sprite",
+                    "width": 64,
+                    "height": 64,
+                    "transparent": True,
+                    "sprite_mode": "single",
+                    "pixels_per_unit": 32,
+                },
             }
         ],
     }
@@ -315,6 +326,16 @@ def mock_design_game_logic_node(
                 "required": True,
                 "suggested_filename": "theme-sound.wav",
                 "unity_binding_key": "asset_registry:theme-sound",
+                "generation_spec": {
+                    "kind": "bgm",
+                    "target_duration_seconds": 90.0,
+                    "loop": True,
+                    "channels": "stereo",
+                    "sample_rate_hz": 44100,
+                    "unity_load_type": "streaming",
+                    "mixer_group": "Music",
+                    "spatial_blend": 0.0,
+                },
             }
         ],
     }
@@ -385,12 +406,17 @@ def mock_generate_sound_node(
             {
                 "asset_id": asset_request["assets"][0]["asset_id"],
                 "name": "Mock Theme",
+                "kind": "bgm",
+                "unity_binding_key": asset_request["assets"][0]["unity_binding_key"],
                 "artifact": sound_reference,
                 "file_format": "wav",
                 "duration_seconds": 0.1,
+                "loop": True,
+                "mixer_group": "Music",
                 "prompt": f"Short theme for a {request['genre']} game",
             }
         ],
+        "missing_required_asset_ids": [],
         "notes": [],
     }
     return {

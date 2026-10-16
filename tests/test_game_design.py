@@ -43,6 +43,29 @@ class GameDesignTest(unittest.TestCase):
         self.assertGreaterEqual(counts["checkpoint"], 2)
         self.assertIn("stage_result", plan["ui_screens"])
 
+    def test_blueprint_is_deterministic_but_changes_with_user_intent(self) -> None:
+        spec = normalize_game_spec("플랫포머")
+        first = build_game_logic_design(
+            spec,
+            design_intent="달빛 아래 고성에서 벽을 타고 보물을 찾는다.",
+        )
+        repeated = build_game_logic_design(
+            spec,
+            design_intent="달빛 아래 고성에서 벽을 타고 보물을 찾는다.",
+        )
+        second = build_game_logic_design(
+            spec,
+            design_intent="용암 동굴을 공중 대시로 탈출한다.",
+        )
+
+        self.assertEqual(first["game_blueprint"], repeated["game_blueprint"])
+        self.assertNotEqual(
+            first["game_blueprint"]["blueprint_id"],
+            second["game_blueprint"]["blueprint_id"],
+        )
+        self.assertGreaterEqual(len(first["game_blueprint"]["entities"]), 5)
+        self.assertGreaterEqual(len(first["game_blueprint"]["content"]), 4)
+
     def test_legacy_action_maps_to_survivor_profile(self) -> None:
         spec = normalize_game_spec("Action")
         self.assertEqual(spec["genre"], "SurvivorLike")

@@ -13,7 +13,7 @@ from game_pipeline import (
     build_game_logic_design,
     normalize_game_spec,
 )
-from mainflow.contracts import ArtifactReference, CONTRACT_VERSION
+from mainflow.contracts import CONTRACT_VERSION, ArtifactReference
 
 
 class UnityProjectGeneratorTest(unittest.TestCase):
@@ -37,6 +37,7 @@ class UnityProjectGeneratorTest(unittest.TestCase):
         self.assertTrue(result.entry_scene.is_file())
         self.assertTrue(result.manifest_path.is_file())
         self.assertTrue(result.build_request_path.is_file())
+        self.assertTrue(result.game_blueprint_path.is_file())
         self.assertTrue(result.image_asset_request_path.is_file())
         self.assertTrue(result.sound_asset_request_path.is_file())
         implementation_plan_path = (
@@ -59,6 +60,14 @@ class UnityProjectGeneratorTest(unittest.TestCase):
             manifest["implementation_plan"],
             "Assets/GameTemplate/Generated/GameImplementationPlan.json",
         )
+        self.assertEqual(
+            manifest["game_blueprint"],
+            "Assets/GameTemplate/Generated/GameBlueprint.json",
+        )
+        self.assertEqual(
+            json.loads(result.game_blueprint_path.read_text(encoding="utf-8")),
+            design["game_blueprint"],
+        )
         implementation_plan = json.loads(implementation_plan_path.read_text(encoding="utf-8"))
         self.assertEqual(implementation_plan, design["implementation_plan"])
         image_request = json.loads(result.image_asset_request_path.read_text(encoding="utf-8"))
@@ -79,6 +88,57 @@ class UnityProjectGeneratorTest(unittest.TestCase):
                 for item in image_request["assets"]
             )
         )
+        platformer_design = build_game_logic_design(normalize_game_spec("플랫포머"))
+        platformer_image_request = generator.build_asset_request(
+            platformer_design,
+            "image",
+            image_style="Pixel Art",
+            mood_style="Fantasy",
+            viewpoint="사이드뷰",
+            reference_image=None,
+        )
+        platformer_sound_request = generator.build_asset_request(
+            platformer_design,
+            "sound",
+            image_style="Pixel Art",
+            mood_style="Fantasy",
+            viewpoint="사이드뷰",
+            reference_image=None,
+        )
+        tileset = next(
+            item
+            for item in platformer_image_request["assets"]
+            if item["asset_id"] == "platformer_tileset"
+        )
+        self.assertEqual(
+            tileset["generation_spec"],
+            {
+                "kind": "tileset",
+                "width": 128,
+                "height": 128,
+                "transparent": False,
+                "sprite_mode": "multiple",
+                "pixels_per_unit": 32,
+                "tile_width": 32,
+                "tile_height": 32,
+                "columns": 4,
+                "rows": 4,
+            },
+        )
+        bgm = next(
+            item
+            for item in platformer_sound_request["assets"]
+            if item["asset_id"] == "platformer_bgm"
+        )
+        self.assertEqual(bgm["generation_spec"]["target_duration_seconds"], 90.0)
+        self.assertTrue(bgm["generation_spec"]["loop"])
+        self.assertEqual(bgm["generation_spec"]["unity_load_type"], "streaming")
+        jump = next(
+            item for item in platformer_sound_request["assets"] if item["asset_id"] == "jump_sfx"
+        )
+        self.assertEqual(jump["generation_spec"]["target_duration_seconds"], 1.0)
+        self.assertFalse(jump["generation_spec"]["loop"])
+        self.assertEqual(jump["generation_spec"]["mixer_group"], "SFX")
 
     def test_archive_is_deterministic_and_contains_unity_project(self) -> None:
         design = build_game_logic_design(normalize_game_spec("카드"))
@@ -99,6 +159,10 @@ class UnityProjectGeneratorTest(unittest.TestCase):
         )
         self.assertIn(
             "UnityProject/Assets/GameTemplate/Generated/GameImplementationPlan.json",
+            names,
+        )
+        self.assertIn(
+            "UnityProject/Assets/GameTemplate/Generated/GameBlueprint.json",
             names,
         )
         self.assertIn(

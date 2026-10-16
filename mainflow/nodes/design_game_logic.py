@@ -10,6 +10,7 @@ from game_pipeline import (
     UnityProjectGenerator,
     attach_generated_modules,
     build_game_logic_design,
+    create_blueprint_planner_from_environment,
     create_feature_generator_from_environment,
     normalize_game_spec,
     plan_feature_mechanics,
@@ -57,7 +58,7 @@ def design_game_logic_node(
             "mechanics": feature_plan.mechanics,
         },
     )
-    design = build_game_logic_design(game_spec)
+    design = build_game_logic_design(game_spec, design_intent=request["condition"])
     unity_generator = UnityProjectGenerator()
     image_request = unity_generator.build_asset_request(
         design,
@@ -101,7 +102,24 @@ def design_game_logic_node(
     ]
     request_references = [image_request_reference, sound_request_reference]
     feature_provider = os.environ.get("MAINFLOW_FEATURE_PROVIDER", "local").strip().lower()
+    blueprint_reference = None
     try:
+        blueprint_provider = (
+            os.environ.get("MAINFLOW_BLUEPRINT_PROVIDER", "deterministic").strip().lower()
+        )
+        try:
+            blueprint_planner = create_blueprint_planner_from_environment()
+            if blueprint_planner is not None:
+                log(f"요청별 씬 Blueprint를 {blueprint_provider} 모델로 보강합니다.")
+                design = {
+                    **design,
+                    "game_blueprint": blueprint_planner.generate(
+                        game_spec,
+                        request["condition"],
+                    ),
+                }
+        except Exception as error:  # noqa: BLE001 - optional quality enhancement
+            log(f"LLM Blueprint 검증에 실패해 안전한 기본 Blueprint를 사용합니다: {error}")
         if design["unsupported_mechanics"]:
             log(f"기존 모듈에 없는 기능을 {feature_provider} 모델로 생성합니다.")
             feature_generator = create_feature_generator_from_environment()
@@ -116,6 +134,13 @@ def design_game_logic_node(
             "game",
             "game_logic_design.json",
             design,
+            producer="design_game_logic",
+        )
+        blueprint_reference = manager.write_json(
+            state["project_id"],
+            "game",
+            "game_blueprint.json",
+            design["game_blueprint"],
             producer="design_game_logic",
         )
         workspace_project_root = manager.ensure_project(state["project_id"])
@@ -155,7 +180,7 @@ def design_game_logic_node(
             design_reference = manager.write_json(
                 state["project_id"],
                 "game",
-                "game_logic_design.json",
+                "repaired_game_logic_design.json",
                 design,
                 producer="design_game_logic",
             )
@@ -185,6 +210,7 @@ def design_game_logic_node(
                 f"{feature_provider} 생성 모듈: "
                 + ", ".join(module["module_id"] for module in design["generated_modules"])
             )
+        notes.append(f"씬 Blueprint 제공자: {design['game_blueprint']['source']}")
         draft: GameLogicDraft = {
             "contract_version": CONTRACT_VERSION,
             "draft_id": f"{game_spec['genre'].lower()}-game-logic-draft",
@@ -197,6 +223,7 @@ def design_game_logic_node(
                 design_reference,
                 manifest_reference,
                 archive_reference,
+                blueprint_reference,
                 *request_references,
             ],
             "required_image_asset_ids": image_asset_ids,
@@ -214,6 +241,14 @@ def design_game_logic_node(
             design,
             producer="design_game_logic",
         )
+        if blueprint_reference is None:
+            blueprint_reference = manager.write_json(
+                state["project_id"],
+                "game",
+                "failed_game_blueprint.json",
+                design["game_blueprint"],
+                producer="design_game_logic",
+            )
         failure_reference = manager.write_json(
             state["project_id"],
             "validation",
@@ -236,6 +271,7 @@ def design_game_logic_node(
             "source_artifacts": [
                 design_reference,
                 failure_reference,
+                blueprint_reference,
                 *request_references,
             ],
             "required_image_asset_ids": image_asset_ids,
