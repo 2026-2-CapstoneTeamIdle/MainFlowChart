@@ -36,7 +36,7 @@ services:
     image: main-flow-chart:local
     environment:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-sk_ce2489c6317740f337752ca60c92712190d80dcaea66ddab}
       SOUND_PROVIDER: ${SOUND_PROVIDER:-auto}
       SOUND_FALLBACK: ${SOUND_FALLBACK:-procedural}
       SOUND_BGM_SECONDS: ${SOUND_BGM_SECONDS:-30}
