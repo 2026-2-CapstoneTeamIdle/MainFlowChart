@@ -7,8 +7,7 @@ dependencies = [
     "google-genai>=1.0.0,<2.0.0",
     "langgraph>=1.0.0,<2.0.0",
     "mcp>=2.3.0,<3.0.0",
-    "openai>=3.31.0",
-    "pillow>=12.3.0",
+    "numpy>=2.0,<3",
 ]
 
 [dependency-groups]

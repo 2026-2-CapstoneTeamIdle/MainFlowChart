@@ -98,7 +98,13 @@ NODE_IO: dict[str, tuple[set[str], set[str]]] = {
         {"image_validation_result"},
     ),
     "validate_sound": (
-        {"project_id", "parsed_request", "sound_draft", "asset_validation_spec"},
+        {
+            "project_id",
+            "parsed_request",
+            "sound_asset_request",
+            "sound_draft",
+            "asset_validation_spec",
+        },
         {"sound_validation_result"},
     ),
     "apply_assets_to_game": (
