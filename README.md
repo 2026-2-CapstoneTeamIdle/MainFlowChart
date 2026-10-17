@@ -155,6 +155,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/render_workflow_png.ps
 - [파일 교환 규약](docs/FileSystem.md)
 - [Docker 실행](docs/DockerManager.md)
 - [MCP 서버와 LLM 도구 연결](docs/MCPManager.md)
+- [게임 파이프라인 개발 인계와 로드맵](docs/GamePipelineHandoff.md)
 - [Local Web 실행](CI/CD/LocalWeb/LocalWebManager.md)
 - [테스트 결과](tests/TestResult.md)
 - [Workflow 이미지](docs/assets/langgraph_flow.png)
