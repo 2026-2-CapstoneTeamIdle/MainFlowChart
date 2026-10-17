@@ -53,7 +53,7 @@ request_ref = manager.write_json(
     "data",
     "parsed_request.json",
     {
-        "contract_version": "3.3.0",
+        "contract_version": "3.4.0",
         "genre": "플랫포머",
         "viewpoint": "사이드뷰",
         "mood_style": "Fantasy",
@@ -71,7 +71,7 @@ parsed_request = manager.read_json(request_ref)
 
 ```json
 {
-  "contract_version": "3.3.0",
+  "contract_version": "3.4.0",
   "artifact_id": "image-<uuid>",
   "project_id": "20260926_03",
   "category": "image",
@@ -105,7 +105,14 @@ workspace/{project_id}/data/logic_analysis.json
 workspace/{project_id}/game/asset_requests/image_asset_request.json
 workspace/{project_id}/game/asset_requests/sound_asset_request.json
 workspace/{project_id}/game/game_blueprint.json
+workspace/{project_id}/game/implementation_tasks.json
+workspace/{project_id}/game/game_quality_report.json
+workspace/{project_id}/validation/development/*.json
 ```
+
+`implementation_tasks.json`은 게임 구현의 작업 DAG와 최종 시도 횟수·상태·증거를 담는다.
+`validation/development/`의 번호가 붙은 스냅샷은 각 작업의 실행·재시도·성공 또는 실패 직후
+상태를 보존한다. 따라서 긴 생성 과정이 중단돼도 어느 단계에서 왜 멈췄는지 확인할 수 있다.
 
 에셋 요청 JSON은 생성된 Unity 프로젝트의
 `Assets/GameTemplate/Generated/AssetRequests/`에도 같은 내용으로 포함된다. 이미지·사운드 Flow는

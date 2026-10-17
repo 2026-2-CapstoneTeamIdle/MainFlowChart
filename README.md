@@ -43,7 +43,7 @@ MainFlowChart/
 └─ uv.lock
 ```
 
-## 입력 계약 3.3.0
+## 입력 계약 3.4.0
 
 - 이미지 스타일: `Pixel Art`, `Anime`, `Cartoon`, `Realistic`, `Low Poly`, `Custom`
 - 분위기 스타일: `Cyberpunk`, `Medieval`, `Modern`, `Fantasy`, `Horror`, `Cozy`
@@ -57,6 +57,34 @@ MainFlowChart/
 $env:MAINFLOW_BLUEPRINT_PROVIDER="local"
 uv run --locked python -m mainflow.run_flow ...
 ```
+
+### design_game_logic v2 단계별 설계
+
+계약 3.4.0은 하나의 큰 Blueprint 요청 대신 다음 7개 문서를 각각 생성한다.
+
+`game_design.json → system_design.json → content_plan.json → level_plan.json →`
+`balance_plan.json → presentation_plan.json → validation_plan.json`
+
+기본값은 테스트 가능한 결정론적 설계이며, LocalAI를 켜면 각 문서를 작은 JSON 호출로 순서대로
+보강한다. 형식이 깨지거나 플랫포머 경로가 이동 한계를 벗어난 단계만 안전한 기본 설계로 되돌린다.
+
+```powershell
+$env:MAINFLOW_DESIGN_V2_PROVIDER="local"
+$env:LOCAL_LLM_BASE_URL="http://127.0.0.1:8080/v1"
+$env:LOCAL_LLM_MODEL="qwen2.5-coder-7b-q5-k-m"
+```
+
+현재 vertical slice 품질 기준은 플랫포머에 우선 적용된다. `level_plan.json`은 튜토리얼·도전·응용
+구역과 발판, 적, 함정, 수집물, 체크포인트, 목표를 명시하며 Unity SceneAssembler가 이 좌표를
+직접 읽어 씬을 구성한다.
+
+설계 이후에는 `implementation_tasks.json`의 의존성 DAG를 실행한다. 설계 검토, 기존 모듈 선택,
+미지원 기능별 코드 생성, Unity 프로젝트 생성, Play Mode 검증, 패키징을 각각 독립 작업으로
+관리하며 작업마다 시도 횟수·상태·오류·통과 증거를 기록한다. 미지원 기능은 한 번의 큰 LLM
+호출로 묶지 않고 기능별로 생성하고, 최대 시도 횟수와 전체 30분 시간 예산을 적용한다. 실행 중간
+상태는 `workspace/{project_id}/validation/development/`에 남기므로 실패 위치와 재시도 이력을
+확인할 수 있다.
+
 - 장르: `플랫포머`, `타워 디펜스`, `카드`, `비주얼 노벨`, `육성 시뮬레이션`, `뱀서류`
 - 시점: `사이드뷰`, `탑다운`, `쿼터뷰`, `고정 화면`
 - 조건: 비어 있지 않은 한 문장

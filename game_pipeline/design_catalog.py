@@ -10,6 +10,10 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any, cast
 
+from game_pipeline.design_v2 import build_design_v2, validate_design_v2
+from game_pipeline.game_blueprint import build_game_blueprint
+from game_pipeline.implementation_planner import build_implementation_plan
+from game_pipeline.implementation_task_planner import build_implementation_tasks
 from mainflow.contracts import (
     CONTRACT_VERSION,
     AssetRequirement,
@@ -20,8 +24,6 @@ from mainflow.contracts import (
     GenreProfile,
     Viewpoint,
 )
-from game_pipeline.implementation_planner import build_implementation_plan
-from game_pipeline.game_blueprint import build_game_blueprint
 
 COMMON_MODULES = [
     "game_bootstrap",
@@ -462,15 +464,29 @@ def build_game_logic_design(game_spec: GameSpec, *, design_intent: str = "") -> 
     unsupported = [
         mechanic for mechanic in game_spec["mechanics"] if mechanic not in MECHANIC_TO_MODULE
     ]
-    return {
-        "contract_version": CONTRACT_VERSION,
-        "design_id": f"{game_spec['genre'].lower()}-game-design",
-        "game_spec": game_spec,
-        "common_modules": list(COMMON_MODULES),
-        "genre_modules": genre_modules,
-        "selected_modules": _unique_strings(COMMON_MODULES + genre_modules),
-        "unsupported_mechanics": unsupported,
-        "generated_modules": [],
-        "implementation_plan": build_implementation_plan(game_spec, unsupported),
-        "game_blueprint": build_game_blueprint(game_spec, design_intent),
-    }
+    design_v2 = build_design_v2(game_spec, design_intent)
+    validate_design_v2(design_v2)
+    design = cast(
+        GameLogicDesign,
+        {
+            "contract_version": CONTRACT_VERSION,
+            "design_id": f"{game_spec['genre'].lower()}-game-design",
+            "game_spec": game_spec,
+            "common_modules": list(COMMON_MODULES),
+            "genre_modules": genre_modules,
+            "selected_modules": _unique_strings(COMMON_MODULES + genre_modules),
+            "unsupported_mechanics": unsupported,
+            "generated_modules": [],
+            "implementation_plan": build_implementation_plan(game_spec, unsupported),
+            "implementation_tasks": {
+                "plan_version": "1.0.0",
+                "genre": game_spec["genre"],
+                "time_budget_seconds": 1_800,
+                "tasks": [],
+            },
+            "game_blueprint": build_game_blueprint(game_spec, design_intent),
+            "design_v2": design_v2,
+        },
+    )
+    design["implementation_tasks"] = build_implementation_tasks(design)
+    return design

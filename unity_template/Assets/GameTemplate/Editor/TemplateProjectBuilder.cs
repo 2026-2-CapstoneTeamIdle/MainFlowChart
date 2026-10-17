@@ -73,7 +73,7 @@ namespace TeamIdle.GameTemplate.Editor
                     ? config.SelectedModules
                     : new[] { "game_bootstrap", "validation_probe" };
             config.Configure(
-                "3.3.0",
+                "3.4.0",
                 config.GameTitle,
                 config.Genre,
                 config.Viewpoint,

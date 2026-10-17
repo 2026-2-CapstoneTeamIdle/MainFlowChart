@@ -1,7 +1,7 @@
 # Agent 데이터 계약 규칙
 
 이 문서는 Agent 사이에서 교환하는 State와 파일 payload 규격을 정의한다. 기계 판독 기준은
-`mainflow/contracts.py`이며, 현재 계약 버전은 **3.3.0**이다.
+`mainflow/contracts.py`이며, 현재 계약 버전은 **3.4.0**이다.
 
 ## 공통 원칙
 
@@ -9,7 +9,7 @@
 2. 실제 파일 내용이나 임의 경로 대신 `ArtifactReference`를 State로 전달한다.
 3. 파일은 반드시 `ArtifactManager`로 저장하고 읽는다.
 4. payload와 `ArtifactReference`에는 `contract_version`을 기록한다.
-5. 계약 `3.3.0`은 입력별 게임 구조를 `GameBlueprint`로 분리해 Unity Scene 조립에 전달한다.
+5. 계약 `3.4.0`은 게임 설계를 7개 v2 문서로 분리하고 `level_plan`을 Unity Scene 조립에 전달한다.
 6. `condition`은 비어 있지 않은 한 문장으로 보관하며, Analysis가 기능 요구사항으로 변환한다.
 7. `image_style`이 `Custom`이면 PNG/JPG 파일을 함께 제공해야 한다.
 
@@ -108,6 +108,44 @@ Unity 조립기에 전달한다. Blueprint에는 장면 크기·배경 색, 콘�
 필수 콘텐츠·엔티티 검증을 통과해야 하며, 실패·시간 초과 시에는 전체 파이프라인을 중단하지 않고
 기본 Blueprint를 유지한다. 모델은 C# 코드, 파일 경로, Unity 패키지를 생성할 수 없다.
 
+### `DesignV2Bundle`
+
+`design_game_logic`은 작은 모델이 한 번에 전체 게임을 생성하지 않도록 설계를 다음 문서로
+분리한다.
+
+- `game_design`: 핵심 경험, 목표 시간, 차별점, 초·중·후반 경험, 승패 조건
+- `system_design`: 플레이어·적 상태, 공식, 자원, 진행, 저장 데이터, 이벤트 연결
+- `content_plan`: 적·장애물·보상·스테이지·최종 목표 데이터
+- `level_plan`: 구역, 도전, 보상, 체크포인트와 실제 씬 배치 좌표
+- `balance_plan`: 초기 능력치, 허용 범위, 공식, 난이도 곡선
+- `presentation_plan`: UI 상태, 피드백, 카메라, 파티클, 애니메이션, 에셋 ID
+- `validation_plan`: 시작부터 클리어까지의 시나리오와 진행 불가·배치·바인딩 검사
+
+플랫포머 `level_plan`은 최소 3개 구역을 가져야 하며 발판 폭·수평 간격·상승 높이가 계획에
+기록된 이동 한계를 벗어나면 LLM 결과를 사용하지 않는다. Unity의 `PrefabSceneAssembler`는
+고정 발판 패턴이 아니라 이 문서를 읽어 구역 계층과 콘텐츠를 생성한다.
+
+### `ImplementationTaskPlan`
+
+설계가 끝나면 `design_game_logic`은 구현을 의존성 있는 작업 목록으로 변환한다. 기본 작업은
+설계 검토, 기존 모듈 선택·바인딩, 콘텐츠 구성, 구역별 조립, UI·연출 바인딩, Unity 프로젝트
+생성, Unity 검증, 객관적 품질 평가, 패키징이며, 미지원 기능마다 별도의 코드 생성 작업이 추가된다.
+각 작업은 `max_attempts`, `attempts`, `status`, `evidence`,
+`last_error`를 가져야 한다. 선행 작업이 통과하기 전에는 후속 작업을 실행하지 않고, 작업별 재시도
+한도와 전체 시간 예산을 넘기면 실패한다. 최종 상태는 `game/implementation_tasks.json`과 생성된
+Unity 프로젝트의 `Assets/GameTemplate/Generated/ImplementationTasks.json`에 함께 기록한다.
+
+Unity 검증 실패는 `code`, `scene`, `level_plan`, `balance_plan`, `content_plan`, `binding`,
+`test`, `infrastructure`로 분류한다. 코드·바인딩 실패만 생성 모델에 피드백하고, 경로 폭·간격,
+능력치 범위, 콘텐츠 개수 같은 결정적 오류는 해당 설계 JSON을 보정한 뒤 프로젝트를 다시 만든다.
+동일 실패 signature가 반복되거나 전체 재시도·시간 예산을 넘으면 루프를 중단한다.
+
+Play Mode 검증은 `UNITY_PLAYTEST_METRICS` JSON 로그로 완료 여부, 경과 시간, 사망·정체 시간,
+최종 도달 구역, 실패 전환, 미사용 요청 기능, 통과 시나리오를 남긴다. 이를 기능 연결, 시나리오,
+구역 구조, 콘텐츠 밀도·다양성, UI 피드백, 난이도 상승, 요청 기능 사용의 100점 척도로 평가한다.
+결과는 `game/game_quality_report.json`과 생성 프로젝트의
+`Assets/GameTemplate/Generated/Validation/GameQualityReport.json`에 저장한다.
+
 ## Node별 Input/Output
 
 | Node | 입력 State | 출력 State | 출력 파일 |
@@ -116,7 +154,7 @@ Unity 조립기에 전달한다. Blueprint에는 장면 크기·배경 색, 콘�
 | `parse_input` | 사용자 입력 | `project_id`, `parsed_request` | `data/parsed_request.json`, 조건부 Custom 이미지 |
 | `analysis` | `project_id`, `parsed_request` | `analysis` | `data/analysis.json` |
 | `logic_analysis` | `project_id`, `parsed_request`, `analysis` | `logic_analysis` | `data/logic_analysis.json` |
-| `design_game_logic` | 위 세 참조와 `project_id` | 게임 draft, 이미지·사운드 요청 참조 | 설계 JSON, `game/asset_requests/*.json`, Unity 프로젝트, ZIP |
+| `design_game_logic` | 위 세 참조와 `project_id` | 게임 draft, 이미지·사운드 요청 참조 | 7개 v2 설계 JSON, `game/implementation_tasks.json`, 단계별 실행 증거, `game/asset_requests/*.json`, Unity 프로젝트, ZIP |
 | `generate_image` | 분석 참조와 `image_asset_request` | `image_draft` | `generated/images/image_draft.json` |
 | `generate_sound` | 분석 참조와 `sound_asset_request` | `sound_draft` | `generated/sounds/sound_draft.json` |
 | `validate_game` | `parsed_request`, `logic_analysis`, 게임 draft | `game_validation_result` | validation 결과 |

@@ -20,7 +20,7 @@
   ],
   "properties": {
     "contract_version": {
-      "const": "3.3.0"
+      "const": "3.4.0"
     },
     "request_id": {
       "type": "string",
@@ -120,7 +120,7 @@
       ],
       "properties": {
         "contract_version": {
-          "const": "3.3.0"
+          "const": "3.4.0"
         },
         "artifact_id": {
           "type": "string",
