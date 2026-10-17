@@ -180,6 +180,8 @@ class ElevenLabsSoundProvider:
             ) from error
         except urllib.error.URLError as error:
             raise SoundProviderError(f"Cannot reach ElevenLabs: {error.reason}") from error
+        except OSError as error:  # TimeoutError/socket.timeout, connection reset during read
+            raise SoundProviderError(f"ElevenLabs connection failed: {error!r}") from error
 
     def _result(
         self, payload: bytes, model: str, request_id: str | None, endpoint: str

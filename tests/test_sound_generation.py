@@ -308,6 +308,15 @@ class GenerateSoundNodeTest(unittest.TestCase):
             any("procedural 대체" in note and "HTTP 401" in note for note in draft["notes"])
         )
 
+    def test_network_timeout_falls_back_to_procedural(self):
+        os.environ["ELEVENLABS_API_KEY"] = "k"
+        with mock.patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+            draft = self.manager.read_json(generate_sound_node(self.state)["sound_draft"])
+        self.assertEqual(draft["status"], "generated")
+        self.assertTrue(
+            any("procedural 대체" in note and "TimeoutError" in note for note in draft["notes"])
+        )
+
     def test_api_failure_without_fallback_marks_draft_failed(self):
         os.environ["ELEVENLABS_API_KEY"] = "k"
         os.environ["SOUND_FALLBACK"] = "none"
