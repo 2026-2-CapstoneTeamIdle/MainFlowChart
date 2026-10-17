@@ -1,4 +1,4 @@
-"""Shared contract-3.3.0 payloads for the image node tests."""
+"""Shared contract-3.4.0 payloads for the image node tests."""
 
 from __future__ import annotations
 

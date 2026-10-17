@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import Literal, NotRequired, TypedDict
 
-ContractVersion = Literal["3.3.0"]
-CONTRACT_VERSION: ContractVersion = "3.3.0"
+ContractVersion = Literal["3.4.0"]
+CONTRACT_VERSION: ContractVersion = "3.4.0"
 
 ImageStyle = Literal["Pixel Art", "Anime", "Cartoon", "Realistic", "Low Poly", "Custom"]
 MoodStyle = Literal["Cyberpunk", "Medieval", "Modern", "Fantasy", "Horror", "Cozy"]
@@ -213,6 +213,230 @@ class GameBlueprint(TypedDict):
     ui_labels: list[str]
 
 
+class ExperienceCurve(TypedDict):
+    opening: str
+    midgame: str
+    endgame: str
+
+
+class GameDirectorDesign(TypedDict):
+    design_version: Literal["2.0.0"]
+    title: str
+    player_experience: str
+    target_play_minutes: int
+    differentiators: list[str]
+    experience_curve: ExperienceCurve
+    win_conditions: list[str]
+    lose_conditions: list[str]
+
+
+class StatTuning(TypedDict):
+    stat_id: str
+    initial: float
+    minimum: float
+    maximum: float
+    unit: str
+
+
+class EventConnection(TypedDict):
+    event_id: str
+    producer: str
+    consumers: list[str]
+    payload: list[str]
+
+
+class SystemDesign(TypedDict):
+    design_version: Literal["2.0.0"]
+    player_states: list[str]
+    player_abilities: list[str]
+    enemy_states: list[str]
+    combat_formulas: list[str]
+    resources: list[str]
+    progression: list[str]
+    save_data: list[str]
+    event_connections: list[EventConnection]
+    stats: list[StatTuning]
+
+
+class ContentDefinition(TypedDict):
+    content_id: str
+    role: str
+    count: int
+    stats: list[ContentStat]
+    behaviors: list[str]
+
+
+class ContentStat(TypedDict):
+    stat_id: str
+    value: float
+
+
+class ContentPlan(TypedDict):
+    plan_version: Literal["2.0.0"]
+    enemies: list[ContentDefinition]
+    obstacles: list[ContentDefinition]
+    rewards: list[ContentDefinition]
+    stages: list[str]
+    final_goal: str
+
+
+class LevelPlatform(TypedDict):
+    platform_id: str
+    role: Literal["ground", "landing", "moving", "wall", "goal"]
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+class LevelPlacement(TypedDict):
+    placement_id: str
+    archetype: str
+    x: float
+    y: float
+
+
+class LevelZone(TypedDict):
+    zone_id: str
+    title: str
+    purpose: Literal["tutorial", "challenge", "mastery"]
+    challenge: str
+    reward: str
+    difficulty: int
+    required_mechanics: list[str]
+    start_x: float
+    end_x: float
+    checkpoint: LevelPlacement | None
+    platforms: list[LevelPlatform]
+    hazards: list[LevelPlacement]
+    enemies: list[LevelPlacement]
+    collectibles: list[LevelPlacement]
+
+
+class LevelPlan(TypedDict):
+    plan_version: Literal["2.0.0"]
+    genre: GenreProfile
+    player_spawn: LevelPlacement
+    goal: LevelPlacement
+    zones: list[LevelZone]
+    safe_start_seconds: float
+    camera_orthographic_size: float
+    max_horizontal_gap: float
+    max_step_up: float
+    minimum_landing_width: float
+
+
+class BalancePlan(TypedDict):
+    plan_version: Literal["2.0.0"]
+    stats: list[StatTuning]
+    formulas: list[str]
+    difficulty_curve: list[str]
+    reward_costs: list[str]
+
+
+class PresentationCue(TypedDict):
+    cue_id: str
+    trigger: str
+    visual_feedback: str
+    audio_asset_id: str
+
+
+class PresentationPlan(TypedDict):
+    plan_version: Literal["2.0.0"]
+    ui_screens: list[str]
+    state_transitions: list[str]
+    feedback_cues: list[PresentationCue]
+    camera_effects: list[str]
+    particle_requests: list[str]
+    animation_requests: list[str]
+    required_image_asset_ids: list[str]
+    required_sound_asset_ids: list[str]
+
+
+class ValidationRule(TypedDict):
+    rule_id: str
+    description: str
+    required: bool
+
+
+class ValidationPlan(TypedDict):
+    plan_version: Literal["2.0.0"]
+    scenarios: list[PlaytestScenario]
+    rules: list[ValidationRule]
+    required_scene_objects: list[str]
+    required_feature_bindings: list[str]
+
+
+class ImplementationTask(TypedDict):
+    task_id: str
+    category: Literal[
+        "design_review",
+        "module_reuse",
+        "code_generation",
+        "content_configuration",
+        "level_assembly",
+        "ui_binding",
+        "project_generation",
+        "unity_validation",
+        "quality_evaluation",
+        "packaging",
+    ]
+    description: str
+    dependencies: list[str]
+    acceptance_criteria: list[str]
+    max_attempts: int
+    attempts: int
+    status: Literal["pending", "running", "passed", "failed"]
+    evidence: list[str]
+    last_error: str | None
+
+
+class ImplementationTaskPlan(TypedDict):
+    plan_version: Literal["1.0.0"]
+    genre: GenreProfile
+    time_budget_seconds: int
+    tasks: list[ImplementationTask]
+
+
+class DesignV2Bundle(TypedDict):
+    game_design: GameDirectorDesign
+    system_design: SystemDesign
+    content_plan: ContentPlan
+    level_plan: LevelPlan
+    balance_plan: BalancePlan
+    presentation_plan: PresentationPlan
+    validation_plan: ValidationPlan
+
+
+class PlaytestMetrics(TypedDict):
+    completed: bool
+    elapsed_seconds: float
+    deaths: int
+    stuck_seconds: float
+    last_reached_zone: str
+    failed_transition: str
+    unused_requested_features: list[str]
+    passed_scenarios: list[str]
+
+
+class QualityMetric(TypedDict):
+    metric_id: str
+    score: float
+    maximum: float
+    passed: bool
+    evidence: str
+
+
+class GameQualityReport(TypedDict):
+    report_version: Literal["1.0.0"]
+    score: float
+    threshold: float
+    passed: bool
+    metrics: list[QualityMetric]
+    problems: list[str]
+    telemetry: PlaytestMetrics
+
+
 class GameLogicDesign(TypedDict):
     contract_version: ContractVersion
     design_id: str
@@ -223,7 +447,10 @@ class GameLogicDesign(TypedDict):
     unsupported_mechanics: list[str]
     generated_modules: list[GeneratedGameModule]
     implementation_plan: GameImplementationPlan
+    implementation_tasks: ImplementationTaskPlan
     game_blueprint: GameBlueprint
+    design_v2: DesignV2Bundle
+    quality_report: NotRequired[GameQualityReport]
 
 
 class ParsedRequest(TypedDict):

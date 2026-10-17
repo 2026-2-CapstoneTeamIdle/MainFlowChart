@@ -43,6 +43,39 @@ class GameDesignTest(unittest.TestCase):
         self.assertGreaterEqual(counts["checkpoint"], 2)
         self.assertIn("stage_result", plan["ui_screens"])
 
+        design_v2 = design["design_v2"]
+        self.assertEqual(
+            set(design_v2),
+            {
+                "game_design",
+                "system_design",
+                "content_plan",
+                "level_plan",
+                "balance_plan",
+                "presentation_plan",
+                "validation_plan",
+            },
+        )
+        level = design_v2["level_plan"]
+        self.assertEqual(
+            [zone["purpose"] for zone in level["zones"]],
+            ["tutorial", "challenge", "mastery"],
+        )
+        self.assertGreaterEqual(
+            sum(len(zone["platforms"]) for zone in level["zones"]),
+            10,
+        )
+        self.assertGreaterEqual(
+            len(design_v2["validation_plan"]["scenarios"]),
+            3,
+        )
+        content = design_v2["content_plan"]
+        self.assertGreaterEqual(len(content["enemies"]), 3)
+        self.assertGreaterEqual(len(content["obstacles"]), 3)
+        self.assertGreaterEqual(len(content["rewards"]), 2)
+        balance_ids = {stat["stat_id"] for stat in design_v2["balance_plan"]["stats"]}
+        self.assertTrue({"player_health", "move_speed", "jump_height"}.issubset(balance_ids))
+
     def test_blueprint_is_deterministic_but_changes_with_user_intent(self) -> None:
         spec = normalize_game_spec("플랫포머")
         first = build_game_logic_design(

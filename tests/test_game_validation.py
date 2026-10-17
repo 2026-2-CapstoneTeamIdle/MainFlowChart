@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import subprocess
 import tempfile
@@ -107,7 +107,13 @@ class UnityProjectValidatorTest(unittest.TestCase):
         def run_unity(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
             log_path = Path(command[command.index("-logFile") + 1])
             log_path.write_text(
-                "\n".join((*UnityProjectValidator.SUCCESS_MARKERS, "UNITY_RUNTIME_SMOKE_OK:")),
+                "\n".join(
+                    (
+                        *UnityProjectValidator.SUCCESS_MARKERS,
+                        "UNITY_RUNTIME_SMOKE_OK:",
+                        "UNITY_VALIDATION_PLAN_OK:3",
+                    )
+                ),
                 encoding="utf-8",
             )
             return subprocess.CompletedProcess(command, 0, "", "")

@@ -15,6 +15,7 @@ namespace TeamIdle.GameTemplate.Common
         public static bool TestInputEnabled;
         public static Vector2 TestMovement;
         public static bool TestDashPressed;
+        public static bool TestConfirmPressed;
 #endif
 
         public Vector2 Movement =>
@@ -26,7 +27,12 @@ namespace TeamIdle.GameTemplate.Common
                 new(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical"));
 
         public bool ConfirmPressed =>
-            Input.GetButtonDown("Submit") || Input.GetKeyDown(KeyCode.Space);
+#if UNITY_EDITOR
+            TestInputEnabled
+                ? TestConfirmPressed
+                :
+#endif
+                Input.GetButtonDown("Submit") || Input.GetKeyDown(KeyCode.Space);
 
         public bool CancelPressed =>
             Input.GetButtonDown("Cancel") || Input.GetKeyDown(KeyCode.Escape);

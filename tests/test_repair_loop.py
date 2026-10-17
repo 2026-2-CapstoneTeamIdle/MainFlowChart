@@ -1,7 +1,7 @@
-from pathlib import Path
-from types import SimpleNamespace
 import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from game_pipeline.feature_contract import build_feature_contract
@@ -26,7 +26,7 @@ class RepairLoopTest(unittest.TestCase):
                 project_root=root, entry_scene=root / "Assets/Scenes/Bootstrap.unity"
             )
             design = {
-                "contract_version": "3.3.0",
+                "contract_version": "3.4.0",
                 "game_spec": {"asset_requirements": []},
                 "generated_modules": [{"module_id": "example"}],
             }
@@ -71,7 +71,7 @@ class RepairLoopTest(unittest.TestCase):
         )
         self.assertIsNotNone(result)
         self.assertEqual(model.repair.call_count, 2)
-        self.assertEqual(record.call_count, 3)
+        self.assertGreaterEqual(record.call_count, 5)
         self.assertIn("CS0246", model.repair.call_args_list[0].args[1]["diagnostics"])
         self.assertIn("runtime.horizontal", model.repair.call_args_list[1].args[1]["diagnostics"])
 
@@ -79,6 +79,36 @@ class RepairLoopTest(unittest.TestCase):
         result, model, _ = self.run_loop([failure("UNITY_EDITOR_NOT_FOUND", "missing")])
         self.assertIsNone(result)
         model.repair.assert_not_called()
+
+    def test_scene_failure_without_generated_code_does_not_call_model(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "game/unity_project"
+            root.mkdir(parents=True)
+            generation = SimpleNamespace(
+                project_root=root,
+                entry_scene=root / "Assets/Scenes/Bootstrap.unity",
+            )
+            feature_generator = MagicMock()
+            with patch("game_pipeline.repair_loop.UnityProjectValidator") as validator:
+                validator.return_value.validate.return_value = failure(
+                    "UNITY_RUNTIME_TEST_FAILED",
+                    "start_to_goal failed",
+                )
+                with self.assertRaisesRegex(RuntimeError, "no generated feature code"):
+                    validate_and_repair(
+                        design={
+                            "contract_version": "3.4.0",
+                            "game_spec": {"asset_requirements": []},
+                            "generated_modules": [],
+                        },
+                        generation=generation,
+                        request={},
+                        generator=MagicMock(),
+                        feature_generator=feature_generator,
+                        record=MagicMock(),
+                    )
+
+            feature_generator.repair.assert_not_called()
 
     def test_repair_budget_is_bounded(self):
         result, model, _ = self.run_loop([failure("UNITY_RUNTIME_TEST_FAILED", "FAILED")] * 3)

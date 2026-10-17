@@ -1,7 +1,9 @@
 {
   "name": "TeamIdle.GameTemplate.Runtime",
   "rootNamespace": "TeamIdle.GameTemplate",
-  "references": [],
+  "references": [
+    "UnityEngine.UI"
+  ],
   "includePlatforms": [],
   "excludePlatforms": [],
   "allowUnsafeCode": false,

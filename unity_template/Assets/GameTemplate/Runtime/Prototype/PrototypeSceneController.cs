@@ -20,6 +20,7 @@ namespace TeamIdle.GameTemplate.Prototype
 
         private GUIStyle titleStyle;
         private Vector2 scrollPosition;
+        private bool suppressLegacyHud;
 
         public void Configure(string nextTitle, string nextGenre)
         {
@@ -29,6 +30,9 @@ namespace TeamIdle.GameTemplate.Prototype
 
         private void Start()
         {
+            suppressLegacyHud =
+                genre == "Platformer"
+                && FindFirstObjectByType<PrototypePresentationController>() != null;
             if (genre == "VisualNovel")
             {
                 FindFirstObjectByType<DialogueRunnerModule>()?.Next();
@@ -37,6 +41,11 @@ namespace TeamIdle.GameTemplate.Prototype
 
         private void OnGUI()
         {
+            if (suppressLegacyHud)
+            {
+                return;
+            }
+
             titleStyle ??= new GUIStyle(GUI.skin.label)
             {
                 fontSize = 20,
@@ -261,31 +270,6 @@ namespace TeamIdle.GameTemplate.Prototype
                         break;
                     }
                 }
-            }
-        }
-    }
-
-    public sealed class PrototypeCollectible : MonoBehaviour
-    {
-        private void OnTriggerEnter2D(Collider2D other)
-        {
-            if (!other.CompareTag("Player"))
-            {
-                return;
-            }
-
-            FindFirstObjectByType<CollectibleSystemModule>()?.Collect();
-            Destroy(gameObject);
-        }
-    }
-
-    public sealed class PrototypeGoal : MonoBehaviour
-    {
-        private void OnTriggerEnter2D(Collider2D other)
-        {
-            if (other.CompareTag("Player"))
-            {
-                FindFirstObjectByType<GoalSystemModule>()?.TryComplete();
             }
         }
     }

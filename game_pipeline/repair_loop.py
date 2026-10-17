@@ -1,10 +1,14 @@
 """Bounded generation/Unity-validation loop. Tests and template are never model-editable."""
 
-from copy import deepcopy
 import os
+from collections.abc import Callable
+from copy import deepcopy
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
+from game_pipeline.design_repairer import repair_design
+from game_pipeline.game_failure_classifier import classify_failure
+from game_pipeline.game_quality import evaluate_game_quality
 from game_pipeline.unity_project_validator import UnityProjectValidator
 
 
@@ -26,6 +30,7 @@ def validate_and_repair(
         timeout_seconds=int(os.environ.get("MAINFLOW_UNITY_VALIDATION_TIMEOUT_SECONDS", "300")),
     )
     root = generation.project_root
+    seen_signatures: dict[str, int] = {}
     for attempt in range(max_repairs + 1):
         draft = {
             "contract_version": design["contract_version"],
@@ -55,47 +60,79 @@ def validate_and_repair(
             },
         )
         if outcome.status == "passed":
+            if "design_v2" in design:
+                threshold = float(os.environ.get("MAINFLOW_GAME_QUALITY_THRESHOLD", "80"))
+                report = evaluate_game_quality(design, outcome.unity_log, threshold=threshold)
+                revised = deepcopy(design)
+                revised["quality_report"] = report
+                design = revised
+                record("quality_report", report)
+                # Old/static validators do not emit telemetry. A real Play Mode
+                # run does, and only that evidence can enforce the quality gate.
+                if "UNITY_PLAYTEST_METRICS:" in outcome.unity_log and not report["passed"]:
+                    raise RuntimeError(
+                        f"Unity validation passed but objective quality score "
+                        f"{report['score']} is below {report['threshold']}: {report['problems']}"
+                    )
             return design, generation
-        codes = {issue["code"] for issue in outcome.issues}
-        infra = (
-            "No valid Unity Editor license",
-            "Failed to activate",
-            "already open",
-            "Access is denied",
+        classification = classify_failure(outcome)
+        record(f"attempt_{attempt}_classification", classification)
+        seen_signatures[classification["signature"]] = (
+            seen_signatures.get(classification["signature"], 0) + 1
         )
-        repairable = bool(codes & {"UNITY_BATCH_VALIDATION_FAILED", "UNITY_RUNTIME_TEST_FAILED"})
-        if attempt == max_repairs or not repairable or any(s in outcome.unity_log for s in infra):
+        if (
+            attempt == max_repairs
+            or classification["target"] == "infrastructure"
+            or seen_signatures[classification["signature"]] > 2
+        ):
             raise RuntimeError(f"Unity validation failed after {attempt} repairs: {outcome.issues}")
-        lines = outcome.unity_log.splitlines()
-        diagnostic_lines = [
-            line
-            for line in lines
-            if any(
-                token in line
-                for token in (
-                    "error CS",
-                    "Exception",
-                    "Error",
-                    "FAILED",
-                    "runtime.",
-                    "Tag:",
-                    "CompareTag",
+        target = classification["target"]
+        if target in {"code", "binding", "test"}:
+            if feature_generator is None or not design["generated_modules"]:
+                raise RuntimeError(
+                    f"Unity {target} validation failed, but there is no generated feature "
+                    f"code to repair: {outcome.issues}"
                 )
+            diagnostic_lines = [
+                line
+                for line in outcome.unity_log.splitlines()
+                if any(
+                    token in line
+                    for token in (
+                        "error CS",
+                        "Exception",
+                        "Error",
+                        "FAILED",
+                        "runtime.",
+                        "Tag:",
+                        "CompareTag",
+                    )
+                )
+            ]
+            feedback = {
+                "attempt": attempt,
+                "repair_target": target,
+                "failure_signature": classification["signature"],
+                "issues": outcome.issues,
+                "failed_checks": [c for c in outcome.checks if not c["passed"]],
+                "diagnostics": "\n".join(diagnostic_lines)[:6000] or outcome.unity_log[-6000:],
+            }
+            modules = feature_generator.repair(design, feedback)
+            revised = deepcopy(design)
+            revised["generated_modules"] = modules
+        else:
+            if "design_v2" not in design:
+                raise RuntimeError(
+                    f"Unity {target} validation failed without design v2 repair data: "
+                    f"{outcome.issues}"
+                )
+            revised, actions = repair_design(design, target)
+            record(
+                f"attempt_{attempt}_design_repair",
+                {"target": target, "actions": actions},
             )
-        ]
-        feedback = {
-            "attempt": attempt,
-            "issues": outcome.issues,
-            "failed_checks": [c for c in outcome.checks if not c["passed"]],
-            "diagnostics": "\n".join(diagnostic_lines)[:6000] or outcome.unity_log[-6000:],
-        }
-        modules = feature_generator.repair(design, feedback)
-        revised = deepcopy(design)
-        revised["generated_modules"] = modules
         # Preserve the failed project for inspection; never recursively delete user data.
-        backup = root.with_name(f"{root.name}_failed_attempt_{attempt}")
-        if backup.exists():
-            raise FileExistsError(f"Refusing to overwrite failed attempt: {backup}")
+        backup = _available_backup(root, attempt)
         root.rename(backup)
         generation = generator.generate(
             revised,
@@ -107,3 +144,16 @@ def validate_and_repair(
         )
         design = revised
     raise AssertionError("unreachable")
+
+
+def _available_backup(root: Path, attempt: int) -> Path:
+    """Choose a recoverable backup name without overwriting a previous run."""
+
+    base = root.with_name(f"{root.name}_failed_attempt_{attempt}")
+    if not base.exists():
+        return base
+    for suffix in range(1, 100):
+        candidate = root.with_name(f"{root.name}_failed_attempt_{attempt}_{suffix}")
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(f"Too many preserved failed attempts beside {root}")

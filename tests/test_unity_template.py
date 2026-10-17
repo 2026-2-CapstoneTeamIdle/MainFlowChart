@@ -7,7 +7,6 @@ from pathlib import Path
 
 from mainflow.contracts import CONTRACT_VERSION
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_ROOT = REPOSITORY_ROOT / "unity_template"
 
@@ -38,10 +37,23 @@ class UnityTemplateTest(unittest.TestCase):
             "Assets/GameTemplate/Editor/ModuleComponentCatalog.cs",
             "Assets/GameTemplate/Editor/PrefabSceneAssembler.cs",
             "Assets/GameTemplate/Editor/GameBlueprint.cs",
+            "Assets/GameTemplate/Editor/LevelPlan.cs",
+            "Assets/GameTemplate/Editor/GameplayPlans.cs",
+            "Assets/GameTemplate/Editor/PresentationSceneAssembler.cs",
             "Assets/GameTemplate/Editor/GeneratedAssetBinder.cs",
             "Assets/GameTemplate/Editor/GameImplementationPlan.cs",
             "Assets/GameTemplate/Runtime/Prototype/PrototypeSceneController.cs",
             "Assets/GameTemplate/Runtime/Prototype/PlatformerPrototypeActors.cs",
+            "Assets/GameTemplate/Runtime/Prototype/PrototypePlatformerStageController.cs",
+            "Assets/GameTemplate/Runtime/Prototype/PrototypePresentationController.cs",
+            "Assets/GameTemplate/Runtime/Prototype/PrototypeCheckpoint.cs",
+            "Assets/GameTemplate/Runtime/Prototype/PrototypeCollectible.cs",
+            "Assets/GameTemplate/Runtime/Prototype/PrototypeGoal.cs",
+            "Assets/GameTemplate/Runtime/Prototype/PrototypeHazard.cs",
+            "Assets/GameTemplate/Runtime/Platformer/CollectibleSystemModule.cs",
+            "Assets/GameTemplate/Runtime/Platformer/GoalSystemModule.cs",
+            "Assets/GameTemplate/Runtime/Platformer/WallClimbModule.cs",
+            "Assets/GameTemplate/Runtime/Platformer/AirDashModule.cs",
             "Assets/GameTemplate/Generated/GameTemplateConfig.asset",
             "Assets/Scenes/Bootstrap.unity",
         ]
@@ -80,13 +92,29 @@ class UnityTemplateTest(unittest.TestCase):
         self.assertIn("IGeneratedFeatureModule", assembler)
         self.assertIn("GameImplementationPlan.Load()", assembler)
         self.assertIn("GameBlueprint.Load()", assembler)
+        self.assertIn("LevelPlan.Load()", assembler)
+        self.assertIn("ContentPlan.Load()", assembler)
+        self.assertIn("BalancePlan.Load()", assembler)
+        self.assertIn("PresentationPlan.Load()", assembler)
+        self.assertIn("context.Level", assembler)
+        self.assertIn("Zone_", assembler)
+        self.assertIn("UNITY_LEVEL_PLAN_OK", assembler)
+        self.assertIn("UNITY_GAMEPLAY_TUNING_OK", assembler)
+        self.assertIn("UNITY_PRESENTATION_PLAN_OK", assembler)
+        self.assertIn("UNITY_VALIDATION_PLAN_STATIC_OK", assembler)
+        self.assertIn("ValidationPlan.Load()", assembler)
+        self.assertIn("UNITY_VALIDATION_PLAN_OK", runtime_smoke)
+        self.assertIn("UNITY_VALIDATION_SCENARIO_OK", runtime_smoke)
+        self.assertIn("PresentationSceneAssembler.AssemblePlatformer", assembler)
         self.assertIn("ApplyBlueprintEntities", assembler)
         self.assertIn("PlatformerRoutePosition", assembler)
         self.assertIn("PlatformerLandingWidth", assembler)
         self.assertIn("ValidatePlatformerTraversal", assembler)
         self.assertIn("UNITY_PLATFORMER_TRAVERSAL_OK", assembler)
         self.assertIn("PlatformerMinimumLandingWidth", assembler)
-        self.assertIn("playerSpawn.x + PlatformerPlayerWidth * 4f", assembler)
+        self.assertIn("levelPlan.player_spawn", assembler)
+        self.assertIn("foreach (var zone in levelPlan.zones)", assembler)
+        self.assertIn("platformPlan.width", assembler)
         self.assertIn("BlueprintNoise", assembler)
         self.assertIn("ConfigureUpgradePool(", assembler)
         self.assertIn("context.Blueprint", assembler)
@@ -116,6 +144,34 @@ class UnityTemplateTest(unittest.TestCase):
         fixed_update = movement.split("private void FixedUpdate()", maxsplit=1)[1]
         self.assertNotIn("input.ConfirmPressed", fixed_update)
 
+    def test_persistent_platformer_behaviours_use_matching_script_filenames(self) -> None:
+        platformer_root = TEMPLATE_ROOT / "Assets/GameTemplate/Runtime/Platformer"
+        for class_name in (
+            "CollectibleSystemModule",
+            "GoalSystemModule",
+            "WallClimbModule",
+            "AirDashModule",
+        ):
+            with self.subTest(class_name=class_name):
+                source_path = platformer_root / f"{class_name}.cs"
+                self.assertTrue(source_path.is_file())
+                self.assertIn(
+                    f"public sealed class {class_name}",
+                    source_path.read_text(encoding="utf-8"),
+                )
+
+    def test_template_meta_guids_are_unique(self) -> None:
+        owners: dict[str, Path] = {}
+        for meta_path in (TEMPLATE_ROOT / "Assets").rglob("*.meta"):
+            match = re.search(
+                r"(?m)^guid: ([0-9a-f]{32})$",
+                meta_path.read_text(encoding="utf-8"),
+            )
+            self.assertIsNotNone(match, str(meta_path))
+            guid = match.group(1)
+            self.assertNotIn(guid, owners, f"{meta_path} duplicates {owners.get(guid)}")
+            owners[guid] = meta_path
+
     def test_manifest_contains_required_2d_dependencies(self) -> None:
         manifest = json.loads(
             (TEMPLATE_ROOT / "Packages" / "manifest.json").read_text(encoding="utf-8")
@@ -125,6 +181,8 @@ class UnityTemplateTest(unittest.TestCase):
         self.assertIn("com.unity.2d.sprite", dependencies)
         self.assertIn("com.unity.2d.tilemap", dependencies)
         self.assertIn("com.unity.modules.physics2d", dependencies)
+        self.assertIn("com.unity.modules.particlesystem", dependencies)
+        self.assertIn("com.unity.ugui", dependencies)
 
     def test_bootstrap_scene_references_config_and_runtime_scripts(self) -> None:
         scene = (TEMPLATE_ROOT / "Assets" / "Scenes" / "Bootstrap.unity").read_text(
