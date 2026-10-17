@@ -113,6 +113,7 @@ def apply_assets_to_game_node(
             "status": "integrated",
             "entry_artifact": archive_reference,
             "game_artifacts": [manifest_reference, archive_reference],
+            "asset_binding_manifest": manifest_reference,
             "applied_image_asset_ids": application.applied_image_asset_ids,
             "applied_sound_asset_ids": application.applied_sound_asset_ids,
             "notes": notes,

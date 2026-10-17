@@ -66,7 +66,7 @@ class UnityAssetApplicator:
             project_id,
             "image",
             image_request,
-            image_draft["assets"],
+            self._selected_assets(image_draft, image_validation),
             set(image_validation["validated_asset_ids"]),
             entries,
             warnings,
@@ -75,7 +75,7 @@ class UnityAssetApplicator:
             project_id,
             "sound",
             sound_request,
-            sound_draft["assets"],
+            self._selected_assets(sound_draft, sound_validation),
             set(sound_validation["validated_asset_ids"]),
             entries,
             warnings,
@@ -115,6 +115,26 @@ class UnityAssetApplicator:
             applied_sound_asset_ids=applied_sounds,
         )
 
+    @staticmethod
+    def _selected_assets(
+        draft: ImageDraft | SoundDraft,
+        validation: ImageValidationResult | SoundValidationResult,
+    ) -> list[dict[str, Any]]:
+        manifest = validation.get("validated_assets")
+        # Legacy results can still be staged; final validation requires explicit selection.
+        if manifest is None:
+            return [dict(asset) for asset in draft["assets"]]
+        if (
+            manifest["contract_version"] != CONTRACT_VERSION
+            or manifest["manifest_version"] != "1.0.0"
+        ):
+            raise ValueError("Unsupported validated asset manifest")
+        assets = manifest["assets"]
+        ids = [asset["asset_id"] for asset in assets]
+        if len(ids) != len(set(ids)) or set(ids) != set(validation["validated_asset_ids"]):
+            raise ValueError("Validated asset manifest IDs are inconsistent")
+        return [dict(asset) for asset in assets]
+
     def _stage_assets(
         self,
         project_id: str,
@@ -141,6 +161,10 @@ class UnityAssetApplicator:
             if item is None or asset is None:
                 warnings.append(f"Validated {asset_type} asset has no request/draft: {asset_id}")
                 continue
+            if asset.get("asset_type", asset_type) != asset_type:
+                raise ValueError("Validated asset type mismatch")
+            if asset["artifact"]["project_id"] != project_id:
+                raise ValueError("Validated asset belongs to another project")
             if asset["unity_binding_key"] != item["unity_binding_key"]:
                 warnings.append(f"Binding key mismatch prevented applying asset: {asset_id}")
                 continue

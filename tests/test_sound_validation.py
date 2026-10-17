@@ -151,6 +151,9 @@ class ValidateSoundNodeTest(unittest.TestCase):
             draft_assets.append(
                 {
                     "asset_id": asset_id,
+                    "unity_binding_key": next(
+                        i["unity_binding_key"] for i in items if i["asset_id"] == asset_id
+                    ),
                     "name": asset_id,
                     "artifact": reference,
                     "file_format": "wav",
@@ -186,6 +189,16 @@ class ValidateSoundNodeTest(unittest.TestCase):
         self.assertEqual([a["decision"] for a in profile["assets"]], ["PASS", "FIX"])
         self.assertEqual(
             profile["assets"][1]["processed_path"], "generated/sounds/processed/shot.wav"
+        )
+        selected = {asset["asset_id"]: asset for asset in result["validated_assets"]["assets"]}
+        self.assertEqual(selected["hit"]["artifact"]["relative_path"], "generated/sounds/hit.wav")
+        self.assertEqual(
+            selected["shot"]["artifact"]["relative_path"], profile["assets"][1]["processed_path"]
+        )
+        self.assertEqual(selected["shot"]["file_format"], "wav")
+        self.assertNotEqual(
+            self.manager.read_bytes(selected["shot"]["artifact"]),
+            encode_wav(impact(pad=0.05, seed=2), RATE),
         )
         self.assertTrue(all(check["passed"] for check in result["checks"]))
 

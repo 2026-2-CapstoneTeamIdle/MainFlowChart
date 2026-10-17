@@ -1,6 +1,20 @@
 # MainFlow 테스트 결과
 
-## 최신 검증
+## 최신 검증 (2026-10-17)
+
+- 계약: 3.4.0 + ValidatedAssetManifest 1.0.0 추가 계약.
+- Python: 프로젝트 잠금 파일 기준 CPython 3.11.17 환경.
+- 전체 회귀: `.venv/Scripts/python -m unittest discover -s tests -p "test_*.py"` — 190개 실행, 188개 통과, 2개 제외.
+- 제외: Unity 실제 실행 opt-in 1개, ffmpeg 미설치에 따른 MP3 디코딩 1개.
+- 이후 추가한 `tests.test_final_unity_integration` 1개는 별도 실행에서 opt-in 제외 확인.
+- Ruff/CSharpier: `python tools/format_repo.py --write`, `--check` 모두 통과.
+- 회귀 범위: DSP 보정본 선택·복사, 선택 manifest Schema, 필수 에셋 누락, 파일 변조, 씬 바인딩 누락, 오래된 보고서 재사용 방지, 시나리오 누락, Unity 미실행, 의미 검증 증거 누락, CLI 실패 종료 코드.
+- Docker build/run: Docker Desktop Linux 엔진 미실행으로 실행하지 못함.
+- Unity 6000.0.71f1: 설치 확인 및 실제 통합 검증 통과. 설치 경로: `C:/Program Files/Unity/Hub/Editor/6000.0.71f1/Editor/Unity.exe`.
+- 실제 Unity 실행: `tests.test_dynamic_feature_generation`, `tests.test_final_unity_integration`을 `MAINFLOW_RUN_UNITY_INTEGRATION_TESTS=1`, `MAINFLOW_UNITY_VALIDATION_MODE=required`, `UNITY_EDITOR_PATH`와 함께 실행. **24개 모두 통과**, 195.138초. 생성 C# 모듈과 검증된 에셋의 import·registry·씬 바인딩, 컴파일, Play Mode 시나리오, 최종 ZIP 생성을 확인했다.
+- 내용 적합성 검증과 재생성 loop는 후속 P0 작업이다. 기술 QC만으로 `visual-style`, `sound-mood`의 최종 통과를 추정하지 않는다.
+
+## 이전 검증 (2026-10-12)
 
 - 실행일: 2026-10-12
 - 계약 버전: 3.1.0

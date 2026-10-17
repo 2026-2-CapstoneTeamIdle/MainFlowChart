@@ -134,6 +134,13 @@ class UnityAssetApplicatorTest(unittest.TestCase):
                 "notes": [],
             },
         )
+        corrected = self.manager.write_bytes(
+            self.project_id,
+            "sound",
+            "processed/bgm.wav",
+            b"corrected-wav",
+            producer="validate_sound",
+        )
         image_validation = cast(
             ImageValidationResult,
             {
@@ -152,6 +159,19 @@ class UnityAssetApplicatorTest(unittest.TestCase):
                 "checks": [],
                 "issues": [],
                 "validated_asset_ids": ["survivor_bgm"],
+                "validated_assets": {
+                    "manifest_version": "1.0.0",
+                    "contract_version": CONTRACT_VERSION,
+                    "assets": [
+                        {
+                            "asset_id": "survivor_bgm",
+                            "asset_type": "sound",
+                            "unity_binding_key": "asset_registry:survivor_bgm",
+                            "artifact": corrected,
+                            "file_format": "wav",
+                        }
+                    ],
+                },
             },
         )
 
@@ -183,6 +203,13 @@ class UnityAssetApplicatorTest(unittest.TestCase):
         )
         payload = json.loads(result.manifest_path.read_text(encoding="utf-8"))
         bgm = next(entry for entry in payload["entries"] if entry["asset_id"] == "survivor_bgm")
+        self.assertTrue(bgm["unity_path"].endswith(".wav"))
+        self.assertEqual(
+            self.manager.read_project_file(
+                self.project_id, "game/unity_project/" + bgm["unity_path"]
+            ),
+            b"corrected-wav",
+        )
         self.assertTrue(bgm["loop"])
         self.assertEqual(bgm["unity_load_type"], "streaming")
         self.assertEqual(bgm["mixer_group"], "Music")

@@ -584,12 +584,27 @@ class AssetValidationSpec(TypedDict):
     sound_criteria: list[ValidationCriterion]
 
 
+class ValidatedAsset(TypedDict):
+    asset_id: str
+    asset_type: AssetType
+    unity_binding_key: str
+    artifact: ArtifactReference
+    file_format: str
+
+
+class ValidatedAssetManifest(TypedDict):
+    manifest_version: Literal["1.0.0"]
+    contract_version: ContractVersion
+    assets: list[ValidatedAsset]
+
+
 class ImageValidationResult(TypedDict):
     contract_version: ContractVersion
     status: ValidationStatus
     checks: list[ValidationCheckResult]
     issues: list[ValidationIssue]
     validated_asset_ids: list[str]
+    validated_assets: NotRequired[ValidatedAssetManifest]
 
 
 class SoundValidationResult(TypedDict):
@@ -598,6 +613,7 @@ class SoundValidationResult(TypedDict):
     checks: list[ValidationCheckResult]
     issues: list[ValidationIssue]
     validated_asset_ids: list[str]
+    validated_assets: NotRequired[ValidatedAssetManifest]
 
 
 class AssetBindingEntry(TypedDict):
@@ -637,9 +653,12 @@ class IntegratedGame(TypedDict):
     applied_image_asset_ids: list[str]
     applied_sound_asset_ids: list[str]
     notes: list[str]
+    asset_binding_manifest: NotRequired[ArtifactReference]
 
 
 class FinalValidationResult(TypedDict):
+    evidence: NotRequired[list[ArtifactReference]]
+    entry_artifact: NotRequired[ArtifactReference | None]
     contract_version: ContractVersion
     status: ValidationStatus
     checks: list[ValidationCheckResult]
@@ -828,6 +847,11 @@ class ApplyAssetsAgentOutput(TypedDict):
 
 
 class FinalValidationAgentInput(TypedDict):
+    parsed_request: ArtifactReference
+    game_logic_draft: ArtifactReference
+    game_validation_result: ArtifactReference
+    image_validation_result: ArtifactReference
+    sound_validation_result: ArtifactReference
     project_id: str
     logic_analysis: ArtifactReference
     integrated_game: ArtifactReference

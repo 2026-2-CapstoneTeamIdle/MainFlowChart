@@ -215,3 +215,25 @@ uv run --locked python -m unittest tests.test_dynamic_feature_generation -v
 설계하고 Unity를 생성하는 부분은 상당히 진행됐지만, “검증에서 선택된 최종 에셋이 실제 씬에
 적용됐고 완성 게임이 요구사항을 만족한다”는 마지막 증명이 비어 있다. 이 부분을 먼저 닫아야 이후
 장르 확장과 LLM 품질 개선 결과를 객관적으로 비교할 수 있다.
+
+## 9. 후속 구현 기록 (2026-10-17)
+
+P0 첫 작업으로 선택 파일 manifest와 최종 판정 단계를 연결했다.
+`ValidatedAssetManifest`로 사운드 보정본을 적용하며, 최종 단계는 필수 에셋·선택 바이트·바인딩을
+검사하고 Unity를 required 모드로 재실행한다. 통과 시 실행 이후 ZIP과 검증 증거를 반환한다.
+기존 3.4.0 결과는 원본 적용까지 호환하되 새 선택 manifest 없이는 최종 통과하지 않는다.
+
+남은 P0 작업은 내용 적합성 검증, 실패 ID별 재생성 loop, 설계 기반 에셋 검증 기준이다.
+현재 `visual-style`과 `sound-mood`는 기술 QC만으로 증명할 수 없어 최종 단계에서 실패한다.
+Unity 6000.0.71f1 설치 후 실제 컴파일·Play Mode와 최종 에셋 바인딩 검증까지 통과했다.
+관련 두 테스트 모듈은 24개 모두 통과했으며 자세한 결과는 `tests/TestResult.md`에 기록했다.
+
+에셋 적용 이후 실제 Unity 검증용 opt-in 테스트도 추가했다. Editor 설치 후 다음과 같이 실행한다.
+기능 생성 검증과 함께 에셋 import·씬 바인딩·컴파일·Play Mode·최종 ZIP 경로를 확인한다.
+이 fixture는 파일/바인딩/실행을 검증하며 이미지 스타일·사운드 분위기의 내용 적합성을 주장하지 않는다.
+
+```powershell
+$env:MAINFLOW_RUN_UNITY_INTEGRATION_TESTS="1"
+$env:UNITY_EDITOR_PATH="C:/Program Files/Unity/Hub/Editor/6000.0.71f1/Editor/Unity.exe"
+.venv/Scripts/python -m unittest tests.test_dynamic_feature_generation tests.test_final_unity_integration -v
+```

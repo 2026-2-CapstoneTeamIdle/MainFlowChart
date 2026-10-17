@@ -118,10 +118,10 @@ def main() -> int:
         "final_state": final_state,
     }
     print(json.dumps(output, ensure_ascii=False, indent=2))
-    if game_validation.get("status") != "passed":
+    if final_validation.get("status") != "passed":
         print(
-            "Game generation failed Unity validation. Do not open or distribute this project; "
-            "inspect game_validation.issues first.",
+            "Game did not pass final validation. Do not distribute this project; "
+            "inspect final_validation.issues first.",
             file=sys.stderr,
         )
         return 1
