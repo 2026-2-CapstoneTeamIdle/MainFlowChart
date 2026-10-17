@@ -230,8 +230,8 @@ class ProviderTest(unittest.TestCase):
             self.assertEqual(bgm.duration_seconds, expected)
 
     def test_pcm_output_is_wrapped_with_the_requested_rate(self):
-        (sfx,) = plan_sound_assets(request(item("s", "UI", "클릭")), PARSED)
-        pcm = FakeResponse(b"\x00\x01\x00\x02" * 4800)  # 4800 stereo frames
+        (sfx,) = plan_sound_assets(request(item("s", "UI", "클릭")), PARSED)  # 0.5 s requested
+        pcm = FakeResponse(bytes([0, 1, 0, 2]) * 24000)  # 0.5 s of stereo frames at 48 kHz
         with (
             mock.patch.dict(os.environ, {"ELEVENLABS_OUTPUT_FORMAT": "pcm_48000"}),
             mock.patch("urllib.request.urlopen", lambda req, timeout: pcm),
@@ -240,16 +240,51 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(result.file_format, "wav")
         with open_wav(result.audio) as wav_file:
             self.assertEqual(wav_file.getframerate(), 48000)
-        self.assertAlmostEqual(wav_duration(result.audio), 0.1, places=2)
-
-    def test_stereo_pcm_keeps_its_length(self):
-        (sfx,) = plan_sound_assets(request(item("s", "UI", "클릭")), PARSED)  # 0.5 s requested
-        stereo = FakeResponse(b"\x00\x01\x00\x02" * 22050)  # 0.5 s of L/R frames at 44.1 kHz
-        with mock.patch("urllib.request.urlopen", lambda req, timeout: stereo):
-            result = ElevenLabsSoundProvider(api_key="k").generate(sfx)
-        with open_wav(result.audio) as wav_file:
-            self.assertEqual(wav_file.getnchannels(), 2)
         self.assertEqual(wav_duration(result.audio), 0.5)
+
+    def test_pcm_channels_follow_payload_size(self):
+        (sfx,) = plan_sound_assets(request(item("s", "UI", "클릭")), PARSED)  # 0.5 s requested
+        for frame, channels in ((bytes([0, 1, 0, 2]), 2), (bytes([0, 1]), 1)):
+            response = FakeResponse(frame * 22050)  # 0.5 s at 44.1 kHz
+            with mock.patch("urllib.request.urlopen", lambda req, timeout, r=response: r):
+                result = ElevenLabsSoundProvider(api_key="k").generate(sfx)
+            with open_wav(result.audio) as wav_file:
+                self.assertEqual(wav_file.getnchannels(), channels)
+            self.assertEqual(wav_duration(result.audio), 0.5)
+
+    def test_pro_only_pcm_rate_falls_back_to_free_tier_pcm(self):
+        (sfx, hit) = plan_sound_assets(
+            request(item("s", "UI", "클릭"), item("h", "공격 효과음", "타격음")), PARSED
+        )
+        tier = b"Requested output format pcm_44100 (PCM at 44100hz) is only allowed for Pro tier"
+        urls = []
+
+        def fake_urlopen(req, timeout):
+            urls.append(req.full_url)
+            if "pcm_44100" in req.full_url:
+                raise http_error(403, tier)
+            return FakeResponse(bytes([0, 1, 0, 2]) * 24000)
+
+        provider = ElevenLabsSoundProvider(api_key="k")
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            first, second = provider.generate(sfx), provider.generate(hit)
+        self.assertEqual(
+            [u.split("output_format=")[1] for u in urls], ["pcm_44100", "pcm_24000", "pcm_24000"]
+        )
+        for result in (first, second):
+            with open_wav(result.audio) as wav_file:
+                self.assertEqual(wav_file.getframerate(), 24000)
+
+    def test_bad_key_is_not_mistaken_for_tier_limit(self):
+        (sfx,) = plan_sound_assets(request(item("s", "UI", "클릭")), PARSED)
+        bad_key = http_error(401, b'{"detail": {"status": "invalid_api_key"}}')
+        with (
+            mock.patch("urllib.request.urlopen", side_effect=bad_key) as urlopen,
+            self.assertRaises(SoundProviderError) as caught,
+        ):
+            ElevenLabsSoundProvider(api_key="k").generate(sfx)
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertTrue(caught.exception.fatal)
 
     def test_transient_429_waits_and_retries_once(self):
         (sfx,) = plan_sound_assets(request(item("s", "UI", "클릭")), PARSED)
