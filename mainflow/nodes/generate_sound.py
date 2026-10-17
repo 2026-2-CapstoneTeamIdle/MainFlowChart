@@ -15,7 +15,6 @@ from mainflow.contracts import (
     ParsedRequest,
     SoundAsset,
     SoundDraft,
-    SoundGenerationSpec,
 )
 from mainflow.nodes._common import log
 from sound_pipeline import (
@@ -48,7 +47,6 @@ def generate_sound_node(
     )
 
     plans = plan_sound_assets(asset_request, parsed)
-    requested_by_id = {item["asset_id"]: item for item in asset_request["assets"]}
     provider = primary_provider()
     fallback = fallback_provider()
     log(f"사운드 에셋 {len(plans)}개를 생성합니다. (provider={provider.name})")
@@ -61,8 +59,6 @@ def generate_sound_node(
     missing_required: list[str] = []
     tripped: SoundProviderError | None = None
     for plan in plans:
-        requested = requested_by_id[plan.asset_id]
-        generation_spec = cast(SoundGenerationSpec, requested["generation_spec"])
         used = provider
         try:
             if tripped is not None:  # circuit breaker: don't wait out the same failure per asset
@@ -92,13 +88,13 @@ def generate_sound_node(
             {
                 "asset_id": plan.asset_id,
                 "name": plan.name,
-                "kind": generation_spec["kind"],
-                "unity_binding_key": requested["unity_binding_key"],
+                "kind": plan.kind,
+                "unity_binding_key": plan.unity_binding_key,
                 "artifact": reference,
                 "file_format": result.file_format,
                 "duration_seconds": duration,
-                "loop": generation_spec["loop"],
-                "mixer_group": generation_spec["mixer_group"],
+                "loop": plan.loop,
+                "mixer_group": plan.mixer_group,
                 "prompt": plan.prompt,
                 "provider": used.name,
             }
