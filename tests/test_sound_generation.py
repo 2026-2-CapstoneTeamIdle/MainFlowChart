@@ -140,6 +140,24 @@ class PlannerTest(unittest.TestCase):
         (plan,) = plan_sound_assets(request(item("e", "배경음악", "엔딩 음악")), PARSED)
         self.assertFalse(plan.loop)
 
+    def test_generation_spec_is_authoritative_for_unity_handoff(self):
+        asset = item("theme", "배경음악", "짧은 배경음악")
+        asset["generation_spec"] = {
+            "kind": "bgm",
+            "target_duration_seconds": 12.0,
+            "loop": False,
+            "channels": "stereo",
+            "sample_rate_hz": 44100,
+            "unity_load_type": "streaming",
+            "mixer_group": "Music",
+            "spatial_blend": 0.0,
+        }
+        (plan,) = plan_sound_assets(request(asset), PARSED)
+        self.assertEqual(plan.duration_seconds, 12.0)
+        self.assertFalse(plan.loop)
+        self.assertEqual(plan.unity_binding_key, "asset_registry:theme")
+        self.assertEqual(plan.mixer_group, "Music")
+
 
 class ProviderTest(unittest.TestCase):
     def test_procedural_output_is_valid_and_mood_dependent(self):

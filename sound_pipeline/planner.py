@@ -11,12 +11,18 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
-from mainflow.contracts import AssetGenerationItem, AssetGenerationRequest, ParsedRequest
+from mainflow.contracts import (
+    AssetGenerationItem,
+    AssetGenerationRequest,
+    ParsedRequest,
+    SoundAssetKind,
+    SoundGenerationSpec,
+)
 from mainflow.keywords import has_keyword
 
-SoundKind = Literal["bgm", "sfx"]
+SoundKind = SoundAssetKind
 SfxCategory = Literal["ui", "impact", "explosion", "ambience", "action"]
 
 BGM_KEYWORDS = ("배경음악", "배경 음악", "bgm", "음악", "music", "theme", "테마", "ost")
@@ -82,6 +88,8 @@ class SoundPlan:
     mood_style: str
     genre: str
     required: bool
+    unity_binding_key: str = ""
+    mixer_group: str = "SFX"
 
 
 def bgm_seconds() -> float:
@@ -115,11 +123,26 @@ def plan_sound_assets(request: AssetGenerationRequest, parsed: ParsedRequest) ->
 
     plans: list[SoundPlan] = []
     for item in request["assets"]:
-        kind, category = classify(item)
+        inferred_kind, category = classify(item)
         text = _text(item)
+        raw_spec = item.get("generation_spec")
+        generation_spec = (
+            cast(SoundGenerationSpec, raw_spec) if isinstance(raw_spec, dict) else None
+        )
+        kind = generation_spec["kind"] if generation_spec else inferred_kind
+        if kind in {"ui", "ambience"}:
+            category = kind
+        elif kind == "voice":
+            category = "action"
         if kind == "bgm":
-            loop = not has_keyword(text, NO_LOOP_KEYWORDS)
-            duration = bgm_seconds()
+            loop = (
+                generation_spec["loop"]
+                if generation_spec
+                else not has_keyword(text, NO_LOOP_KEYWORDS)
+            )
+            duration = (
+                generation_spec["target_duration_seconds"] if generation_spec else bgm_seconds()
+            )
             parts = [
                 (
                     f"Instrumental {'seamlessly looping ' if loop else ''}background music "
@@ -133,8 +156,16 @@ def plan_sound_assets(request: AssetGenerationRequest, parsed: ParsedRequest) ->
                 "No vocals, no speech",
             ]
         else:
-            loop = category == "ambience" or has_keyword(text, LOOP_KEYWORDS)
-            duration = SFX_DURATIONS[category]  # type: ignore[index]
+            loop = (
+                generation_spec["loop"]
+                if generation_spec
+                else category == "ambience" or has_keyword(text, LOOP_KEYWORDS)
+            )
+            duration = (
+                generation_spec["target_duration_seconds"]
+                if generation_spec
+                else SFX_DURATIONS[category]  # type: ignore[index]
+            )
             parts = [
                 (
                     f"{SFX_LABELS[category]} sound effect for a {genre_name} game "  # type: ignore[index]
@@ -160,6 +191,8 @@ def plan_sound_assets(request: AssetGenerationRequest, parsed: ParsedRequest) ->
                 mood_style=request["mood_style"],
                 genre=request["genre"],
                 required=item["required"],
+                unity_binding_key=item.get("unity_binding_key", ""),
+                mixer_group=generation_spec["mixer_group"] if generation_spec else "SFX",
             )
         )
     return plans
