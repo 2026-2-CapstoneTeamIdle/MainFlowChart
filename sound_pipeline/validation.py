@@ -46,6 +46,10 @@ class SoundDecodeError(ValueError):
     """Audio bytes could not be decoded into samples."""
 
 
+class SoundDecoderUnavailable(SoundDecodeError):
+    """This machine has no decoder for the format; says nothing about the asset."""
+
+
 @dataclass
 class AssetQC:
     asset_id: str
@@ -68,7 +72,7 @@ def decode(audio: bytes, file_format: str) -> tuple[np.ndarray, int]:
     if file_format == "mp3":
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
-            raise SoundDecodeError("MP3 디코딩에 ffmpeg가 필요합니다")
+            raise SoundDecoderUnavailable("MP3 디코딩에 ffmpeg가 필요합니다")
         with tempfile.TemporaryDirectory() as folder:
             source, target = Path(folder, "in.mp3"), Path(folder, "out.wav")
             source.write_bytes(audio)
@@ -224,6 +228,10 @@ def check_asset(
         samples, rate = decode(audio, file_format)
         if not samples.size:
             raise SoundDecodeError("빈 오디오")
+    except SoundDecoderUnavailable as error:
+        # Environment problem, not an asset defect: a human checks it instead of a paid regenerate.
+        qc.decision, qc.failed, qc.error = "REVIEW", ["sound-validator-unavailable"], str(error)
+        return qc
     except SoundDecodeError as error:
         qc.failed, qc.error = ["sound-file-valid"], str(error)
         _decide(qc, criteria, placeholder)

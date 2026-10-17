@@ -16,7 +16,12 @@ import numpy as np
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.nodes.validate_sound import validate_sound_node
 from sound_pipeline.planner import SoundPlan
-from sound_pipeline.validation import check_asset, decode, encode_wav
+from sound_pipeline.validation import (
+    SoundDecoderUnavailable,
+    check_asset,
+    decode,
+    encode_wav,
+)
 from tests.test_sound_generation import PARSED, item, request
 
 RATE = 22050
@@ -105,6 +110,11 @@ class AssetCheckTest(unittest.TestCase):
     def test_garbage_bytes_are_regenerated(self):
         qc = check_asset(b"not audio", "wav", plan(), CRITERIA, False)
         self.assertEqual((qc.decision, qc.failed), ("REGENERATE", ["sound-file-valid"]))
+
+    def test_missing_ffmpeg_is_review_not_regenerate(self):
+        with mock.patch("shutil.which", return_value=None):
+            qc = check_asset(b"ID3 mp3 bytes", "mp3", plan(), CRITERIA, False)
+        self.assertEqual((qc.decision, qc.failed), ("REVIEW", ["sound-validator-unavailable"]))
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg not installed")
     def test_mp3_is_decoded_with_ffmpeg(self):
@@ -208,6 +218,19 @@ class ValidateSoundNodeTest(unittest.TestCase):
         decisions = {a["asset_id"]: a["decision"] for a in profile["assets"]}
         self.assertEqual(decisions, {"hit": "PASS", "shot": "REGENERATE", "bgm": "REGENERATE"})
         self.assertEqual(result["validated_asset_ids"], ["hit"])
+
+    def test_unavailable_decoder_is_reported_as_warning(self):
+        unavailable = SoundDecoderUnavailable("MP3 디코딩에 ffmpeg가 필요합니다")
+        with mock.patch("sound_pipeline.validation.decode", side_effect=unavailable):
+            result, profile = self.run_node(
+                [("hit", impact(), "elevenlabs")], [item("hit", "공격 효과음", "타격음")]
+            )
+        self.assertEqual(result["status"], "needs_revision")
+        self.assertEqual(profile["assets"][0]["decision"], "REVIEW")
+        self.assertIn(
+            ("sound-validator-unavailable", "warning"),
+            [(i["code"], i["severity"]) for i in result["issues"]],
+        )
 
     def test_spec_criteria_limit_what_is_checked(self):
         only_file = [

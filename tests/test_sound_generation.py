@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import os
@@ -227,6 +228,16 @@ class ProviderTest(unittest.TestCase):
             self.assertEqual(wav_file.getframerate(), 48000)
         self.assertAlmostEqual(wav_duration(result.audio), 0.1, places=2)
 
+    def test_broken_response_is_a_fatal_provider_error(self):
+        sfx = plan_sound_assets(request(item("a", "UI", "클릭")), PARSED)[0]
+        for error in (http.client.IncompleteRead(b"ab", 10), http.client.BadStatusLine("x")):
+            with (
+                mock.patch("urllib.request.urlopen", side_effect=error),
+                self.assertRaises(SoundProviderError) as caught,
+            ):
+                ElevenLabsSoundProvider(api_key="k").generate(sfx)
+            self.assertTrue(caught.exception.fatal)
+
     def test_provider_selection(self):
         with mock.patch.dict(os.environ, {"SOUND_PROVIDER": "auto"}, clear=False):
             os.environ.pop("ELEVENLABS_API_KEY", None)
@@ -301,8 +312,9 @@ class GenerateSoundNodeTest(unittest.TestCase):
     def test_api_failure_falls_back_to_procedural(self):
         os.environ["ELEVENLABS_API_KEY"] = "k"
         error = urllib.error.HTTPError("u", 401, "Unauthorized", {}, io.BytesIO(b"bad key"))
-        with mock.patch("urllib.request.urlopen", side_effect=error):
+        with mock.patch("urllib.request.urlopen", side_effect=error) as urlopen:
             draft = self.manager.read_json(generate_sound_node(self.state)["sound_draft"])
+        self.assertEqual(urlopen.call_count, 1)  # a bad key is not retried for the next asset
         self.assertEqual(draft["status"], "generated")
         self.assertTrue(
             any("procedural 대체" in note and "HTTP 401" in note for note in draft["notes"])
@@ -310,12 +322,22 @@ class GenerateSoundNodeTest(unittest.TestCase):
 
     def test_network_timeout_falls_back_to_procedural(self):
         os.environ["ELEVENLABS_API_KEY"] = "k"
-        with mock.patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+        with mock.patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")) as urlopen:
             draft = self.manager.read_json(generate_sound_node(self.state)["sound_draft"])
+        self.assertEqual(urlopen.call_count, 1)  # circuit breaker: hit_sfx skips the API
         self.assertEqual(draft["status"], "generated")
+        self.assertEqual([a["provider"] for a in draft["assets"]], ["procedural"] * 2)
         self.assertTrue(
             any("procedural 대체" in note and "TimeoutError" in note for note in draft["notes"])
         )
+        self.assertTrue(any("호출 생략" in note for note in draft["notes"]))
+
+    def test_per_asset_http_error_does_not_trip_breaker(self):
+        os.environ["ELEVENLABS_API_KEY"] = "k"
+        error = urllib.error.HTTPError("u", 422, "Unprocessable", {}, io.BytesIO(b"bad prompt"))
+        with mock.patch("urllib.request.urlopen", side_effect=error) as urlopen:
+            generate_sound_node(self.state)
+        self.assertEqual(urlopen.call_count, 2)
 
     def test_api_failure_without_fallback_marks_draft_failed(self):
         os.environ["ELEVENLABS_API_KEY"] = "k"

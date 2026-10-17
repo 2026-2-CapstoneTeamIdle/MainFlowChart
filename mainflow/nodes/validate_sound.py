@@ -109,7 +109,9 @@ def validate_sound_node(
             issues.append(
                 {
                     "code": criterion,
-                    "severity": "error" if required_by_id[criterion] and qc.required else "warning",
+                    "severity": "error"
+                    if required_by_id.get(criterion) and qc.required
+                    else "warning",
                     "message": f"{qc.decision}: {qc.error or criterion} 기준을 통과하지 못했습니다.",
                     "target_id": qc.asset_id,
                 }

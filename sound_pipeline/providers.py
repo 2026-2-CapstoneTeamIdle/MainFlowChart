@@ -12,6 +12,7 @@ unless ``SOUND_FALLBACK=none``; the fallback is recorded in the sound draft.
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import os
@@ -27,14 +28,17 @@ from sound_pipeline.planner import SoundPlan
 
 ELEVENLABS_URL = "https://api.elevenlabs.io"
 SOUND_EFFECTS_MAX_SECONDS = 30.0
+# Key, permission and quota/rate errors fail every later request in the same run too.
+RUN_FATAL_STATUSES = frozenset({401, 403, 429})
 
 
 class SoundProviderError(RuntimeError):
     """A provider could not produce audio for one asset."""
 
-    def __init__(self, message: str, status: int | None = None) -> None:
+    def __init__(self, message: str, status: int | None = None, fatal: bool = False) -> None:
         super().__init__(message)
         self.status = status
+        self.fatal = fatal  # True: skip this provider for the rest of the run
 
 
 @dataclass(frozen=True)
@@ -155,7 +159,7 @@ class ElevenLabsSoundProvider:
         self.sfx_model = os.environ.get("ELEVENLABS_SFX_MODEL", "")
         self.music_model = os.environ.get("ELEVENLABS_MUSIC_MODEL", "")
         self.bgm_endpoint = os.environ.get("ELEVENLABS_BGM_ENDPOINT", "auto").lower()
-        self.timeout = timeout or float(os.environ.get("SOUND_TIMEOUT_SECONDS", "300"))
+        self.timeout = timeout or float(os.environ.get("SOUND_TIMEOUT_SECONDS", "90"))
         if not (self.output_format.startswith("mp3_") or self.output_format.startswith("pcm_")):
             raise ValueError("ELEVENLABS_OUTPUT_FORMAT must be an mp3_* or pcm_* format")
 
@@ -176,12 +180,19 @@ class ElevenLabsSoundProvider:
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")[:300]
             raise SoundProviderError(
-                f"ElevenLabs HTTP {error.code} ({path}): {detail}", error.code
+                f"ElevenLabs HTTP {error.code} ({path}): {detail}",
+                error.code,
+                fatal=error.code in RUN_FATAL_STATUSES,
             ) from error
         except urllib.error.URLError as error:
-            raise SoundProviderError(f"Cannot reach ElevenLabs: {error.reason}") from error
-        except OSError as error:  # TimeoutError/socket.timeout, connection reset during read
-            raise SoundProviderError(f"ElevenLabs connection failed: {error!r}") from error
+            raise SoundProviderError(
+                f"Cannot reach ElevenLabs: {error.reason}", fatal=True
+            ) from error
+        # TimeoutError, reset during read, IncompleteRead, BadStatusLine (e.g. a broken proxy)
+        except (OSError, http.client.HTTPException) as error:
+            raise SoundProviderError(
+                f"ElevenLabs connection failed: {error!r}", fatal=True
+            ) from error
 
     def _result(
         self, payload: bytes, model: str, request_id: str | None, endpoint: str

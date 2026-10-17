@@ -36,9 +36,10 @@
 | `ELEVENLABS_SFX_MODEL` | (비움) | 비우면 `model_id`를 보내지 않아 Sound Effects 엔드포인트의 기본 모델을 쓴다. 특정 모델을 고정할 때만 ID를 넣는다 |
 | `ELEVENLABS_MUSIC_MODEL` | (비움) | 비우면 Music API의 기본 모델을 쓴다 |
 | `ELEVENLABS_BGM_ENDPOINT` | `auto` | `auto`: Music API를 먼저 호출하고, 요금제 제한(HTTP 402)이면 Sound Effects 엔드포인트로 최대 30초 루프 BGM을 만든다 / `music` / `sound_effects` |
-| `SOUND_TIMEOUT_SECONDS` | `300` | API 요청 제한 시간 |
+| `SOUND_TIMEOUT_SECONDS` | `90` | API 요청 제한 시간. 긴 BGM을 Music API로 만들 때 시간이 모자라면 늘린다 |
 
 - **ElevenLabs**: 효과음은 `POST /v1/sound-generation`(Sound Effects), BGM은 `POST /v1/music`(`music_length_ms`)을 호출한다. 기본은 MP3로 받아 그대로 저장한다. 무료 요금제는 Music API를 쓸 수 없으므로(HTTP 402 `paid_plan_required`) BGM은 Sound Effects 엔드포인트의 루프 생성으로 대체된다.
+- **실패 처리**: 연결 오류(타임아웃·연결 끊김·비정상 응답)나 HTTP 401/403/429(키·권한·할당량)가 한 번 나면, 그 실행의 남은 에셋은 ElevenLabs를 다시 호출하지 않고 바로 대체(fallback)한다.
 - **절차적 합성(procedural)**: 외부 의존성 없이 표준 라이브러리로 합성하는 오프라인 대체 음원이다. API 키가 없어도 Workflow와 Unity 연결을 끝까지 테스트할 수 있지만 품질은 임시용이다.
 
 ## 3. 결과물
@@ -71,7 +72,7 @@ uv run --locked python -m unittest tests.test_sound_generation tests.test_sound_
 
 ## 5. 현재 한계
 
-- `validate_sound`는 `sound_pipeline/SoundValidationPlan.md`의 G1(기술 QC)·G2(DSP 보정)·중복 검사·판정까지 구현돼 있다 (`sound_pipeline/validation.py`). 결과는 `validation/sound_validation_result.json`·`validation/sound_profile.json`, 보정본은 `generated/sounds/processed/<asset>.wav`에 저장한다. MP3 디코딩에는 ffmpeg가 필요하다 (Docker 이미지에 포함).
+- `validate_sound`는 `sound_pipeline/SoundValidationPlan.md`의 G1(기술 QC)·G2(DSP 보정)·중복 검사·판정까지 구현돼 있다 (`sound_pipeline/validation.py`). 결과는 `validation/sound_validation_result.json`·`validation/sound_profile.json`, 보정본은 `generated/sounds/processed/<asset>.wav`에 저장한다. MP3 디코딩에는 ffmpeg가 필요하다. Docker 이미지에는 포함돼 있지만 Windows에서 `uv run`으로 실행하면 직접 설치해 PATH에 넣어야 한다 (예: `winget install Gyan.FFmpeg`). ffmpeg가 없으면 MP3 에셋은 결함으로 보지 않고 `sound-validator-unavailable` issue와 함께 REVIEW로 둔다.
 - G3(내용 적합성 모델)·후보 선택·G5 믹스 테스트·라우드니스 위계는 아직 없다. `apply_assets_to_game`도 아직 검증 결과와 보정본을 반영하지 않는다.
 - 프롬프트에는 요청서의 한국어 설명과 조건이 그대로 들어간다. 영어 번역 단계를 추가하면 ElevenLabs 결과가 더 안정적일 수 있다.
 - 비용 기록과 재생성 루프는 없다. 평가 가이드라인(PASS / REGENERATE / REVIEW)을 연결할 때 함께 추가한다.

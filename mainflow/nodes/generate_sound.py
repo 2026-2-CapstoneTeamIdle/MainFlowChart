@@ -57,11 +57,16 @@ def generate_sound_node(
         f"mood={parsed['mood_style']} genre={parsed['genre']}",
     ]
     missing_required: list[str] = []
+    tripped: SoundProviderError | None = None
     for plan in plans:
         used = provider
         try:
+            if tripped is not None:  # circuit breaker: don't wait out the same failure per asset
+                raise SoundProviderError(f"이전 에셋 오류로 호출 생략 - {tripped}")
             result = provider.generate(plan)
         except SoundProviderError as error:
+            if error.fatal:
+                tripped = error
             if fallback is None or fallback.name == provider.name:
                 notes.append(f"{plan.asset_id}: 생성 실패 - {error}")
                 if plan.required:
