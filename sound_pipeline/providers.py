@@ -139,13 +139,14 @@ def audio_duration(audio: bytes, file_format: str) -> float:
     return mp3_duration(audio) if file_format == "mp3" else wav_duration(audio)
 
 
-def pcm_to_wav(pcm: bytes, sample_rate: int) -> bytes:
+def pcm_to_wav(pcm: bytes, sample_rate: int, channels: int = 1) -> bytes:
+    """Wrap raw 16-bit little-endian PCM (interleaved when stereo) in a WAV header."""
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav_file:
-        wav_file.setnchannels(1)
+        wav_file.setnchannels(channels)
         wav_file.setsampwidth(2)
         wav_file.setframerate(sample_rate)
-        wav_file.writeframes(pcm[: len(pcm) - len(pcm) % 2])
+        wav_file.writeframes(pcm[: len(pcm) - len(pcm) % (2 * channels)])
     return buffer.getvalue()
 
 
@@ -177,25 +178,21 @@ def _error_status(detail: str) -> str:
 class ElevenLabsSoundProvider:
     """SFX via the Sound Effects endpoint; BGM via the Music endpoint.
 
-    - ``ELEVENLABS_OUTPUT_FORMAT`` (default ``mp3_44100_128``): MP3 is stored as
-      returned, so the sample rate is read from the file instead of assumed.
-      ``pcm_<rate>`` is still accepted and wrapped as WAV.
+    - ``ELEVENLABS_OUTPUT_FORMAT`` (default ``pcm_44100``, Pro tier or above): lossless PCM
+      wrapped as WAV. ``mp3_*`` is stored as returned (validation then needs ffmpeg).
     - ``ELEVENLABS_SFX_MODEL``: empty (default) lets ``/v1/sound-generation``
       use its own sound-effects model; set an ID only to pin a specific model.
-    - ``ELEVENLABS_BGM_ENDPOINT``: ``auto`` (default) tries ``/v1/music`` and,
-      when the plan does not include the Music API (HTTP 402), generates a
-      looping bed of up to 30 s with the Sound Effects endpoint; ``music`` or
-      ``sound_effects`` forces one endpoint.
+    - BGM never uses the Sound Effects endpoint (30 s cap, not music); when the Music
+      API fails, the node falls back to the procedural synthesizer instead.
     """
 
     name = "elevenlabs"
 
     def __init__(self, api_key: str | None = None, timeout: float | None = None) -> None:
         self.api_key = api_key or os.environ.get("ELEVENLABS_API_KEY", "")
-        self.output_format = os.environ.get("ELEVENLABS_OUTPUT_FORMAT", "mp3_44100_128")
+        self.output_format = os.environ.get("ELEVENLABS_OUTPUT_FORMAT", "pcm_44100")
         self.sfx_model = os.environ.get("ELEVENLABS_SFX_MODEL", "")
         self.music_model = os.environ.get("ELEVENLABS_MUSIC_MODEL", "")
-        self.bgm_endpoint = os.environ.get("ELEVENLABS_BGM_ENDPOINT", "auto").lower()
         self.timeout = timeout or float(os.environ.get("SOUND_TIMEOUT_SECONDS", "90"))
         if not (self.output_format.startswith("mp3_") or self.output_format.startswith("pcm_")):
             raise ValueError("ELEVENLABS_OUTPUT_FORMAT must be an mp3_* or pcm_* format")
@@ -251,7 +248,9 @@ class ElevenLabsSoundProvider:
             raise SoundProviderError("ElevenLabs returned no audio")
         if self.output_format.startswith("pcm_"):
             rate = int(self.output_format.split("_")[1])
-            return ProviderResult(pcm_to_wav(payload, rate), model, request_id, "wav", endpoint)
+            # Undocumented; a real pcm_44100 SFX response (2026-10-17) was interleaved stereo.
+            audio = pcm_to_wav(payload, rate, channels=2)
+            return ProviderResult(audio, model, request_id, "wav", endpoint)
         mp3_duration(payload)  # validates the stream before it is stored
         return ProviderResult(payload, model, request_id, "mp3", endpoint)
 
@@ -272,7 +271,7 @@ class ElevenLabsSoundProvider:
     def _music(self, plan: SoundPlan) -> ProviderResult:
         body: dict[str, object] = {
             "prompt": plan.prompt,
-            "music_length_ms": int(min(max(plan.duration_seconds, 3.0), 600.0) * 1000),
+            "music_length_ms": int(plan.duration_seconds * 1000),  # planner keeps it in 3-600 s
         }
         if self.music_model:
             body["model_id"] = self.music_model
@@ -280,17 +279,9 @@ class ElevenLabsSoundProvider:
         return self._result(payload, self.music_model or "music_api_default", request_id, "music")
 
     def generate(self, plan: SoundPlan) -> ProviderResult:
-        if plan.kind != "bgm":
-            return self._sound_effects(plan.prompt, plan.duration_seconds, plan.loop)
-        if self.bgm_endpoint == "sound_effects":
-            return self._sound_effects(plan.prompt, plan.duration_seconds, plan.loop)
-        try:
+        if plan.kind == "bgm":
             return self._music(plan)
-        except SoundProviderError as error:
-            # auto: paid-plan limits (402), slow or failed music requests use the SFX endpoint.
-            if self.bgm_endpoint != "auto" or error.fatal:
-                raise
-            return self._sound_effects(plan.prompt, plan.duration_seconds, plan.loop)
+        return self._sound_effects(plan.prompt, plan.duration_seconds, plan.loop)
 
 
 def primary_provider() -> SoundProvider:

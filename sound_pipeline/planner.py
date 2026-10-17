@@ -61,7 +61,7 @@ SFX_LABELS: dict[SfxCategory, str] = {
     "action": "Gameplay action",
 }
 SFX_DURATIONS: dict[SfxCategory, float] = {
-    "ui": 0.4,
+    "ui": 0.5,  # ElevenLabs Sound Effects minimum
     "impact": 0.7,
     "explosion": 2.0,
     "ambience": 10.0,
@@ -85,7 +85,8 @@ class SoundPlan:
 
 
 def bgm_seconds() -> float:
-    return float(os.environ.get("SOUND_BGM_SECONDS", "30"))
+    # Music API accepts 3-600 s; clamping here keeps the plan equal to what is requested.
+    return min(max(float(os.environ.get("SOUND_BGM_SECONDS", "30")), 3.0), 600.0)
 
 
 def _text(item: AssetGenerationItem) -> str:

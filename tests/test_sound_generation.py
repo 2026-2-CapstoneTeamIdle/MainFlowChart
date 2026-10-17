@@ -164,7 +164,7 @@ class ProviderTest(unittest.TestCase):
         audio = lame_info_frame(576, 1566) + (b"\xff\xfb\x90\x00" + b"\x00" * 413) * 21
         self.assertEqual(mp3_duration(audio), 0.5)
 
-    def test_sound_effects_use_endpoint_default_model_and_mp3(self):
+    def test_sound_effects_use_endpoint_default_model_and_lossless_wav(self):
         calls = []
 
         def fake_urlopen(req, timeout):
@@ -178,11 +178,13 @@ class ProviderTest(unittest.TestCase):
             with mock.patch("urllib.request.urlopen", fake_urlopen):
                 result = ElevenLabsSoundProvider(api_key="test-key").generate(sfx)
         url, body, key = calls[0]
-        self.assertIn("/v1/sound-generation?output_format=mp3_44100_128", url)
+        self.assertIn("/v1/sound-generation?output_format=pcm_44100", url)
         self.assertNotIn("model_id", body)
         self.assertEqual(body["duration_seconds"], 0.9)
         self.assertEqual(key, "test-key")
-        self.assertEqual((result.file_format, result.media_type), ("mp3", "audio/mpeg"))
+        self.assertEqual((result.file_format, result.media_type), ("wav", "audio/wav"))
+        with open_wav(result.audio) as wav_file:
+            self.assertEqual(wav_file.getframerate(), 44100)
         self.assertEqual(result.model_id, "sound_effects_api_default")
         self.assertEqual(result.request_id, "req-123")
 
@@ -202,38 +204,34 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(captured["body"]["model_id"], "my_sfx_model")
         self.assertEqual(result.model_id, "my_sfx_model")
 
-    def test_bgm_falls_back_to_sound_effects_when_music_needs_paid_plan(self):
+    def test_bgm_never_uses_sound_effects_endpoint(self):
         calls = []
 
         def fake_urlopen(req, timeout):
             calls.append(req.full_url)
-            if "/v1/music" in req.full_url:
-                raise urllib.error.HTTPError(
-                    req.full_url, 402, "Payment Required", {}, io.BytesIO(b"paid_plan_required")
-                )
-            return FakeResponse(fake_mp3(30))
+            raise urllib.error.HTTPError(
+                req.full_url, 402, "Payment Required", {}, io.BytesIO(b"paid_plan_required")
+            )
 
         (bgm,) = plan_sound_assets(request(item("b", "배경음악", "반복 전투 배경음악")), PARSED)
         with (
-            mock.patch.dict(os.environ, {"ELEVENLABS_BGM_ENDPOINT": "auto"}),
             mock.patch("urllib.request.urlopen", fake_urlopen),
-        ):
-            result = ElevenLabsSoundProvider(api_key="k").generate(bgm)
-        self.assertIn("/v1/music", calls[0])
-        self.assertIn("/v1/sound-generation", calls[1])
-        self.assertEqual(result.endpoint, "sound-generation")
-        self.assertAlmostEqual(mp3_duration(result.audio), 30, delta=0.1)
-
-        with (
-            mock.patch.dict(os.environ, {"ELEVENLABS_BGM_ENDPOINT": "music"}),
-            mock.patch("urllib.request.urlopen", fake_urlopen),
-            self.assertRaises(SoundProviderError),
+            self.assertRaises(SoundProviderError) as caught,
         ):
             ElevenLabsSoundProvider(api_key="k").generate(bgm)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("/v1/music", calls[0])
+        self.assertFalse(caught.exception.fatal)  # the node falls back to procedural for this BGM
+
+    def test_bgm_length_is_kept_in_music_api_range(self):
+        for value, expected in (("1", 3.0), ("900", 600.0), ("45", 45.0)):
+            with mock.patch.dict(os.environ, {"SOUND_BGM_SECONDS": value}):
+                (bgm,) = plan_sound_assets(request(item("b", "배경음악", "전투 음악")), PARSED)
+            self.assertEqual(bgm.duration_seconds, expected)
 
     def test_pcm_output_is_wrapped_with_the_requested_rate(self):
         (sfx,) = plan_sound_assets(request(item("s", "UI", "클릭")), PARSED)
-        pcm = FakeResponse(b"\x00\x01" * 4800)
+        pcm = FakeResponse(b"\x00\x01\x00\x02" * 4800)  # 4800 stereo frames
         with (
             mock.patch.dict(os.environ, {"ELEVENLABS_OUTPUT_FORMAT": "pcm_48000"}),
             mock.patch("urllib.request.urlopen", lambda req, timeout: pcm),
@@ -243,6 +241,15 @@ class ProviderTest(unittest.TestCase):
         with open_wav(result.audio) as wav_file:
             self.assertEqual(wav_file.getframerate(), 48000)
         self.assertAlmostEqual(wav_duration(result.audio), 0.1, places=2)
+
+    def test_stereo_pcm_keeps_its_length(self):
+        (sfx,) = plan_sound_assets(request(item("s", "UI", "클릭")), PARSED)  # 0.5 s requested
+        stereo = FakeResponse(b"\x00\x01\x00\x02" * 22050)  # 0.5 s of L/R frames at 44.1 kHz
+        with mock.patch("urllib.request.urlopen", lambda req, timeout: stereo):
+            result = ElevenLabsSoundProvider(api_key="k").generate(sfx)
+        with open_wav(result.audio) as wav_file:
+            self.assertEqual(wav_file.getnchannels(), 2)
+        self.assertEqual(wav_duration(result.audio), 0.5)
 
     def test_transient_429_waits_and_retries_once(self):
         (sfx,) = plan_sound_assets(request(item("s", "UI", "클릭")), PARSED)
@@ -266,7 +273,9 @@ class ProviderTest(unittest.TestCase):
             sleep.assert_called_once_with(0.0)
 
         with (
-            mock.patch("urllib.request.urlopen", side_effect=lambda *a, **k: http_error(429, busy)),
+            mock.patch(
+                "urllib.request.urlopen", side_effect=[http_error(429, busy), http_error(429, busy)]
+            ),
             mock.patch("time.sleep"),
             self.assertRaises(SoundProviderError) as caught,
         ):
@@ -286,13 +295,16 @@ class ProviderTest(unittest.TestCase):
 
     def test_broken_response_is_a_fatal_provider_error(self):
         sfx = plan_sound_assets(request(item("a", "UI", "클릭")), PARSED)[0]
-        for error in (http.client.IncompleteRead(b"ab", 10), http.client.BadStatusLine("x")):
-            with (
-                mock.patch("urllib.request.urlopen", side_effect=error),
-                self.assertRaises(SoundProviderError) as caught,
-            ):
-                ElevenLabsSoundProvider(api_key="k").generate(sfx)
-            self.assertTrue(caught.exception.fatal)
+        (bgm,) = plan_sound_assets(request(item("b", "배경음악", "전투 음악")), PARSED)
+        errors = (http.client.IncompleteRead(b"ab", 10), http.client.BadStatusLine("x"))
+        for error in (*errors, TimeoutError("timed out")):
+            for target, fatal in ((sfx, True), (bgm, False)):  # long music may outlast the timeout
+                with (
+                    mock.patch("urllib.request.urlopen", side_effect=error),
+                    self.assertRaises(SoundProviderError) as caught,
+                ):
+                    ElevenLabsSoundProvider(api_key="k").generate(target)
+                self.assertEqual(caught.exception.fatal, fatal)
 
     def test_provider_selection(self):
         with mock.patch.dict(os.environ, {"SOUND_PROVIDER": "auto"}, clear=False):
@@ -355,6 +367,7 @@ class GenerateSoundNodeTest(unittest.TestCase):
 
     def test_elevenlabs_mp3_is_stored_as_mp3(self):
         os.environ["ELEVENLABS_API_KEY"] = "k"
+        os.environ["ELEVENLABS_OUTPUT_FORMAT"] = "mp3_44100_128"
         with mock.patch("urllib.request.urlopen", lambda req, timeout: FakeResponse(fake_mp3(2.0))):
             draft = self.manager.read_json(generate_sound_node(self.state)["sound_draft"])
         self.assertEqual(draft["status"], "generated")
@@ -371,6 +384,7 @@ class GenerateSoundNodeTest(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", side_effect=error) as urlopen:
             draft = self.manager.read_json(generate_sound_node(self.state)["sound_draft"])
         self.assertEqual(urlopen.call_count, 1)  # a bad key is not retried for the next asset
+        self.assertTrue(any("호출 생략" in note for note in draft["notes"]))
         self.assertEqual(draft["status"], "generated")
         self.assertTrue(
             any("procedural 대체" in note and "HTTP 401" in note for note in draft["notes"])
@@ -380,21 +394,19 @@ class GenerateSoundNodeTest(unittest.TestCase):
         os.environ["ELEVENLABS_API_KEY"] = "k"
         with mock.patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")) as urlopen:
             draft = self.manager.read_json(generate_sound_node(self.state)["sound_draft"])
-        # BGM: music times out, SFX endpoint times out too (fatal) -> hit_sfx skips the API.
-        self.assertEqual(urlopen.call_count, 2)
+        self.assertEqual(urlopen.call_count, 2)  # music (per-asset), then hit_sfx
         self.assertEqual(draft["status"], "generated")
         self.assertEqual([a["provider"] for a in draft["assets"]], ["procedural"] * 2)
         self.assertTrue(
             any("procedural 대체" in note and "TimeoutError" in note for note in draft["notes"])
         )
-        self.assertTrue(any("호출 생략" in note for note in draft["notes"]))
 
     def test_per_asset_http_error_does_not_trip_breaker(self):
         os.environ["ELEVENLABS_API_KEY"] = "k"
         error = urllib.error.HTTPError("u", 422, "Unprocessable", {}, io.BytesIO(b"bad prompt"))
         with mock.patch("urllib.request.urlopen", side_effect=error) as urlopen:
             generate_sound_node(self.state)
-        self.assertEqual(urlopen.call_count, 3)  # music, SFX fallback for BGM, hit_sfx
+        self.assertEqual(urlopen.call_count, 2)  # music and hit_sfx both tried
 
     def test_slow_music_api_does_not_trip_breaker(self):
         os.environ["ELEVENLABS_API_KEY"] = "k"
@@ -408,8 +420,8 @@ class GenerateSoundNodeTest(unittest.TestCase):
 
         with mock.patch("urllib.request.urlopen", fake_urlopen):
             draft = self.manager.read_json(generate_sound_node(self.state)["sound_draft"])
-        self.assertEqual(calls, ["/v1/music", "/v1/sound-generation", "/v1/sound-generation"])
-        self.assertEqual([a["provider"] for a in draft["assets"]], ["elevenlabs"] * 2)
+        self.assertEqual(calls, ["/v1/music", "/v1/sound-generation"])
+        self.assertEqual([a["provider"] for a in draft["assets"]], ["procedural", "elevenlabs"])
 
     def test_api_failure_without_fallback_marks_draft_failed(self):
         os.environ["ELEVENLABS_API_KEY"] = "k"
