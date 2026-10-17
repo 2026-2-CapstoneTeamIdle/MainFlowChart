@@ -127,7 +127,16 @@ NODE_IO: dict[str, tuple[set[str], set[str]]] = {
         {"integrated_game"},
     ),
     "final_validation": (
-        {"project_id", "logic_analysis", "integrated_game"},
+        {
+            "project_id",
+            "logic_analysis",
+            "integrated_game",
+            "parsed_request",
+            "game_logic_draft",
+            "game_validation_result",
+            "image_validation_result",
+            "sound_validation_result",
+        },
         {"final_validation_result"},
     ),
 }

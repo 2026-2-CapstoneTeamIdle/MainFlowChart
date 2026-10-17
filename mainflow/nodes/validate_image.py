@@ -151,6 +151,19 @@ def validate_image_node(
         "checks": checks,
         "issues": issues,
         "validated_asset_ids": validated_asset_ids,
+        "validated_assets": {
+            "manifest_version": "1.0.0",
+            "contract_version": CONTRACT_VERSION,
+            "assets": [
+                {
+                    key: asset[key]
+                    for key in ("asset_id", "unity_binding_key", "artifact", "file_format")
+                }
+                | {"asset_type": "image"}
+                for asset in draft["assets"]
+                if asset["asset_id"] in validated_asset_ids
+            ],
+        },
     }
     return {
         "image_validation_result": manager.write_json(

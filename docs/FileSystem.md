@@ -182,3 +182,16 @@ LLM이 MCP로 Unity 소스 등 생성 중인 작업 파일을 수정할 때도 `
 - [ ] `ContractRule.md`와 이 문서를 같은 커밋에서 갱신했다.
 - [ ] Graph의 핵심 노드와 Edge가 의도치 않게 바뀌지 않았는지 확인했다.
 - [ ] 병렬 실행 시 파일명 충돌과 manifest 갱신을 검증했다.
+
+## 최종 검증 증거와 패키지
+
+- `validation/image_validation_result.json`, `sound_validation_result.json`의 `validated_assets`는 최종 선택 파일 참조를 포함한다.
+- `generated/sounds/processed/*.wav`는 DSP 보정본이며 Unity 적용기는 선택된 참조의 실제 확장자를 사용한다.
+- `game/asset_binding_manifest.json`은 통합 게임의 `asset_binding_manifest` 참조로 전달한다.
+- `validation/final_unity_validation.log`: 에셋 적용 후 Unity 컴파일·Play Mode 실행 로그.
+- `validation/final_asset_binding_report.json`: 이번 실행의 import·registry·씬 바인딩 보고서 snapshot.
+- `validation/final_validation_result.json`: 기준별 판정, 실패 원인, `evidence` 참조와 최종 패키지 참조.
+- `game/validated_unity_project.zip`: 최종 통과한 경우에만 생성되는 Unity 실행 이후의 프로젝트 ZIP.
+
+기존 `game/integrated_unity_project.zip`은 에셋 복사 직후 패키지다. 최종 검증된 결과를 받을 때는
+`FinalValidationResult.entry_artifact`를 사용한다.

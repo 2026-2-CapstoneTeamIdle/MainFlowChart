@@ -84,6 +84,25 @@ Analysis 구현은 알려진 기능 표현을 규칙 기반으로 추출하고, 
 - 기계 판독 스키마는
   [`schemas/asset_generation_request.schema.json`](../schemas/asset_generation_request.schema.json)이다.
 
+### `ValidatedAssetManifest` (추가 계약)
+
+이미지·사운드 검증 결과의 `validated_assets`는 다음 객체를 담는다.
+
+- `manifest_version=1.0.0`, `contract_version=3.4.0`
+- `assets[]`: `asset_id`, `asset_type`, `unity_binding_key`, `artifact`, `file_format`
+- `assets`의 ID 집합은 `validated_asset_ids`와 같아야 하며 중복을 허용하지 않는다.
+- 이미지는 검증된 원본을 선택한다. 사운드는 DSP 보정본이 있으면 보정 WAV 참조와 `file_format=wav`를 선택한다.
+- 스키마: [`validated_asset_manifest.schema.json`](../schemas/validated_asset_manifest.schema.json).
+
+기존 3.4.0 payload를 읽기 위해 이 필드는 TypedDict에서 선택적이다. 기존 ID 목록만 가진 결과는
+적용기에서 원본 적용까지 호환하지만, 최종 검증에서는 선택 파일 증거가 없으므로 실패한다.
+현재 producer와 mock은 항상 새 manifest를 기록한다. 기본 Graph 순서와 기존 계약 버전은 유지한다.
+
+`IntegratedGame.asset_binding_manifest`는 workspace 바인딩 manifest의 `ArtifactReference`다.
+최종 검증을 통과한 패키지는 `FinalValidationResult.entry_artifact`로 전달하며, 적용 직후의
+`IntegratedGame.entry_artifact` ZIP과 구분한다. 실패 시 최종 패키지 참조는 `null`이다.
+`FinalValidationResult.evidence`에는 최종 Unity 로그와 바인딩 보고서 참조가 들어간다.
+
 ### `LogicAnalysis`
 
 - `logic_analysis_id`
@@ -162,7 +181,7 @@ Play Mode 검증은 `UNITY_PLAYTEST_METRICS` JSON 로그로 완료 여부, 경�
 | `validate_image` | 요청, 이미지 에셋 요청, 이미지 draft, 에셋 기준 | `image_validation_result` | validation 결과 |
 | `validate_sound` | 요청, 사운드 에셋 요청, 사운드 draft, 에셋 기준 | `sound_validation_result` | validation 결과 |
 | `apply_assets_to_game` | 세 draft와 이미지·사운드 검증 결과 | `integrated_game` | 통합 게임 |
-| `final_validation` | `logic_analysis`, 통합 게임 | `final_validation_result` | 최종 검증 결과 |
+| `final_validation` | `parsed_request`, `logic_analysis`, 게임 draft, 게임·이미지·사운드 검증 결과, 통합 게임 | `final_validation_result` | 최종 검증 결과 |
 
 ### `validate_game` 실행 모드
 
@@ -178,6 +197,23 @@ C# 컴파일, 전체 모듈 부착, Bootstrap 씬 조립까지 검사하고 로�
 - `MAINFLOW_UNITY_VALIDATION_MODE=static`: Unity를 실행하지 않고 정적 검사만 수행한다.
 - `UNITY_EDITOR_PATH`: 자동 탐색 대신 사용할 Unity 실행 파일 경로다.
 - `MAINFLOW_UNITY_VALIDATION_TIMEOUT_SECONDS`: Unity Batch Mode 제한 시간이며 기본값은 300초다.
+
+### `final_validation` 판정
+
+최종 단계는 `pending` 대신 `passed` 또는 `failed`를 기록한다. 게임·이미지·사운드의 선행 검증,
+필수 에셋 ID, 선택된 파일의 checksum/바이트, 바인딩 키, workspace와 Unity manifest의 일치성을 검사한다.
+이전 바인딩 보고서를 비운 후 `UnityProjectValidator(mode="required")`로 import/컴파일/씬 조립과
+Play Mode를 다시 실행한다. `MAINFLOW_UNITY_VALIDATION_MODE=static` 또는 `auto`로 앞 단계를
+실행해도 최종 통과에는 실제 Unity 실행이 필요하다. 런타임 검증을 끄거나 Unity를 찾지 못하면 실패한다.
+
+모든 적용 에셋은 새 보고서에서 import·registry 등록·씬 바인딩 증거를 가져야 한다. 모든 설계 시나리오와
+`start_to_goal`이 통과하고, 요청 기능의 모듈 바인딩과 미사용 기능 기록도 검증한다.
+`LogicAnalysis.criteria`는 같은 ID의 명시적 검증 결과 또는 기능별 Play Mode 증거로 판정한다.
+일치하는 증거가 없는 필수 기준은 실패한다. 특히 현재 기술 QC만으로 이미지의 `visual-style`이나
+사운드의 `sound-mood`가 통과했다고 추정하지 않는다. 내용 적합성 검증을 연결하기 전에는 이 기준이
+최종 통과를 막을 수 있다. 알 수 없는 선택 기준, 손상된 참조와 잘못된 설정도 실패 결과에 기록한다.
+
+통과 시 Unity 실행 이후 프로젝트를 다시 ZIP으로 만든다. CLI는 최종 검증이 실패하면 종료 코드 1을 반환한다.
 
 ## 변경 체크리스트
 

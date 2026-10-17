@@ -552,6 +552,19 @@ def mock_validate_image_node(
         ],
         "issues": [],
         "validated_asset_ids": [asset["asset_id"]] if passed else [],
+        "validated_assets": {
+            "manifest_version": "1.0.0",
+            "contract_version": CONTRACT_VERSION,
+            "assets": [
+                {
+                    key: asset[key]
+                    for key in ("asset_id", "unity_binding_key", "artifact", "file_format")
+                }
+                | {"asset_type": "image" if asset["artifact"]["category"] == "image" else "sound"}
+            ]
+            if passed
+            else [],
+        },
     }
     return {
         "image_validation_result": runtime.manager.write_json(
@@ -590,6 +603,19 @@ def mock_validate_sound_node(
         ],
         "issues": [],
         "validated_asset_ids": [asset["asset_id"]] if passed else [],
+        "validated_assets": {
+            "manifest_version": "1.0.0",
+            "contract_version": CONTRACT_VERSION,
+            "assets": [
+                {
+                    key: asset[key]
+                    for key in ("asset_id", "unity_binding_key", "artifact", "file_format")
+                }
+                | {"asset_type": "image" if asset["artifact"]["category"] == "image" else "sound"}
+            ]
+            if passed
+            else [],
+        },
     }
     return {
         "sound_validation_result": runtime.manager.write_json(
