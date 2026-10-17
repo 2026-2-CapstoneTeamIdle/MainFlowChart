@@ -11,6 +11,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# ffmpeg decodes MP3 sound assets for validate_sound.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 # Keep dependency installation cached until the lockfile changes.
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project

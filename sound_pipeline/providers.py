@@ -1,0 +1,316 @@
+"""Sound generation providers.
+
+``SOUND_PROVIDER`` selects the primary provider:
+
+- ``auto`` (default): ElevenLabs when ``ELEVENLABS_API_KEY`` is set, otherwise procedural
+- ``elevenlabs``: always call ElevenLabs
+- ``procedural``: offline synthesis only
+
+When ElevenLabs fails for an asset, the procedural provider is used instead
+unless ``SOUND_FALLBACK=none``; the fallback is recorded in the sound draft.
+"""
+
+from __future__ import annotations
+
+import http.client
+import io
+import json
+import os
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import wave
+from dataclasses import dataclass
+from typing import Protocol
+
+from sound_pipeline import procedural
+from sound_pipeline.planner import SoundPlan
+
+ELEVENLABS_URL = "https://api.elevenlabs.io"
+SOUND_EFFECTS_MAX_SECONDS = 30.0
+MUSIC_PATH = "/v1/music"
+# Key and permission errors (and detail.status == "quota_exceeded") fail every later request too.
+RUN_FATAL_STATUSES = frozenset({401, 403})
+FREE_TIER_PCM = "pcm_24000"  # highest PCM rate on Free/Starter/Creator; pcm_44100 needs Pro
+# Headerless PCM; channel counts are undocumented. Sound Effects: measured stereo (2026-10-17).
+# Music: its MP3s are stereo, PCM not measured yet. A wrong value doubles/halves the length,
+# which validate_sound flags as sound-duration-match.
+PCM_CHANNELS = {"sound-generation": 2, "music": 2}
+
+
+class SoundProviderError(RuntimeError):
+    """A provider could not produce audio for one asset."""
+
+    def __init__(self, message: str, status: int | None = None, fatal: bool = False) -> None:
+        super().__init__(message)
+        self.status = status
+        self.fatal = fatal  # True: skip this provider for the rest of the run
+
+
+@dataclass(frozen=True)
+class ProviderResult:
+    audio: bytes
+    model_id: str
+    request_id: str | None
+    file_format: str = "wav"  # "wav" or "mp3"
+    endpoint: str = "local"
+
+    @property
+    def media_type(self) -> str:
+        return "audio/mpeg" if self.file_format == "mp3" else "audio/wav"
+
+
+class SoundProvider(Protocol):
+    name: str
+
+    def generate(self, plan: SoundPlan) -> ProviderResult: ...
+
+
+def wav_duration(audio: bytes) -> float:
+    with wave.open(io.BytesIO(audio), "rb") as wav_file:
+        return round(wav_file.getnframes() / wav_file.getframerate(), 3)
+
+
+# MPEG audio frame header tables (Layer III only).
+_MP3_BITRATES = {
+    1: [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320],  # MPEG-1
+    2: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],  # MPEG-2/2.5
+}
+_MP3_SAMPLE_RATES = {3: [44100, 48000, 32000], 2: [22050, 24000, 16000], 0: [11025, 12000, 8000]}
+
+
+def _gapless_trim(frame: bytes, mpeg1: bool) -> int | None:
+    """Samples to drop if ``frame`` is a Xing/Info tag frame (it holds no audio), else None."""
+    mono = frame[3] >> 6 == 3
+    offset = 4 + ((17 if mono else 32) if mpeg1 else (9 if mono else 17))
+    if frame[offset : offset + 4] not in (b"Xing", b"Info"):
+        return None
+    if len(frame) < offset + 8:
+        return 0
+    flags = frame[offset + 7]  # which optional fields (frames, bytes, TOC, quality) follow
+    lame = offset + 8 + 4 * (flags & 1) + 4 * (flags >> 1 & 1) + 100 * (flags >> 2 & 1)
+    lame += 4 * (flags >> 3 & 1)
+    tag = frame[lame + 21 : lame + 24]  # LAME tag: 12-bit encoder delay, 12-bit end padding
+    if not frame[lame : lame + 1].isalpha() or len(tag) < 3:
+        return 0
+    return (tag[0] << 4 | tag[1] >> 4) + ((tag[1] & 0x0F) << 8 | tag[2])
+
+
+def mp3_duration(audio: bytes) -> float:
+    """Duration from MP3 frame headers; the sample rate comes from the file itself.
+
+    Like ffmpeg, the Xing/Info frame and the LAME encoder delay/padding are not counted.
+    """
+
+    position = 0
+    if audio[:3] == b"ID3" and len(audio) >= 10:
+        size = (audio[6] << 21) | (audio[7] << 14) | (audio[8] << 7) | audio[9]
+        position = 10 + size
+    seconds, frames, trim, sample_rate = 0.0, 0, None, 1
+    while position + 4 <= len(audio):
+        header = audio[position : position + 4]
+        if header[0] != 0xFF or (header[1] & 0xE0) != 0xE0:
+            position += 1
+            continue
+        version_bits = (header[1] >> 3) & 0x03  # 3=MPEG1, 2=MPEG2, 0=MPEG2.5
+        layer_bits = (header[1] >> 1) & 0x03  # 1=Layer III
+        bitrate_index = header[2] >> 4
+        rate_index = (header[2] >> 2) & 0x03
+        padding = (header[2] >> 1) & 0x01
+        if version_bits == 1 or layer_bits != 1 or bitrate_index in (0, 15) or rate_index == 3:
+            position += 1
+            continue
+        mpeg1 = version_bits == 3
+        bitrate = _MP3_BITRATES[1 if mpeg1 else 2][bitrate_index] * 1000
+        sample_rate = _MP3_SAMPLE_RATES[version_bits][rate_index]
+        samples = 1152 if mpeg1 else 576
+        length = (144 if mpeg1 else 72) * bitrate // sample_rate + padding
+        if trim is None:
+            trim = _gapless_trim(audio[position : position + length], mpeg1)
+            if trim is not None:
+                position += length
+                continue
+            trim = 0
+        seconds += samples / sample_rate
+        frames += 1
+        position += length
+    if not frames:
+        raise SoundProviderError("Response is not a decodable MP3 stream")
+    return round(max(seconds - (trim or 0) / sample_rate, 0.0), 3)
+
+
+def audio_duration(audio: bytes, file_format: str) -> float:
+    return mp3_duration(audio) if file_format == "mp3" else wav_duration(audio)
+
+
+def pcm_to_wav(pcm: bytes, sample_rate: int, channels: int = 1) -> bytes:
+    """Wrap raw 16-bit little-endian PCM (interleaved when stereo) in a WAV header."""
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(channels)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(pcm[: len(pcm) - len(pcm) % (2 * channels)])
+    return buffer.getvalue()
+
+
+class ProceduralSoundProvider:
+    name = "procedural"
+
+    def generate(self, plan: SoundPlan) -> ProviderResult:
+        seed = f"{plan.asset_id}:{plan.mood_style}:{plan.genre}"
+        if plan.kind == "bgm":
+            audio = procedural.render_bgm(
+                plan.mood_style, plan.genre, plan.duration_seconds, plan.loop, seed
+            )
+        else:
+            audio = procedural.render_sfx(
+                plan.category, plan.mood_style, plan.duration_seconds, plan.loop, seed
+            )
+        return ProviderResult(audio, "procedural_synth_v1", None)
+
+
+def _error_status(detail: str) -> str:
+    """ElevenLabs error bodies look like {"detail": {"status": "quota_exceeded", ...}}."""
+    try:
+        status = json.loads(detail)["detail"]["status"]
+    except (ValueError, KeyError, TypeError):
+        return ""
+    return status if isinstance(status, str) else ""
+
+
+class ElevenLabsSoundProvider:
+    """SFX via the Sound Effects endpoint; BGM via the Music endpoint.
+
+    - ``ELEVENLABS_OUTPUT_FORMAT`` (default ``pcm_44100``, Pro tier or above): lossless PCM
+      wrapped as WAV. On 401/403 the run retries at ``pcm_24000`` (still uncompressed);
+      if that is rejected too, it is a real key/permission error. ``mp3_*`` is stored as returned (validation then needs ffmpeg).
+    - ``ELEVENLABS_SFX_MODEL``: empty (default) lets ``/v1/sound-generation``
+      use its own sound-effects model; set an ID only to pin a specific model.
+    - BGM never uses the Sound Effects endpoint (30 s cap, not music); when the Music
+      API fails, the node falls back to the procedural synthesizer instead.
+    """
+
+    name = "elevenlabs"
+
+    def __init__(self, api_key: str | None = None, timeout: float | None = None) -> None:
+        self.api_key = api_key or os.environ.get("ELEVENLABS_API_KEY", "")
+        self.output_format = os.environ.get("ELEVENLABS_OUTPUT_FORMAT", "pcm_44100")
+        self.sfx_model = os.environ.get("ELEVENLABS_SFX_MODEL", "")
+        self.music_model = os.environ.get("ELEVENLABS_MUSIC_MODEL", "")
+        self.timeout = timeout or float(os.environ.get("SOUND_TIMEOUT_SECONDS", "90"))
+        if not (self.output_format.startswith("mp3_") or self.output_format.startswith("pcm_")):
+            raise ValueError("ELEVENLABS_OUTPUT_FORMAT must be an mp3_* or pcm_* format")
+
+    def _post(
+        self, path: str, body: dict[str, object], retry: bool = True
+    ) -> tuple[bytes, str | None]:
+        if not self.api_key:
+            raise SoundProviderError("ELEVENLABS_API_KEY is not set")
+        query = urllib.parse.urlencode({"output_format": self.output_format})
+        request = urllib.request.Request(
+            f"{ELEVENLABS_URL}{path}?{query}",
+            data=json.dumps(body).encode("utf-8"),
+            method="POST",
+            headers={"xi-api-key": self.api_key, "Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                headers = {key.lower(): value for key, value in response.headers.items()}
+                return response.read(), headers.get("request-id") or headers.get("x-request-id")
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")
+            reason = _error_status(detail)
+            if (
+                error.code in RUN_FATAL_STATUSES
+                and reason != "quota_exceeded"
+                and self.output_format.startswith("pcm_")
+                and self.output_format != FREE_TIER_PCM
+            ):
+                # Maybe the plan tier rejects this PCM rate (error text is not a stable API), so
+                # retry at the free-tier rate; a second 401/403 is a real key/permission error.
+                self.output_format = FREE_TIER_PCM
+                return self._post(path, body, retry)
+            if error.code == 429 and reason != "quota_exceeded" and retry:
+                # Concurrency/rate limit (e.g. a teammate on the same key) is transient.
+                try:
+                    # max() outside min(): negative and NaN values (time.sleep raises on both) become 0.
+                    wait = max(0.0, min(float(error.headers.get("Retry-After") or 1), 30.0))
+                except (ValueError, AttributeError):  # HTTP-date form, or no headers
+                    wait = 1.0
+                time.sleep(wait)
+                return self._post(path, body, retry=False)
+            raise SoundProviderError(
+                f"ElevenLabs HTTP {error.code} ({path}): {detail[:300]}",
+                error.code,
+                fatal=error.code in RUN_FATAL_STATUSES or reason == "quota_exceeded",
+            ) from error
+        except urllib.error.URLError as error:  # connect phase: DNS, refused, connect timeout
+            raise SoundProviderError(
+                f"Cannot reach ElevenLabs: {error.reason}", fatal=True
+            ) from error
+        # Waiting for/reading the response: TimeoutError, reset, IncompleteRead, BadStatusLine.
+        # Long music can legitimately outlast the timeout, so only that endpoint stays per-asset.
+        except (OSError, http.client.HTTPException) as error:
+            raise SoundProviderError(
+                f"ElevenLabs connection failed ({path}): {error!r}", fatal=path != MUSIC_PATH
+            ) from error
+
+    def _result(
+        self, payload: bytes, model: str, request_id: str | None, endpoint: str
+    ) -> ProviderResult:
+        if len(payload) < 4:
+            raise SoundProviderError("ElevenLabs returned no audio")
+        if self.output_format.startswith("pcm_"):
+            rate = int(self.output_format.split("_")[1])
+            audio = pcm_to_wav(payload, rate, PCM_CHANNELS[endpoint])
+            return ProviderResult(audio, model, request_id, "wav", endpoint)
+        mp3_duration(payload)  # validates the stream before it is stored
+        return ProviderResult(payload, model, request_id, "mp3", endpoint)
+
+    def _sound_effects(self, prompt: str, seconds: float, loop: bool) -> ProviderResult:
+        body: dict[str, object] = {
+            "text": prompt,
+            "duration_seconds": min(max(seconds, 0.5), SOUND_EFFECTS_MAX_SECONDS),
+            "prompt_influence": 0.5,
+        }
+        if self.sfx_model:
+            body["model_id"] = self.sfx_model
+        if loop:
+            body["loop"] = True
+        payload, request_id = self._post("/v1/sound-generation", body)
+        model = self.sfx_model or "sound_effects_api_default"
+        return self._result(payload, model, request_id, "sound-generation")
+
+    def _music(self, plan: SoundPlan) -> ProviderResult:
+        body: dict[str, object] = {
+            "prompt": plan.prompt,
+            "music_length_ms": int(plan.duration_seconds * 1000),  # planner keeps it in 3-600 s
+        }
+        if self.music_model:
+            body["model_id"] = self.music_model
+        payload, request_id = self._post(MUSIC_PATH, body)
+        return self._result(payload, self.music_model or "music_api_default", request_id, "music")
+
+    def generate(self, plan: SoundPlan) -> ProviderResult:
+        if plan.kind == "bgm":
+            return self._music(plan)
+        return self._sound_effects(plan.prompt, plan.duration_seconds, plan.loop)
+
+
+def primary_provider() -> SoundProvider:
+    choice = os.environ.get("SOUND_PROVIDER", "auto").lower()
+    if choice == "procedural":
+        return ProceduralSoundProvider()
+    if choice == "elevenlabs" or (choice == "auto" and os.environ.get("ELEVENLABS_API_KEY")):
+        return ElevenLabsSoundProvider()
+    if choice != "auto":
+        raise ValueError(f"Unsupported SOUND_PROVIDER: {choice}")
+    return ProceduralSoundProvider()
+
+
+def fallback_provider() -> SoundProvider | None:
+    if os.environ.get("SOUND_FALLBACK", "procedural").lower() == "none":
+        return None
+    return ProceduralSoundProvider()

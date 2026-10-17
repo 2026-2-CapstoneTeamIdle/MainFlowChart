@@ -230,13 +230,17 @@ class ImageDraft(TypedDict):
     notes: list[str]
 
 
-class SoundAsset(TypedDict):
+class SoundAssetRequired(TypedDict):
     asset_id: str
     name: str
     artifact: ArtifactReference
     file_format: str
     duration_seconds: float
     prompt: str
+
+
+class SoundAsset(SoundAssetRequired, total=False):
+    provider: str  # "procedural" marks a fallback placeholder that needs human review
 
 
 class SoundDraft(TypedDict):
@@ -462,6 +466,7 @@ class ValidateImageAgentOutput(TypedDict):
 class ValidateSoundAgentInput(TypedDict):
     project_id: str
     parsed_request: ArtifactReference
+    sound_asset_request: ArtifactReference
     sound_draft: ArtifactReference
     asset_validation_spec: ArtifactReference
 
