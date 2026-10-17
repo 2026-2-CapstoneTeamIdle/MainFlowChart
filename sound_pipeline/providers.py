@@ -16,7 +16,6 @@ import http.client
 import io
 import json
 import os
-import re
 import time
 import urllib.error
 import urllib.parse
@@ -34,6 +33,10 @@ MUSIC_PATH = "/v1/music"
 # Key and permission errors (and detail.status == "quota_exceeded") fail every later request too.
 RUN_FATAL_STATUSES = frozenset({401, 403})
 FREE_TIER_PCM = "pcm_24000"  # highest PCM rate on Free/Starter/Creator; pcm_44100 needs Pro
+# Headerless PCM; channel counts are undocumented. Sound Effects: measured stereo (2026-10-17).
+# Music: its MP3s are stereo, PCM not measured yet. A wrong value doubles/halves the length,
+# which validate_sound flags as sound-duration-match.
+PCM_CHANNELS = {"sound-generation": 2, "music": 2}
 
 
 class SoundProviderError(RuntimeError):
@@ -181,8 +184,8 @@ class ElevenLabsSoundProvider:
     """SFX via the Sound Effects endpoint; BGM via the Music endpoint.
 
     - ``ELEVENLABS_OUTPUT_FORMAT`` (default ``pcm_44100``, Pro tier or above): lossless PCM
-      wrapped as WAV. If the plan rejects that PCM rate, the run switches to ``pcm_24000``
-      (still uncompressed). ``mp3_*`` is stored as returned (validation then needs ffmpeg).
+      wrapped as WAV. On 401/403 the run retries at ``pcm_24000`` (still uncompressed);
+      if that is rejected too, it is a real key/permission error. ``mp3_*`` is stored as returned (validation then needs ffmpeg).
     - ``ELEVENLABS_SFX_MODEL``: empty (default) lets ``/v1/sound-generation``
       use its own sound-effects model; set an ID only to pin a specific model.
     - BGM never uses the Sound Effects endpoint (30 s cap, not music); when the Music
@@ -221,11 +224,12 @@ class ElevenLabsSoundProvider:
             reason = _error_status(detail)
             if (
                 error.code in RUN_FATAL_STATUSES
+                and reason != "quota_exceeded"
                 and self.output_format.startswith("pcm_")
                 and self.output_format != FREE_TIER_PCM
-                and re.search(r"output[ _]format", detail, re.IGNORECASE)
             ):
-                # Plan tier rejects this PCM rate: keep lossless output at the free-tier rate.
+                # Maybe the plan tier rejects this PCM rate (error text is not a stable API), so
+                # retry at the free-tier rate; a second 401/403 is a real key/permission error.
                 self.output_format = FREE_TIER_PCM
                 return self._post(path, body, retry)
             if error.code == 429 and reason != "quota_exceeded" and retry:
@@ -254,25 +258,21 @@ class ElevenLabsSoundProvider:
             ) from error
 
     def _result(
-        self, payload: bytes, model: str, request_id: str | None, endpoint: str, seconds: float
+        self, payload: bytes, model: str, request_id: str | None, endpoint: str
     ) -> ProviderResult:
         if len(payload) < 4:
             raise SoundProviderError("ElevenLabs returned no audio")
         if self.output_format.startswith("pcm_"):
             rate = int(self.output_format.split("_")[1])
-            # Channels are undocumented: a real pcm_44100 SFX response (2026-10-17) was interleaved
-            # stereo, while ElevenLabs TTS PCM is mono. One channel's worth of bytes means mono.
-            channels = 1 if len(payload) < 1.5 * rate * 2 * seconds else 2
-            audio = pcm_to_wav(payload, rate, channels)
+            audio = pcm_to_wav(payload, rate, PCM_CHANNELS[endpoint])
             return ProviderResult(audio, model, request_id, "wav", endpoint)
         mp3_duration(payload)  # validates the stream before it is stored
         return ProviderResult(payload, model, request_id, "mp3", endpoint)
 
     def _sound_effects(self, prompt: str, seconds: float, loop: bool) -> ProviderResult:
-        seconds = min(max(seconds, 0.5), SOUND_EFFECTS_MAX_SECONDS)
         body: dict[str, object] = {
             "text": prompt,
-            "duration_seconds": seconds,
+            "duration_seconds": min(max(seconds, 0.5), SOUND_EFFECTS_MAX_SECONDS),
             "prompt_influence": 0.5,
         }
         if self.sfx_model:
@@ -281,7 +281,7 @@ class ElevenLabsSoundProvider:
             body["loop"] = True
         payload, request_id = self._post("/v1/sound-generation", body)
         model = self.sfx_model or "sound_effects_api_default"
-        return self._result(payload, model, request_id, "sound-generation", seconds)
+        return self._result(payload, model, request_id, "sound-generation")
 
     def _music(self, plan: SoundPlan) -> ProviderResult:
         body: dict[str, object] = {
@@ -291,8 +291,7 @@ class ElevenLabsSoundProvider:
         if self.music_model:
             body["model_id"] = self.music_model
         payload, request_id = self._post(MUSIC_PATH, body)
-        model = self.music_model or "music_api_default"
-        return self._result(payload, model, request_id, "music", plan.duration_seconds)
+        return self._result(payload, self.music_model or "music_api_default", request_id, "music")
 
     def generate(self, plan: SoundPlan) -> ProviderResult:
         if plan.kind == "bgm":

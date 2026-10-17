@@ -242,48 +242,47 @@ class ProviderTest(unittest.TestCase):
             self.assertEqual(wav_file.getframerate(), 48000)
         self.assertEqual(wav_duration(result.audio), 0.5)
 
-    def test_pcm_channels_follow_payload_size(self):
-        (sfx,) = plan_sound_assets(request(item("s", "UI", "클릭")), PARSED)  # 0.5 s requested
-        for frame, channels in ((bytes([0, 1, 0, 2]), 2), (bytes([0, 1]), 1)):
-            response = FakeResponse(frame * 22050)  # 0.5 s at 44.1 kHz
-            with mock.patch("urllib.request.urlopen", lambda req, timeout, r=response: r):
-                result = ElevenLabsSoundProvider(api_key="k").generate(sfx)
+    def test_pcm_channels_do_not_depend_on_returned_length(self):
+        (sfx, bgm) = plan_sound_assets(
+            request(item("s", "UI", "클릭"), item("b", "배경음악", "전투 음악")), PARSED
+        )
+        for plan in (sfx, bgm):
+            short = FakeResponse(bytes([0, 1, 0, 2]) * 8820)  # 0.2 s stereo, far from the request
+            with mock.patch("urllib.request.urlopen", lambda req, timeout, r=short: r):
+                result = ElevenLabsSoundProvider(api_key="k").generate(plan)
             with open_wav(result.audio) as wav_file:
-                self.assertEqual(wav_file.getnchannels(), channels)
-            self.assertEqual(wav_duration(result.audio), 0.5)
+                self.assertEqual(wav_file.getnchannels(), 2)
+            self.assertEqual(wav_duration(result.audio), 0.2)
 
-    def test_pro_only_pcm_rate_falls_back_to_free_tier_pcm(self):
+    def test_rejected_pcm_rate_retries_at_free_tier_rate(self):
         (sfx, hit) = plan_sound_assets(
             request(item("s", "UI", "클릭"), item("h", "공격 효과음", "타격음")), PARSED
         )
-        tier = b"Requested output format pcm_44100 (PCM at 44100hz) is only allowed for Pro tier"
         urls = []
 
         def fake_urlopen(req, timeout):
-            urls.append(req.full_url)
+            urls.append(req.full_url.split("output_format=")[1])
             if "pcm_44100" in req.full_url:
-                raise http_error(403, tier)
+                raise http_error(403, b"{}")  # no reliance on the error wording
             return FakeResponse(bytes([0, 1, 0, 2]) * 24000)
 
         provider = ElevenLabsSoundProvider(api_key="k")
         with mock.patch("urllib.request.urlopen", fake_urlopen):
-            first, second = provider.generate(sfx), provider.generate(hit)
-        self.assertEqual(
-            [u.split("output_format=")[1] for u in urls], ["pcm_44100", "pcm_24000", "pcm_24000"]
-        )
-        for result in (first, second):
+            results = provider.generate(sfx), provider.generate(hit)
+        self.assertEqual(urls, ["pcm_44100", "pcm_24000", "pcm_24000"])
+        for result in results:
             with open_wav(result.audio) as wav_file:
                 self.assertEqual(wav_file.getframerate(), 24000)
 
-    def test_bad_key_is_not_mistaken_for_tier_limit(self):
+    def test_bad_key_fails_after_free_tier_retry(self):
         (sfx,) = plan_sound_assets(request(item("s", "UI", "클릭")), PARSED)
-        bad_key = http_error(401, b'{"detail": {"status": "invalid_api_key"}}')
+        bad_key = [http_error(401, b"invalid key"), http_error(401, b"invalid key")]
         with (
             mock.patch("urllib.request.urlopen", side_effect=bad_key) as urlopen,
             self.assertRaises(SoundProviderError) as caught,
         ):
             ElevenLabsSoundProvider(api_key="k").generate(sfx)
-        self.assertEqual(urlopen.call_count, 1)
+        self.assertEqual(urlopen.call_count, 2)
         self.assertTrue(caught.exception.fatal)
 
     def test_transient_429_waits_and_retries_once(self):
@@ -418,7 +417,8 @@ class GenerateSoundNodeTest(unittest.TestCase):
         error = urllib.error.HTTPError("u", 401, "Unauthorized", {}, io.BytesIO(b"bad key"))
         with mock.patch("urllib.request.urlopen", side_effect=error) as urlopen:
             draft = self.manager.read_json(generate_sound_node(self.state)["sound_draft"])
-        self.assertEqual(urlopen.call_count, 1)  # a bad key is not retried for the next asset
+        # pcm_44100, then the free-tier retry; the next asset is skipped by the breaker.
+        self.assertEqual(urlopen.call_count, 2)
         self.assertTrue(any("호출 생략" in note for note in draft["notes"]))
         self.assertEqual(draft["status"], "generated")
         self.assertTrue(

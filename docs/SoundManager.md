@@ -32,7 +32,7 @@
 | `ELEVENLABS_API_KEY` | (없음) | ElevenLabs API 키. 이미지·workspace·manifest에 저장하지 않는다 |
 | `SOUND_FALLBACK` | `procedural` | ElevenLabs 실패 시 절차적 합성으로 대체. `none`이면 대체하지 않고 실패 기록 |
 | `SOUND_BGM_SECONDS` | `30` | BGM 길이(초). Music API 범위인 3–600초로 맞춘다 |
-| `ELEVENLABS_OUTPUT_FORMAT` | `pcm_44100` | 무손실 PCM을 받아 WAV로 감싸 저장한다. `pcm_44100`은 ElevenLabs **Pro 요금제 이상**이 필요하다. 요금제가 이를 거절하면(401/403, 오류 메시지에 output format 포함) 그 실행은 무료 요금제 최고 PCM인 `pcm_24000`으로 바꿔 다시 요청한다(무압축, 단 12 kHz 이상 고음은 없음). PCM 채널 수는 문서에 없어 받은 크기로 mono/stereo를 판단한다(실측: Sound Effects는 stereo). 형식은 크레딧에 영향이 없다. `mp3_*`를 지정하면 MP3를 그대로 저장하며 검증에 ffmpeg가 필요하다 |
+| `ELEVENLABS_OUTPUT_FORMAT` | `pcm_44100` | 무손실 PCM을 받아 WAV로 감싸 저장한다. `pcm_44100`은 ElevenLabs **Pro 요금제 이상**이 필요하다. 401/403이 오면 오류 문구와 상관없이 그 실행은 무료 요금제 최고 PCM인 `pcm_24000`으로 바꿔 한 번 다시 요청하고, 그래도 401/403이면 키·권한 오류로 본다(무압축, 단 12 kHz 이상 고음은 없음). PCM 채널 수는 문서에 없어 엔드포인트별 고정값(`PCM_CHANNELS`)을 쓴다. Sound Effects는 실측 stereo, Music은 MP3 기준 stereo로 두었고 PCM 실측이 필요하다. 형식은 크레딧에 영향이 없다. `mp3_*`를 지정하면 MP3를 그대로 저장하며 검증에 ffmpeg가 필요하다 |
 | `ELEVENLABS_SFX_MODEL` | (비움) | 비우면 `model_id`를 보내지 않아 Sound Effects 엔드포인트의 기본 모델을 쓴다. 특정 모델을 고정할 때만 ID를 넣는다 |
 | `ELEVENLABS_MUSIC_MODEL` | (비움) | 비우면 Music API의 기본 모델을 쓴다 |
 | `SOUND_TIMEOUT_SECONDS` | `90` | API 요청 제한 시간. 긴 BGM을 Music API로 만들 때 시간이 모자라면 늘린다 |
