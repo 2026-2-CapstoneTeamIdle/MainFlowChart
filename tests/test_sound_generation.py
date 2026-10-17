@@ -83,6 +83,17 @@ def fake_mp3(seconds: float) -> bytes:
     return b"ID3\x03\x00\x00\x00\x00\x00\x00" + (b"\xff\xfb\x90\x00" + b"\x00" * 413) * frames
 
 
+def lame_info_frame(delay: int, padding: int) -> bytes:
+    """Xing/Info tag frame (no audio) carrying the LAME encoder delay and end padding."""
+    tag = b"Info" + b"\x00\x00\x00\x0f" + b"\x00" * 112 + b"LAME3.100" + b"\x00" * 12
+    tag += bytes([delay >> 4, (delay & 0x0F) << 4 | padding >> 8, padding & 0xFF])
+    return (b"\xff\xfb\x90\x00" + b"\x00" * 32 + tag).ljust(417, b"\x00")
+
+
+def http_error(code: int, body: bytes, headers=None):
+    return urllib.error.HTTPError("u", code, "x", headers or {}, io.BytesIO(body))
+
+
 def open_wav(audio: bytes):
     return wave.open(io.BytesIO(audio), "rb")
 
@@ -147,6 +158,11 @@ class ProviderTest(unittest.TestCase):
         self.assertAlmostEqual(mp3_duration(fake_mp3(0.9)), 0.9, delta=0.03)
         with self.assertRaises(SoundProviderError):
             mp3_duration(b"\x00" * 1000)
+
+    def test_mp3_duration_skips_info_frame_and_encoder_padding(self):
+        # Measured on ffmpeg/libmp3lame output of a 0.5 s tone: 21 audio frames, delay 576, pad 1566.
+        audio = lame_info_frame(576, 1566) + (b"\xff\xfb\x90\x00" + b"\x00" * 413) * 21
+        self.assertEqual(mp3_duration(audio), 0.5)
 
     def test_sound_effects_use_endpoint_default_model_and_mp3(self):
         calls = []
@@ -227,6 +243,37 @@ class ProviderTest(unittest.TestCase):
         with open_wav(result.audio) as wav_file:
             self.assertEqual(wav_file.getframerate(), 48000)
         self.assertAlmostEqual(wav_duration(result.audio), 0.1, places=2)
+
+    def test_transient_429_waits_and_retries_once(self):
+        (sfx,) = plan_sound_assets(request(item("s", "UI", "클릭")), PARSED)
+        busy = b'{"detail": {"status": "too_many_concurrent_requests"}}'
+        responses = [http_error(429, busy, {"Retry-After": "2"}), FakeResponse(fake_mp3(0.5))]
+        with (
+            mock.patch("urllib.request.urlopen", side_effect=responses) as urlopen,
+            mock.patch("time.sleep") as sleep,
+        ):
+            ElevenLabsSoundProvider(api_key="k").generate(sfx)
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called_once_with(2.0)
+
+        with (
+            mock.patch("urllib.request.urlopen", side_effect=lambda *a, **k: http_error(429, busy)),
+            mock.patch("time.sleep"),
+            self.assertRaises(SoundProviderError) as caught,
+        ):
+            ElevenLabsSoundProvider(api_key="k").generate(sfx)
+        self.assertFalse(caught.exception.fatal)
+
+    def test_quota_exceeded_is_fatal_without_retry(self):
+        (sfx,) = plan_sound_assets(request(item("s", "UI", "클릭")), PARSED)
+        quota = http_error(429, b'{"detail": {"status": "quota_exceeded", "message": "x"}}')
+        with (
+            mock.patch("urllib.request.urlopen", side_effect=quota) as urlopen,
+            self.assertRaises(SoundProviderError) as caught,
+        ):
+            ElevenLabsSoundProvider(api_key="k").generate(sfx)
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertTrue(caught.exception.fatal)
 
     def test_broken_response_is_a_fatal_provider_error(self):
         sfx = plan_sound_assets(request(item("a", "UI", "클릭")), PARSED)[0]
@@ -324,7 +371,8 @@ class GenerateSoundNodeTest(unittest.TestCase):
         os.environ["ELEVENLABS_API_KEY"] = "k"
         with mock.patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")) as urlopen:
             draft = self.manager.read_json(generate_sound_node(self.state)["sound_draft"])
-        self.assertEqual(urlopen.call_count, 1)  # circuit breaker: hit_sfx skips the API
+        # BGM: music times out, SFX endpoint times out too (fatal) -> hit_sfx skips the API.
+        self.assertEqual(urlopen.call_count, 2)
         self.assertEqual(draft["status"], "generated")
         self.assertEqual([a["provider"] for a in draft["assets"]], ["procedural"] * 2)
         self.assertTrue(
@@ -337,7 +385,22 @@ class GenerateSoundNodeTest(unittest.TestCase):
         error = urllib.error.HTTPError("u", 422, "Unprocessable", {}, io.BytesIO(b"bad prompt"))
         with mock.patch("urllib.request.urlopen", side_effect=error) as urlopen:
             generate_sound_node(self.state)
-        self.assertEqual(urlopen.call_count, 2)
+        self.assertEqual(urlopen.call_count, 3)  # music, SFX fallback for BGM, hit_sfx
+
+    def test_slow_music_api_does_not_trip_breaker(self):
+        os.environ["ELEVENLABS_API_KEY"] = "k"
+        calls = []
+
+        def fake_urlopen(req, timeout):
+            calls.append(req.full_url.split("?")[0].removeprefix("https://api.elevenlabs.io"))
+            if "/v1/music" in req.full_url:
+                raise TimeoutError("timed out")
+            return FakeResponse(fake_mp3(2.0))
+
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            draft = self.manager.read_json(generate_sound_node(self.state)["sound_draft"])
+        self.assertEqual(calls, ["/v1/music", "/v1/sound-generation", "/v1/sound-generation"])
+        self.assertEqual([a["provider"] for a in draft["assets"]], ["elevenlabs"] * 2)
 
     def test_api_failure_without_fallback_marks_draft_failed(self):
         os.environ["ELEVENLABS_API_KEY"] = "k"

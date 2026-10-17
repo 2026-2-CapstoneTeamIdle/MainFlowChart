@@ -35,11 +35,13 @@
 | `ELEVENLABS_OUTPUT_FORMAT` | `mp3_44100_128` | MP3를 받은 그대로 저장한다. 샘플레이트를 파일 헤더에서 읽으므로 재생 속도가 틀어지지 않는다. `pcm_<rate>`를 지정하면 WAV로 감싸 저장한다 |
 | `ELEVENLABS_SFX_MODEL` | (비움) | 비우면 `model_id`를 보내지 않아 Sound Effects 엔드포인트의 기본 모델을 쓴다. 특정 모델을 고정할 때만 ID를 넣는다 |
 | `ELEVENLABS_MUSIC_MODEL` | (비움) | 비우면 Music API의 기본 모델을 쓴다 |
-| `ELEVENLABS_BGM_ENDPOINT` | `auto` | `auto`: Music API를 먼저 호출하고, 요금제 제한(HTTP 402)이면 Sound Effects 엔드포인트로 최대 30초 루프 BGM을 만든다 / `music` / `sound_effects` |
+| `ELEVENLABS_BGM_ENDPOINT` | `auto` | `auto`: Music API를 먼저 호출하고, 요금제 제한(HTTP 402)·타임아웃 등으로 실패하면 Sound Effects 엔드포인트로 최대 30초 루프 BGM을 만든다 / `music` / `sound_effects` |
 | `SOUND_TIMEOUT_SECONDS` | `90` | API 요청 제한 시간. 긴 BGM을 Music API로 만들 때 시간이 모자라면 늘린다 |
 
 - **ElevenLabs**: 효과음은 `POST /v1/sound-generation`(Sound Effects), BGM은 `POST /v1/music`(`music_length_ms`)을 호출한다. 기본은 MP3로 받아 그대로 저장한다. 무료 요금제는 Music API를 쓸 수 없으므로(HTTP 402 `paid_plan_required`) BGM은 Sound Effects 엔드포인트의 루프 생성으로 대체된다.
-- **실패 처리**: 연결 오류(타임아웃·연결 끊김·비정상 응답)나 HTTP 401/403/429(키·권한·할당량)가 한 번 나면, 그 실행의 남은 에셋은 ElevenLabs를 다시 호출하지 않고 바로 대체(fallback)한다.
+- **실패 처리**: 연결 실패(DNS·연결 거부), HTTP 401/403(키·권한), 할당량 초과(`detail.status` = `quota_exceeded`), 효과음 엔드포인트의 응답 타임아웃·연결 끊김이 한 번 나면 그 실행의 남은 에셋은 ElevenLabs를 다시 호출하지 않고 바로 대체(fallback)한다.
+  - Music API(`/v1/music`)의 타임아웃·오류는 그 에셋만 실패로 본다. `ELEVENLABS_BGM_ENDPOINT=auto`면 402와 마찬가지로 Sound Effects 엔드포인트로 BGM을 다시 만든다.
+  - 할당량 초과가 아닌 429(동시 요청·속도 제한)는 `Retry-After`(최대 30초)만큼 기다렸다가 한 번 재시도한다.
 - **절차적 합성(procedural)**: 외부 의존성 없이 표준 라이브러리로 합성하는 오프라인 대체 음원이다. API 키가 없어도 Workflow와 Unity 연결을 끝까지 테스트할 수 있지만 품질은 임시용이다.
 
 ## 3. 결과물

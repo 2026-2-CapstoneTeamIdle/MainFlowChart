@@ -16,6 +16,7 @@ import http.client
 import io
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -28,8 +29,9 @@ from sound_pipeline.planner import SoundPlan
 
 ELEVENLABS_URL = "https://api.elevenlabs.io"
 SOUND_EFFECTS_MAX_SECONDS = 30.0
-# Key, permission and quota/rate errors fail every later request in the same run too.
-RUN_FATAL_STATUSES = frozenset({401, 403, 429})
+MUSIC_PATH = "/v1/music"
+# Key and permission errors (and detail.status == "quota_exceeded") fail every later request too.
+RUN_FATAL_STATUSES = frozenset({401, 403})
 
 
 class SoundProviderError(RuntimeError):
@@ -73,14 +75,34 @@ _MP3_BITRATES = {
 _MP3_SAMPLE_RATES = {3: [44100, 48000, 32000], 2: [22050, 24000, 16000], 0: [11025, 12000, 8000]}
 
 
+def _gapless_trim(frame: bytes, mpeg1: bool) -> int | None:
+    """Samples to drop if ``frame`` is a Xing/Info tag frame (it holds no audio), else None."""
+    mono = frame[3] >> 6 == 3
+    offset = 4 + ((17 if mono else 32) if mpeg1 else (9 if mono else 17))
+    if frame[offset : offset + 4] not in (b"Xing", b"Info"):
+        return None
+    if len(frame) < offset + 8:
+        return 0
+    flags = frame[offset + 7]  # which optional fields (frames, bytes, TOC, quality) follow
+    lame = offset + 8 + 4 * (flags & 1) + 4 * (flags >> 1 & 1) + 100 * (flags >> 2 & 1)
+    lame += 4 * (flags >> 3 & 1)
+    tag = frame[lame + 21 : lame + 24]  # LAME tag: 12-bit encoder delay, 12-bit end padding
+    if not frame[lame : lame + 1].isalpha() or len(tag) < 3:
+        return 0
+    return (tag[0] << 4 | tag[1] >> 4) + ((tag[1] & 0x0F) << 8 | tag[2])
+
+
 def mp3_duration(audio: bytes) -> float:
-    """Duration from MP3 frame headers; the sample rate comes from the file itself."""
+    """Duration from MP3 frame headers; the sample rate comes from the file itself.
+
+    Like ffmpeg, the Xing/Info frame and the LAME encoder delay/padding are not counted.
+    """
 
     position = 0
     if audio[:3] == b"ID3" and len(audio) >= 10:
         size = (audio[6] << 21) | (audio[7] << 14) | (audio[8] << 7) | audio[9]
         position = 10 + size
-    seconds, frames = 0.0, 0
+    seconds, frames, trim, sample_rate = 0.0, 0, None, 1
     while position + 4 <= len(audio):
         header = audio[position : position + 4]
         if header[0] != 0xFF or (header[1] & 0xE0) != 0xE0:
@@ -99,12 +121,18 @@ def mp3_duration(audio: bytes) -> float:
         sample_rate = _MP3_SAMPLE_RATES[version_bits][rate_index]
         samples = 1152 if mpeg1 else 576
         length = (144 if mpeg1 else 72) * bitrate // sample_rate + padding
+        if trim is None:
+            trim = _gapless_trim(audio[position : position + length], mpeg1)
+            if trim is not None:
+                position += length
+                continue
+            trim = 0
         seconds += samples / sample_rate
         frames += 1
         position += length
     if not frames:
         raise SoundProviderError("Response is not a decodable MP3 stream")
-    return round(seconds, 3)
+    return round(max(seconds - (trim or 0) / sample_rate, 0.0), 3)
 
 
 def audio_duration(audio: bytes, file_format: str) -> float:
@@ -137,6 +165,15 @@ class ProceduralSoundProvider:
         return ProviderResult(audio, "procedural_synth_v1", None)
 
 
+def _error_status(detail: str) -> str:
+    """ElevenLabs error bodies look like {"detail": {"status": "quota_exceeded", ...}}."""
+    try:
+        status = json.loads(detail)["detail"]["status"]
+    except (ValueError, KeyError, TypeError):
+        return ""
+    return status if isinstance(status, str) else ""
+
+
 class ElevenLabsSoundProvider:
     """SFX via the Sound Effects endpoint; BGM via the Music endpoint.
 
@@ -163,7 +200,9 @@ class ElevenLabsSoundProvider:
         if not (self.output_format.startswith("mp3_") or self.output_format.startswith("pcm_")):
             raise ValueError("ELEVENLABS_OUTPUT_FORMAT must be an mp3_* or pcm_* format")
 
-    def _post(self, path: str, body: dict[str, object]) -> tuple[bytes, str | None]:
+    def _post(
+        self, path: str, body: dict[str, object], retry: bool = True
+    ) -> tuple[bytes, str | None]:
         if not self.api_key:
             raise SoundProviderError("ELEVENLABS_API_KEY is not set")
         query = urllib.parse.urlencode({"output_format": self.output_format})
@@ -178,20 +217,30 @@ class ElevenLabsSoundProvider:
                 headers = {key.lower(): value for key, value in response.headers.items()}
                 return response.read(), headers.get("request-id") or headers.get("x-request-id")
         except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")[:300]
+            detail = error.read().decode("utf-8", errors="replace")
+            reason = _error_status(detail)
+            if error.code == 429 and reason != "quota_exceeded" and retry:
+                # Concurrency/rate limit (e.g. a teammate on the same key) is transient.
+                try:
+                    wait = min(float(error.headers.get("Retry-After") or 1), 30.0)
+                except (ValueError, AttributeError):  # HTTP-date form, or no headers
+                    wait = 1.0
+                time.sleep(wait)
+                return self._post(path, body, retry=False)
             raise SoundProviderError(
-                f"ElevenLabs HTTP {error.code} ({path}): {detail}",
+                f"ElevenLabs HTTP {error.code} ({path}): {detail[:300]}",
                 error.code,
-                fatal=error.code in RUN_FATAL_STATUSES,
+                fatal=error.code in RUN_FATAL_STATUSES or reason == "quota_exceeded",
             ) from error
-        except urllib.error.URLError as error:
+        except urllib.error.URLError as error:  # connect phase: DNS, refused, connect timeout
             raise SoundProviderError(
                 f"Cannot reach ElevenLabs: {error.reason}", fatal=True
             ) from error
-        # TimeoutError, reset during read, IncompleteRead, BadStatusLine (e.g. a broken proxy)
+        # Waiting for/reading the response: TimeoutError, reset, IncompleteRead, BadStatusLine.
+        # Long music can legitimately outlast the timeout, so only that endpoint stays per-asset.
         except (OSError, http.client.HTTPException) as error:
             raise SoundProviderError(
-                f"ElevenLabs connection failed: {error!r}", fatal=True
+                f"ElevenLabs connection failed ({path}): {error!r}", fatal=path != MUSIC_PATH
             ) from error
 
     def _result(
@@ -226,7 +275,7 @@ class ElevenLabsSoundProvider:
         }
         if self.music_model:
             body["model_id"] = self.music_model
-        payload, request_id = self._post("/v1/music", body)
+        payload, request_id = self._post(MUSIC_PATH, body)
         return self._result(payload, self.music_model or "music_api_default", request_id, "music")
 
     def generate(self, plan: SoundPlan) -> ProviderResult:
@@ -237,7 +286,8 @@ class ElevenLabsSoundProvider:
         try:
             return self._music(plan)
         except SoundProviderError as error:
-            if self.bgm_endpoint != "auto" or error.status != 402:
+            # auto: paid-plan limits (402), slow or failed music requests use the SFX endpoint.
+            if self.bgm_endpoint != "auto" or error.fatal:
                 raise
             return self._sound_effects(plan.prompt, plan.duration_seconds, plan.loop)
 
