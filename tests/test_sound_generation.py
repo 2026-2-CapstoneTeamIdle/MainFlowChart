@@ -256,6 +256,15 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(urlopen.call_count, 2)
         sleep.assert_called_once_with(2.0)
 
+        for bad in ("-5", "nan"):
+            responses = [http_error(429, busy, {"Retry-After": bad}), FakeResponse(fake_mp3(0.5))]
+            with (
+                mock.patch("urllib.request.urlopen", side_effect=responses),
+                mock.patch("time.sleep") as sleep,
+            ):
+                ElevenLabsSoundProvider(api_key="k").generate(sfx)
+            sleep.assert_called_once_with(0.0)
+
         with (
             mock.patch("urllib.request.urlopen", side_effect=lambda *a, **k: http_error(429, busy)),
             mock.patch("time.sleep"),

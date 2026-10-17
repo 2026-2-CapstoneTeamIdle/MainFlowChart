@@ -222,7 +222,8 @@ class ElevenLabsSoundProvider:
             if error.code == 429 and reason != "quota_exceeded" and retry:
                 # Concurrency/rate limit (e.g. a teammate on the same key) is transient.
                 try:
-                    wait = min(float(error.headers.get("Retry-After") or 1), 30.0)
+                    # max() outside min(): negative and NaN values (time.sleep raises on both) become 0.
+                    wait = max(0.0, min(float(error.headers.get("Retry-After") or 1), 30.0))
                 except (ValueError, AttributeError):  # HTTP-date form, or no headers
                     wait = 1.0
                 time.sleep(wait)
