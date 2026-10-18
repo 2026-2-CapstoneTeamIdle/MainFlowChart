@@ -259,6 +259,34 @@ class GameFailureIsolationTest(unittest.TestCase):
                 return modules
 
             feature_generator.generate.side_effect = generated_modules
+            feature_generator.repair.side_effect = lambda design, _feedback: design[
+                "generated_modules"
+            ]
+            context_reviewer = MagicMock()
+            context_reviewer.review.return_value = {
+                "approved": False,
+                "summary": "generated module needs one contextual repair",
+                "inspected_files": [
+                    "game/unity_project/Assets/GameTemplate/Generated/Scripts/GeneratedFeature01Module.cs"
+                ],
+                "issues": [
+                    {
+                        "severity": "error",
+                        "category": "api",
+                        "relative_path": (
+                            "game/unity_project/Assets/GameTemplate/Generated/Scripts/"
+                            "GeneratedFeature01Module.cs"
+                        ),
+                        "line": 1,
+                        "message": "referenced API does not match the project contract",
+                        "suggested_fix": "use the binding context API",
+                    }
+                ],
+                "provider": "fake",
+                "model": "fake",
+                "turns": 2,
+                "tool_calls": ["list_project_files", "read_project_text"],
+            }
             with (
                 patch.dict(
                     os.environ,
@@ -270,6 +298,11 @@ class GameFailureIsolationTest(unittest.TestCase):
                 patch(
                     "mainflow.nodes.design_game_logic.create_feature_generator_from_environment",
                     return_value=feature_generator,
+                ),
+                patch(
+                    "mainflow.nodes.design_game_logic."
+                    "create_project_context_reviewer_from_environment",
+                    return_value=context_reviewer,
                 ),
                 patch(
                     "mainflow.nodes.design_game_logic.validate_and_repair",
@@ -300,6 +333,19 @@ class GameFailureIsolationTest(unittest.TestCase):
                 self.assertEqual(game_draft["status"], "failed")
                 self.assertEqual(len(blueprint_artifacts), 1)
                 self.assertIn("simulated repair exhaustion", " ".join(game_draft["notes"]))
+                feature_generator.repair.assert_called_once()
+                context_report = next(
+                    artifact
+                    for artifact in manager.list_artifacts(final_state["project_id"], "validation")
+                    if artifact["relative_path"] == "validation/project_context_review.json"
+                )
+                self.assertTrue(manager.read_json(context_report)["repair_applied"])
+                self.assertTrue(
+                    (
+                        manager.ensure_project(final_state["project_id"])
+                        / "game/unity_project_before_context_repair"
+                    ).is_dir()
+                )
 
     def test_image_and_sound_branches_complete_when_game_generation_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

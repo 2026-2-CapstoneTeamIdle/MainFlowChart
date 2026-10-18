@@ -49,6 +49,8 @@
 - 기존 모듈, 생성 모듈, prefab, UI와 장르별 씬 조립
 - 플랫포머 `level_plan`의 구역·발판·위험물·수집물·체크포인트 배치
 - 정적 검사, Unity Batchmode 컴파일, SceneAssembler, Play Mode smoke test
+- AI 생성 모듈이 있으면 Unity 실행 전에 MCP로 조립된 프로젝트의 관련 C#과 바인딩 API를 검수
+- 문맥 검수 오류는 생성 모듈 repair와 프로젝트 재조립을 거쳐 Unity 검증으로 전달
 - 실패를 code/scene/level/balance/content/binding/test/infrastructure로 분류
 - 레벨·밸런스·콘텐츠의 결정론적 수정과 프로젝트 재생성
 - Play Mode 로그 기반 100점 품질 보고서

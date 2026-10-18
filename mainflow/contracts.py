@@ -377,6 +377,7 @@ class ImplementationTask(TypedDict):
         "level_assembly",
         "ui_binding",
         "project_generation",
+        "project_context_review",
         "unity_validation",
         "quality_evaluation",
         "packaging",

@@ -27,6 +27,12 @@ from game_pipeline.unity_asset_applicator import (
     UnityAssetApplicator,
 )
 from game_pipeline.unity_project_generator import UnityGenerationResult, UnityProjectGenerator
+from game_pipeline.project_context_reviewer import (
+    ProjectContextReview,
+    ProjectContextReviewer,
+    create_project_context_reviewer_from_environment,
+    review_feedback,
+)
 from game_pipeline.unity_project_validator import (
     UnityProjectValidator,
     UnityValidationOutcome,
@@ -44,6 +50,10 @@ __all__ = [
     "UnityAssetApplicator",
     "UnityGenerationResult",
     "UnityProjectGenerator",
+    "ProjectContextReview",
+    "ProjectContextReviewer",
+    "create_project_context_reviewer_from_environment",
+    "review_feedback",
     "UnityProjectValidator",
     "UnityValidationOutcome",
     "attach_generated_modules",

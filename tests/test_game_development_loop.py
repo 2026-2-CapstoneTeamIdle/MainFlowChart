@@ -62,6 +62,7 @@ class GameDevelopmentLoopTest(unittest.TestCase):
             evidence=lambda class_name: f"compiled {class_name}",
         )
         loop.run_task("unity-project-generation", lambda: "project")
+        loop.run_task("project-context-review", lambda: "approved")
         loop.run_task("unity-playmode-validation", lambda: "passed")
         loop.run_task("quality-evaluation", lambda: "score=100")
         loop.run_task("package-project", lambda: b"archive")

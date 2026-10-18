@@ -114,10 +114,20 @@ def build_implementation_tasks(
                 ["the generated project is complete and has a resolvable Bootstrap scene"],
             ),
             _task(
+                "project-context-review",
+                "project_context_review",
+                "Inspect generated modules against the assembled Unity project through MCP.",
+                ["unity-project-generation"],
+                [
+                    "generated code references only verified project APIs",
+                    "cross-file compile and binding risks are repaired before Unity starts",
+                ],
+            ),
+            _task(
                 "unity-playmode-validation",
                 "unity_validation",
                 "Compile the project and execute the validation_plan Play Mode scenarios.",
-                ["unity-project-generation"],
+                ["project-context-review"],
                 [
                     "Unity batch compilation and scene assembly pass",
                     "all executable validation scenarios pass in Play Mode",
@@ -157,6 +167,7 @@ def _task(
         "level_assembly",
         "ui_binding",
         "project_generation",
+        "project_context_review",
         "unity_validation",
         "quality_evaluation",
         "packaging",

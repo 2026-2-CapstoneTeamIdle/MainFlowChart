@@ -75,6 +75,7 @@ docker compose down
 |---|---|
 | `list_project_files` | `{project_id}` 내부 파일 목록 조회 |
 | `read_project_text` | UTF-8 작업 파일 내용과 SHA-256 조회 |
+| `search_project_text` | 지정 디렉터리의 UTF-8 파일에서 문자열을 검색하고 경로·행·발췌 반환 |
 | `write_project_text` | UTF-8 작업 파일 생성 또는 SHA-256 기반 수정 |
 
 도구가 접근하는 범위는 `MAINFLOW_WORKSPACE/{project_id}` 내부로 제한된다. 절대 경로와 `..` 경로
@@ -93,6 +94,28 @@ docker compose down
 
 다른 Agent가 먼저 파일을 변경하면 해시가 일치하지 않아 수정이 거부된다. 다시 읽은 뒤 변경 내용을
 병합해야 한다.
+
+### Unity 실행 전 프로젝트 문맥 검수
+
+AI가 생성한 Unity 모듈이 있을 때 `design_game_logic`은 프로젝트 조립 직후
+`project-context-review` 작업을 실행한다.
+
+```text
+Unity 프로젝트 조립
+  → MCP 파일 목록 조회
+  → 생성 C# 전체 읽기
+  → 참조 타입·메서드 검색 및 관련 정의 읽기
+  → SceneAssembler/바인딩 계약 교차 검수
+  → 오류가 있으면 기존 feature generator의 검증된 repair 경로로 재생성
+  → Unity 컴파일·Play Mode 검증
+```
+
+검수 모델에는 `list_project_files`, `read_project_text`, `search_project_text`만 공개하며 쓰기 도구는
+허용하지 않는다. 모델이 오류를 보고하면 호스트가 `GeminiFeatureGenerator.repair()`를 호출하고,
+수정 전 프로젝트를 `unity_project_before_context_repair*`로 보존한 뒤 manifest와 source hash를 포함한
+프로젝트 전체를 다시 생성한다. 검수 증거는
+`validation/project_context_review.json`에 저장한다. AI 생성 모듈이 없는 경우에는 API 호출 없이
+해당 작업을 통과 처리한다.
 
 ## 4. Artifact와 작업 파일
 
@@ -200,6 +223,7 @@ runner = MCPToolLLMRunner(manager, provider)
 
 - `user_input`: 파일 목록과 읽기만 허용
 - 나머지 현재 Workflow Node: 목록, 읽기, 작업 파일 쓰기 허용
+- `project_context_review`: 목록, 읽기, 검색만 허용하며 쓰기는 금지
 
 서버에 새 도구를 추가해도 정책에 등록하지 않으면 해당 Node의 LLM에는 보이지 않는다. 모델이 도구
 이름을 임의로 호출해도 `MCPManager`가 실행 전에 다시 거부한다.
@@ -226,6 +250,9 @@ runner = MCPToolLLMRunner(manager, provider)
 | `LLM_{NODE}_PROVIDER` | 없음 | 특정 Node 공급자 재정의, 예: `LLM_ANALYSIS_PROVIDER` |
 | `LLM_{NODE}_MODEL` | 없음 | 특정 Node 모델 재정의, 예: `LLM_ANALYSIS_MODEL` |
 | `LLM_TIMEOUT_SECONDS` | `120` | OpenAI 호환 HTTP 요청 제한 시간 |
+| `LLM_PROJECT_CONTEXT_REVIEW_PROVIDER` | 기능 생성 제공자 | 문맥 검수 전용 공급자 재정의 |
+| `LLM_PROJECT_CONTEXT_REVIEW_MODEL` | 공급자 기본값 | 문맥 검수 전용 모델 재정의 |
+| `MAINFLOW_PROJECT_REVIEW_TOOL_ROUNDS` | `8` | 문맥 검수 MCP 호출 라운드 수(2~16) |
 | `GEMINI_API_KEY` | 없음 | Gemini API 인증 키 |
 | `GEMINI_MODEL` | `gemini-3-flash-preview` | Gemini 기본 모델 |
 | `OPENAI_API_KEY` | 없음 | OpenAI API 인증 키 |
