@@ -16,8 +16,10 @@ from game_pipeline import (
     create_blueprint_planner_from_environment,
     create_design_v2_planner_from_environment,
     create_feature_generator_from_environment,
+    create_project_context_reviewer_from_environment,
     normalize_game_spec,
     plan_feature_mechanics,
+    review_feedback,
 )
 from game_pipeline.feature_contract import build_feature_contract
 from game_pipeline.repair_loop import validate_and_repair
@@ -264,6 +266,81 @@ def design_game_logic_node(
                 producer="design_game_logic",
             )
 
+        context_review_report: dict[str, object]
+        if design["generated_modules"]:
+            log("MCP로 조립된 Unity 프로젝트 문맥을 검수하고 필요한 코드를 사전 수정합니다.")
+
+            def review_project_context():
+                reviewer = create_project_context_reviewer_from_environment(
+                    state["project_id"],
+                    provider=feature_provider,
+                )
+                report = reviewer.review(state["project_id"], design)
+                if report["approved"]:
+                    return design, generation, {**report, "repair_applied": False}
+                if feature_generator is None:
+                    raise RuntimeError(
+                        "Project context review found errors without a feature generator"
+                    )
+                revised = deepcopy(design)
+                revised["generated_modules"] = feature_generator.repair(
+                    design,
+                    review_feedback(report),
+                )
+                backup = _available_context_review_backup(generation.project_root)
+                generation.project_root.rename(backup)
+                regenerated = unity_generator.generate(
+                    revised,
+                    generation.project_root,
+                    image_style=request["image_style"],
+                    mood_style=request["mood_style"],
+                    viewpoint=request["viewpoint"],
+                    reference_image=request["custom_image"],
+                )
+                return (
+                    revised,
+                    regenerated,
+                    {
+                        **report,
+                        "repair_applied": True,
+                        "preserved_project": backup.name,
+                    },
+                )
+
+            design, generation, context_review_report = development_loop.run_task(
+                "project-context-review",
+                review_project_context,
+                evidence=lambda result: (
+                    f"inspected {len(result[2]['inspected_files'])} files with "
+                    f"{len(result[2]['issues'])} findings; "
+                    f"repair_applied={result[2]['repair_applied']}"
+                ),
+            )
+        else:
+            context_review_report = {
+                "approved": True,
+                "summary": "No AI-generated Unity modules required contextual LLM review.",
+                "inspected_files": [],
+                "issues": [],
+                "provider": "none",
+                "model": "none",
+                "turns": 0,
+                "tool_calls": [],
+                "repair_applied": False,
+                "skipped": True,
+            }
+            development_loop.mark_passed(
+                "project-context-review",
+                "skipped because the project contains no AI-generated modules",
+            )
+        manager.write_json(
+            state["project_id"],
+            "validation",
+            "project_context_review.json",
+            context_review_report,
+            producer="design_game_logic",
+        )
+
         log("Unity 컴파일·Play Mode 검증 후 필요하면 생성 코드를 수정합니다.")
 
         def validate_unity_project():
@@ -481,3 +558,16 @@ def design_game_logic_node(
         "image_asset_request": image_request_reference,
         "sound_asset_request": sound_request_reference,
     }
+
+
+def _available_context_review_backup(root: Path) -> Path:
+    """Preserve the project inspected by the LLM before regenerating repaired code."""
+
+    base = root.with_name(f"{root.name}_before_context_repair")
+    if not base.exists():
+        return base
+    for suffix in range(1, 100):
+        candidate = root.with_name(f"{root.name}_before_context_repair_{suffix}")
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(f"Too many preserved context-review projects beside {root}")

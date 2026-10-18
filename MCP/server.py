@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from fnmatch import fnmatch
 from typing import Any
 
 from mcp.server.mcpserver.exceptions import ToolError
@@ -82,6 +83,73 @@ def read_project_text(project_id: str, relative_path: str) -> dict[str, Any]:
             return _file_payload(project_id, relative_path, content)
         except UnicodeDecodeError as error:
             raise ValueError(f"File is not UTF-8 text: {relative_path}") from error
+    except (OSError, TypeError, ValueError) as error:
+        raise ToolError(str(error)) from error
+
+
+@mcp.tool()
+def search_project_text(
+    project_id: str,
+    query: str,
+    relative_directory: str = ".",
+    glob_pattern: str = "*.cs",
+    max_results: int = 50,
+) -> dict[str, Any]:
+    """Search UTF-8 project files for a literal string and return bounded line excerpts."""
+
+    try:
+        settings = MCPSettings.from_environment()
+        if not query or len(query) > 200:
+            raise ValueError("query must contain between 1 and 200 characters")
+        if not 1 <= max_results <= 100:
+            raise ValueError("max_results must be between 1 and 100")
+        manager = ArtifactManager()
+        paths = manager.list_project_files(
+            project_id,
+            relative_directory,
+            recursive=True,
+            limit=settings.max_list_entries,
+        )
+        needle = query.casefold()
+        matches: list[dict[str, Any]] = []
+        skipped_files = 0
+        for path in paths:
+            if not fnmatch(path.name, glob_pattern):
+                continue
+            try:
+                content = manager.read_project_file(
+                    project_id,
+                    path,
+                    max_bytes=settings.max_text_bytes,
+                ).decode("utf-8")
+            except (OSError, UnicodeDecodeError, ValueError):
+                skipped_files += 1
+                continue
+            for line_number, line in enumerate(content.splitlines(), start=1):
+                if needle not in line.casefold():
+                    continue
+                matches.append(
+                    {
+                        "relative_path": path.as_posix(),
+                        "line_number": line_number,
+                        "excerpt": line.strip()[:500],
+                    }
+                )
+                if len(matches) >= max_results:
+                    return {
+                        "project_id": project_id,
+                        "query": query,
+                        "matches": matches,
+                        "truncated": True,
+                        "skipped_files": skipped_files,
+                    }
+        return {
+            "project_id": project_id,
+            "query": query,
+            "matches": matches,
+            "truncated": False,
+            "skipped_files": skipped_files,
+        }
     except (OSError, TypeError, ValueError) as error:
         raise ToolError(str(error)) from error
 
