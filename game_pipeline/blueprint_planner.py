@@ -136,16 +136,31 @@ class GameBlueprintPlanner:
         self.client = client
         self.provider = provider
 
-    def generate(self, game_spec: GameSpec, design_intent: str) -> GameBlueprint:
-        fallback = build_game_blueprint(game_spec, design_intent)
+    def generate(
+        self,
+        game_spec: GameSpec,
+        design_intent: str,
+        *,
+        variation_seed: str = "",
+    ) -> GameBlueprint:
+        fallback = build_game_blueprint(
+            game_spec,
+            design_intent,
+            variation_seed=variation_seed,
+        )
         response = self.client.generate_json(
-            self._prompt(game_spec, design_intent, fallback),
+            self._prompt(game_spec, design_intent, fallback, variation_seed),
             BLUEPRINT_SCHEMA,
         )
         return self._validate(response, fallback)
 
     @staticmethod
-    def _prompt(game_spec: GameSpec, design_intent: str, fallback: GameBlueprint) -> str:
+    def _prompt(
+        game_spec: GameSpec,
+        design_intent: str,
+        fallback: GameBlueprint,
+        variation_seed: str = "",
+    ) -> str:
         return (
             "You are the scene planner for a Unity 2D prototype. Produce a concise game "
             "blueprint from the request. This is data only: do not write C#, instructions, "
@@ -159,6 +174,7 @@ class GameBlueprintPlanner:
                     "title": game_spec["title"],
                     "viewpoint": game_spec["viewpoint"],
                     "user_request": design_intent,
+                    "variation_seed": variation_seed,
                     "features": [feature["description"] for feature in game_spec["features"]],
                     "fallback_blueprint": fallback,
                 },

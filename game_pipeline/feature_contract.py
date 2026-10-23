@@ -4,9 +4,16 @@ from pathlib import Path
 import re
 from typing import Any
 
+from game_pipeline.project_context_index import (
+    build_project_context_index,
+    compact_api_contract,
+    retrieve_prompt_api_contract,
+)
+
 
 def build_feature_contract() -> dict[str, Any]:
     runtime = Path(__file__).resolve().parent.parent / "unity_template/Assets/GameTemplate/Runtime"
+    structured_index = build_project_context_index(runtime)
     types = {
         "Core/GameModuleBehaviour.cs": "GameModuleBehaviour",
         "Core/IGeneratedFeatureModule.cs": "GeneratedFeatureBindingContext",
@@ -26,10 +33,11 @@ def build_feature_contract() -> dict[str, Any]:
                 end += 1
             sources[name] = source[match.start() : end]
     return {
-        "version": "1.0.0",
+        "version": "2.0.0",
         "engine": "Unity 6 / C# / Physics2D",
         "binding": {"target": "context.Player", "modules": "context.GetModule<T>()"},
         "runtime_api_sources": sources,
+        "structured_api_index": compact_api_contract(structured_index),
         "ownership": {
             "horizontal_velocity": "PlatformerMovementModule owns velocity.x each FixedUpdate",
             "jump": "PlatformerMovementModule consumes buffered ConfirmPressed",
@@ -57,48 +65,26 @@ def build_feature_contract() -> dict[str, Any]:
     }
 
 
-def build_generation_contract() -> dict[str, Any]:
+def build_generation_contract(
+    selected_module_ids: list[str] | None = None,
+    *,
+    requirement_text: str = "",
+    max_module_types: int = 6,
+    max_dependency_types: int = 6,
+) -> dict[str, Any]:
     """Return a compact allow-list for small models instead of full runtime source files."""
 
+    runtime = Path(__file__).resolve().parent.parent / "unity_template/Assets/GameTemplate/Runtime"
+    structured = retrieve_prompt_api_contract(
+        build_project_context_index(runtime),
+        selected_module_ids=selected_module_ids,
+        requirement_text=requirement_text,
+        max_module_types=max_module_types,
+        max_dependency_types=max_dependency_types,
+    )
     return {
-        "contract_version": "1.1.0",
-        "project_types": {
-            "GameModuleBehaviour": {
-                "namespace": "TeamIdle.GameTemplate.Core",
-                "members": [
-                    "bool IsInitialized { get; }",
-                    "string ModuleId { get; }",
-                    "protected override void OnInitialize(GameContext context)",
-                ],
-            },
-            "GeneratedFeatureBindingContext": {
-                "namespace": "TeamIdle.GameTemplate.Core",
-                "members": [
-                    "GameObject Player { get; }",
-                    "Transform Environment { get; }",
-                    "Transform Entities { get; }",
-                    "Transform Ui { get; }",
-                    "T GetModule<T>() where T : Component",
-                ],
-                "scope": "The variable named context exists only inside BindGeneratedFeature.",
-            },
-            "InputAdapterModule": {
-                "namespace": "TeamIdle.GameTemplate.Common",
-                "members": [
-                    "Vector2 Movement { get; }",
-                    "bool ConfirmPressed { get; }",
-                    "bool CancelPressed { get; }",
-                ],
-            },
-            "PlatformerMovementModule": {
-                "namespace": "TeamIdle.GameTemplate.Platformer",
-                "members": [
-                    "string ModuleId { get; }",
-                    "void Bind(Rigidbody2D body, Transform groundCheck = null)",
-                ],
-                "ownership": "Already implements ordinary horizontal movement and jumping.",
-            },
-        },
+        "contract_version": "2.0.0",
+        **structured,
         "unity_2d_allow_list": [
             "Rigidbody2D.linearVelocity",
             "Rigidbody2D.gravityScale",
@@ -106,8 +92,16 @@ def build_generation_contract() -> dict[str, Any]:
             "Physics2D.Raycast",
             "Physics2D.OverlapCircleAll",
             "Collider2D",
+            "BoxCollider2D",
+            "CircleCollider2D",
+            "GameObject",
+            "GameObject.AddComponent<T>()",
+            "SpriteRenderer",
+            "Sprite.Create",
+            "Texture2D.whiteTexture",
             "RaycastHit2D",
             "Transform",
+            "Transform.SetParent",
             "Vector2",
             "Mathf",
             "Time",
@@ -116,7 +110,7 @@ def build_generation_contract() -> dict[str, Any]:
             "Do not recreate base movement, jumping, health, or another selected module.",
             "A generated module implements only its one requested feature.",
             "Store dependencies in private fields during BindGeneratedFeature.",
-            "Never invent a member that is absent from project_types.",
+            "Never invent a member that is absent from project_types[type].public_api.",
             "Never use CompareTag or GameObject.tag; identify objects through bound references and components.",
         ],
     }

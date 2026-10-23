@@ -43,7 +43,7 @@ namespace TeamIdle.GameTemplate.Editor
             Anchor(topPanel.rectTransform, new Vector2(0f, 1f), new Vector2(0f, 1f));
             topPanel.rectTransform.pivot = new Vector2(0f, 1f);
             topPanel.rectTransform.anchoredPosition = new Vector2(24f, -24f);
-            topPanel.rectTransform.sizeDelta = new Vector2(430f, 112f);
+            topPanel.rectTransform.sizeDelta = new Vector2(680f, 112f);
 
             var healthText = CreateText("HealthText", topPanel.transform, 28, FontStyle.Bold);
             Anchor(healthText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f));

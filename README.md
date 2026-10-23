@@ -85,6 +85,19 @@ $env:LOCAL_LLM_MODEL="qwen2.5-coder-7b-q5-k-m"
 상태는 `workspace/{project_id}/validation/development/`에 남기므로 실패 위치와 재시도 이력을
 확인할 수 있다.
 
+생성 모듈은 Unity 실행 전에 MCP 프로젝트 문맥 검수를 거친다. 필수 생성 파일은 호스트가 먼저
+읽어 모델에 제공하며 불완전한 검수는 기본 2회까지만 재시도한다. 자연어 요약 대신 C# 파일을
+결정적으로 스캔한 `game/project_context_index.json`에 클래스, 실제 공개 API, 이벤트, 모듈 ID와
+원본 요구사항 ID를 보존한다. 단계별 설계와 기능 생성에는 선택 모듈 중심의 압축 API 인덱스를
+전달한다. 신규 기능 생성 시에는 요구사항의 기능·장르 키워드로 관련 모듈을 검색하고 정확한 API
+시그니처만 보내므로 8K 로컬 모델에 전체 프로젝트 인덱스를 반복 전송하지 않는다. 호출 전에는
+`LOCAL_LLM_CONTEXT_TOKENS`와 출력 예약량을 기준으로 입력 예산도 검사한다. 문맥 검수 모델은 이
+인덱스에 없는 멤버를 사용할 수 없다. 독립 Validator AI도 완성된
+프로젝트 인덱스를 먼저 읽고 요구사항 누락 여부를 판정한다. 모든 에셋 적용과 Unity 최종
+검증이 끝나면 별도의 읽기 전용 `game_quality_validator`가 요구사항 충족, 진행 가능성, 콘텐츠,
+밸런스와 UI 피드백을 평가한다. 결과는
+`workspace/{project_id}/validation/game_validator_ai_result.json`에 저장된다.
+
 - 장르: `플랫포머`, `타워 디펜스`, `카드`, `비주얼 노벨`, `육성 시뮬레이션`, `뱀서류`
 - 시점: `사이드뷰`, `탑다운`, `쿼터뷰`, `고정 화면`
 - 조건: 비어 있지 않은 한 문장
@@ -182,7 +195,8 @@ flowchart TD
     ImageValidate --> ApplyAssets[검증 에셋 게임 적용]
     SoundValidate --> ApplyAssets
     ApplyAssets --> FinalValidate[최종 검증]
-    FinalValidate --> END
+    FinalValidate --> ValidatorAI[독립 Game Validator AI]
+    ValidatorAI --> END
 ```
 
 State에는 실제 파일 대신 `ArtifactReference`만 전달한다. 각 Node의 입력·출력 State와 파일은

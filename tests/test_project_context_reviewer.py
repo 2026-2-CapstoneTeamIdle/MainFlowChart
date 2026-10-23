@@ -93,8 +93,10 @@ class ReviewingProvider:
                     "approved": True,
                     "summary": "The generated binding API exists and matches its use.",
                     "inspected_files": [
-                        "game/unity_project/Assets/GameTemplate/Generated/Scripts/"
-                        "TimeRewindModule.cs"
+                        (
+                            "game/unity_project/Assets/GameTemplate/Generated/Scripts/"
+                            "TimeRewindModule.cs"
+                        )
                     ],
                     "issues": [],
                 }
@@ -103,6 +105,89 @@ class ReviewingProvider:
 
     async def aclose(self) -> None:
         self.closed = True
+
+
+class RetryReviewingProvider(ReviewingProvider):
+    async def complete(
+        self,
+        messages: list[LLMConversationMessage],
+        tools: list[MCPToolDefinition],
+        *,
+        system_prompt: str | None,
+        temperature: float,
+        require_tool: bool,
+    ) -> LLMProviderResponse:
+        self.calls += 1
+        if self.calls == 1:
+            return LLMProviderResponse(
+                text="",
+                tool_calls=(
+                    LLMToolCall(
+                        call_id="first-list",
+                        name="list_project_files",
+                        arguments={
+                            "project_id": self.project_id,
+                            "relative_directory": "game/unity_project",
+                        },
+                    ),
+                ),
+            )
+        if self.calls == 2:
+            return LLMProviderResponse(
+                text=json.dumps(
+                    {
+                        "approved": True,
+                        "summary": "Incomplete first attempt.",
+                        "inspected_files": [
+                            (
+                                "game/unity_project/Assets/GameTemplate/Generated/Scripts/"
+                                "TimeRewindModule.cs"
+                            )
+                        ],
+                        "issues": [],
+                    }
+                )
+            )
+        if self.calls == 3:
+            return LLMProviderResponse(
+                text="",
+                tool_calls=(
+                    LLMToolCall(
+                        call_id="retry-list",
+                        name="list_project_files",
+                        arguments={
+                            "project_id": self.project_id,
+                            "relative_directory": "game/unity_project",
+                        },
+                    ),
+                    LLMToolCall(
+                        call_id="retry-read",
+                        name="read_project_text",
+                        arguments={
+                            "project_id": self.project_id,
+                            "relative_path": (
+                                "game/unity_project/Assets/GameTemplate/Generated/Scripts/"
+                                "TimeRewindModule.cs"
+                            ),
+                        },
+                    ),
+                ),
+            )
+        return LLMProviderResponse(
+            text=json.dumps(
+                {
+                    "approved": True,
+                    "summary": "The bounded retry completed the required inspection.",
+                    "inspected_files": [
+                        (
+                            "game/unity_project/Assets/GameTemplate/Generated/Scripts/"
+                            "TimeRewindModule.cs"
+                        )
+                    ],
+                    "issues": [],
+                }
+            )
+        )
 
 
 class ProjectContextReviewerTest(unittest.TestCase):
@@ -146,6 +231,43 @@ class ProjectContextReviewerTest(unittest.TestCase):
         self.assertEqual(report["provider"], "fake")
         self.assertEqual(report["turns"], 4)
         self.assertIn("search_project_text", report["tool_calls"])
+        self.assertTrue(provider.closed)
+
+    def test_review_retries_an_incomplete_tool_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory) / "workspace"
+            with patch.dict(os.environ, {"MAINFLOW_WORKSPACE": str(workspace)}):
+                manager = ArtifactManager()
+                project_id = manager.create_project()
+                relative_path = (
+                    "game/unity_project/Assets/GameTemplate/Generated/Scripts/TimeRewindModule.cs"
+                )
+                manager.write_project_text(project_id, relative_path, "public class X {}\n")
+                provider = RetryReviewingProvider(project_id)
+                reviewer = ProjectContextReviewer(
+                    MCPManager(
+                        "project_context_review",
+                        server_target=mcp,
+                        project_id=project_id,
+                    ),
+                    provider,
+                    max_attempts=2,
+                )
+                report = reviewer.review(
+                    project_id,
+                    {
+                        "generated_modules": [
+                            {
+                                "module_id": "time_rewind",
+                                "class_name": "TimeRewindModule",
+                                "feature_description": "rewind player state",
+                            }
+                        ]
+                    },
+                )
+
+        self.assertTrue(report["approved"])
+        self.assertEqual(provider.calls, 4)
         self.assertTrue(provider.closed)
 
 

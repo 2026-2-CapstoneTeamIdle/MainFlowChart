@@ -173,7 +173,7 @@ Play Mode 검증은 `UNITY_PLAYTEST_METRICS` JSON 로그로 완료 여부, 경�
 | `parse_input` | 사용자 입력 | `project_id`, `parsed_request` | `data/parsed_request.json`, 조건부 Custom 이미지 |
 | `analysis` | `project_id`, `parsed_request` | `analysis` | `data/analysis.json` |
 | `logic_analysis` | `project_id`, `parsed_request`, `analysis` | `logic_analysis` | `data/logic_analysis.json` |
-| `design_game_logic` | 위 세 참조와 `project_id` | 게임 draft, 이미지·사운드 요청 참조 | 7개 v2 설계 JSON, `game/implementation_tasks.json`, 단계별 실행 증거, `game/asset_requests/*.json`, Unity 프로젝트, ZIP |
+| `design_game_logic` | 위 세 참조와 `project_id` | 게임 draft, 이미지·사운드 요청 참조 | 7개 v2 설계 JSON, `game/implementation_tasks.json`, `game/project_context_index.json`, 단계별 실행 증거, `game/asset_requests/*.json`, Unity 프로젝트, ZIP |
 | `generate_image` | 분석 참조와 `image_asset_request` | `image_draft` | `generated/images/image_draft.json` |
 | `generate_sound` | 분석 참조와 `sound_asset_request` | `sound_draft` | `generated/sounds/sound_draft.json` |
 | `validate_game` | `parsed_request`, `logic_analysis`, 게임 draft | `game_validation_result` | validation 결과 |
@@ -182,6 +182,12 @@ Play Mode 검증은 `UNITY_PLAYTEST_METRICS` JSON 로그로 완료 여부, 경�
 | `validate_sound` | 요청, 사운드 에셋 요청, 사운드 draft, 에셋 기준 | `sound_validation_result` | validation 결과 |
 | `apply_assets_to_game` | 세 draft와 이미지·사운드 검증 결과 | `integrated_game` | 통합 게임 |
 | `final_validation` | `parsed_request`, `logic_analysis`, 게임 draft, 게임·이미지·사운드 검증 결과, 통합 게임 | `final_validation_result` | 최종 검증 결과 |
+| `game_quality_validator` | 전체 요구사항, draft, 게임·이미지·사운드·최종 검증 결과, 통합 게임 | `game_validator_ai_result` | 독립 AI 품질 평가 |
+
+`game/project_context_index.json`은 자연어 요약이 아니라 생성된 C#을 결정적으로 스캔한 계약이다.
+파일 해시, 클래스와 상속 관계, 공개 메서드·속성·필드·이벤트, `module_id`, 기능 및 검증 기준 ID,
+설계 이벤트 연결을 원문 구조로 보존한다. 코드 생성기와 Validator는 이 인덱스에 없는 프로젝트
+멤버를 존재한다고 가정할 수 없다.
 
 ### `validate_game` 실행 모드
 
@@ -214,6 +220,14 @@ Play Mode를 다시 실행한다. `MAINFLOW_UNITY_VALIDATION_MODE=static` 또는
 최종 통과를 막을 수 있다. 알 수 없는 선택 기준, 손상된 참조와 잘못된 설정도 실패 결과에 기록한다.
 
 통과 시 Unity 실행 이후 프로젝트를 다시 ZIP으로 만든다. CLI는 최종 검증이 실패하면 종료 코드 1을 반환한다.
+
+### `game_quality_validator` 판정
+
+- 모든 결정적 검사와 Unity Play Mode 검증이 끝난 뒤 읽기 전용으로 실행한다.
+- 요구사항 충족, 핵심 루프, 진행 가능성, 밸런스, 콘텐츠, UI·피드백, 에셋 통합을 평가한다.
+- 파일 경로나 검증 check ID가 없는 주장은 통과 근거로 인정하지 않는다.
+- 기존 하드 검증의 실패를 AI가 `passed`로 뒤집을 수 없다.
+- 결과는 `passed`, `needs_revision`, `failed` 중 하나와 0~100점, 항목별 근거를 포함한다.
 
 ## 변경 체크리스트
 

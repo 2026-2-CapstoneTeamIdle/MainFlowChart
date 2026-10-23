@@ -113,11 +113,17 @@ class UnityProjectValidator:
         project_root: str | Path,
         draft: GameLogicDraft,
         request: ParsedRequest,
+        *,
+        allow_failed_diagnostic: bool = False,
     ) -> UnityValidationOutcome:
         outcome = UnityValidationOutcome()
         root = Path(project_root).resolve()
 
-        self._check_draft(outcome, draft)
+        self._check_draft(
+            outcome,
+            draft,
+            allow_failed_diagnostic=allow_failed_diagnostic,
+        )
         payloads = self._check_project_structure(outcome, root, draft)
         self._check_contract_consistency(outcome, root, payloads, draft, request)
 
@@ -131,19 +137,33 @@ class UnityProjectValidator:
         self,
         outcome: UnityValidationOutcome,
         draft: GameLogicDraft,
+        *,
+        allow_failed_diagnostic: bool = False,
     ) -> None:
+        status_valid = draft.get("status") == "generated" or (
+            allow_failed_diagnostic
+            and draft.get("status") == "failed"
+            and bool(draft.get("entry_scene"))
+        )
         valid = (
             draft.get("contract_version") == CONTRACT_VERSION
-            and draft.get("status") == "generated"
+            and status_valid
             and draft.get("engine") == "Unity"
         )
+        if valid and draft.get("status") == "failed":
+            message = (
+                "Failed game draft has a diagnostic Unity project eligible for compilation and "
+                "Play Mode evidence collection"
+            )
+        elif valid:
+            message = "Game draft is generated for Unity"
+        else:
+            message = "Game draft must use the current contract and generated Unity status"
         self._add_check(
             outcome,
             "game.draft",
             valid,
-            "Game draft is generated for Unity"
-            if valid
-            else "Game draft must use the current contract and generated Unity status",
+            message,
             error_code="INVALID_GAME_DRAFT",
         )
 

@@ -24,7 +24,12 @@ _PALETTES: tuple[tuple[str, tuple[str, ...]], ...] = (
 _ENTITY_COLORS = ("#5EC8FF", "#FF9E4F", "#A78BFA", "#52D695", "#F5D94F")
 
 
-def build_game_blueprint(game_spec: GameSpec, design_intent: str) -> GameBlueprint:
+def build_game_blueprint(
+    game_spec: GameSpec,
+    design_intent: str,
+    *,
+    variation_seed: str = "",
+) -> GameBlueprint:
     """Return a deterministic, input-specific scene blueprint.
 
     It is intentionally data-only: a later LLM planner can replace this
@@ -33,9 +38,11 @@ def build_game_blueprint(game_spec: GameSpec, design_intent: str) -> GameBluepri
 
     intent = design_intent.strip() or "기본 장르 프로토타입"
     seed = int(
-        hashlib.sha256(f"{game_spec['genre']}|{game_spec['title']}|{intent}".encode()).hexdigest()[
-            :16
-        ],
+        hashlib.sha256(
+            (
+                f"{game_spec['genre']}|{game_spec['title']}|{intent}|variation:{variation_seed}"
+            ).encode()
+        ).hexdigest()[:16],
         16,
     )
     rng = random.Random(seed)

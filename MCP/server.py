@@ -18,13 +18,24 @@ from mcp.server import MCPServer
 mcp = MCPServer("mainflow-filesystem")
 
 
-def _file_payload(project_id: str, relative_path: str, content: bytes) -> dict[str, Any]:
+def _file_payload(
+    project_id: str,
+    relative_path: str,
+    content: bytes,
+    *,
+    start_line: int | None = None,
+    end_line: int | None = None,
+    total_lines: int | None = None,
+) -> dict[str, Any]:
     return {
         "project_id": project_id,
         "relative_path": relative_path,
         "size_bytes": len(content),
         "sha256": hashlib.sha256(content).hexdigest(),
         "content": content.decode("utf-8"),
+        "start_line": start_line,
+        "end_line": end_line,
+        "total_lines": total_lines,
     }
 
 
@@ -69,8 +80,13 @@ def list_project_files(
 
 
 @mcp.tool()
-def read_project_text(project_id: str, relative_path: str) -> dict[str, Any]:
-    """Read one UTF-8 text file from a managed project workspace."""
+def read_project_text(
+    project_id: str,
+    relative_path: str,
+    start_line: int | None = None,
+    end_line: int | None = None,
+) -> dict[str, Any]:
+    """Read one UTF-8 project file, optionally restricting output to an inclusive line range."""
 
     try:
         settings = MCPSettings.from_environment()
@@ -80,9 +96,33 @@ def read_project_text(project_id: str, relative_path: str) -> dict[str, Any]:
             max_bytes=settings.max_text_bytes,
         )
         try:
-            return _file_payload(project_id, relative_path, content)
+            decoded = content.decode("utf-8")
         except UnicodeDecodeError as error:
             raise ValueError(f"File is not UTF-8 text: {relative_path}") from error
+        lines = decoded.splitlines(keepends=True)
+        total_lines = len(lines)
+        if (start_line is None) != (end_line is None):
+            raise ValueError("start_line and end_line must be provided together")
+        if start_line is None:
+            selected = decoded
+            selected_start = 1 if total_lines else 0
+            selected_end = total_lines
+        else:
+            if start_line < 1 or end_line < start_line:
+                raise ValueError("Line range must satisfy 1 <= start_line <= end_line")
+            if end_line - start_line + 1 > 400:
+                raise ValueError("A ranged read may contain at most 400 lines")
+            selected = "".join(lines[start_line - 1 : end_line])
+            selected_start = start_line
+            selected_end = min(end_line, total_lines)
+        return _file_payload(
+            project_id,
+            relative_path,
+            selected.encode("utf-8"),
+            start_line=selected_start,
+            end_line=selected_end,
+            total_lines=total_lines,
+        )
     except (OSError, TypeError, ValueError) as error:
         raise ToolError(str(error)) from error
 

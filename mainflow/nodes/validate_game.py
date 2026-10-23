@@ -60,7 +60,8 @@ def validate_game_node(
         }
         return _write_result(manager, state["project_id"], result)
 
-    if draft["status"] == "failed":
+    generation_failed = draft["status"] == "failed"
+    if generation_failed and draft["entry_scene"] is None:
         result = {
             "contract_version": CONTRACT_VERSION,
             "status": "failed",
@@ -98,7 +99,12 @@ def validate_game_node(
             timeout_seconds=timeout_seconds,
         )
         project_root = manager.ensure_project(state["project_id"]) / "game" / "unity_project"
-        outcome = validator.validate(project_root, draft, request)
+        outcome = validator.validate(
+            project_root,
+            draft,
+            request,
+            allow_failed_diagnostic=generation_failed,
+        )
     except (TypeError, ValueError) as error:
         result = {
             "contract_version": CONTRACT_VERSION,
@@ -165,6 +171,27 @@ def validate_game_node(
             },
         )
 
+    if generation_failed:
+        outcome.checks.insert(
+            0,
+            {
+                "criterion_id": "game.generation",
+                "passed": False,
+                "message": (
+                    "Requested feature generation failed; the diagnostic Unity project was "
+                    "validated to collect compile and scene evidence."
+                ),
+            },
+        )
+        outcome.issues.insert(
+            0,
+            {
+                "code": "GAME_GENERATION_FAILED",
+                "severity": "error",
+                "message": "; ".join(draft["notes"]),
+            },
+        )
+
     if outcome.unity_log:
         log_reference = manager.write_text(
             state["project_id"],
@@ -178,7 +205,7 @@ def validate_game_node(
                 check["message"] += f" (log: {log_reference['artifact_id']})"
                 break
 
-    status = outcome.status
+    status = "failed" if generation_failed else outcome.status
     result = {
         "contract_version": CONTRACT_VERSION,
         "status": status,

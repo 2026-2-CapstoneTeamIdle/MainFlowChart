@@ -432,15 +432,20 @@ class UnityProjectGenerator:
         for requirement in design["game_spec"]["asset_requirements"]:
             if requirement["asset_type"] != asset_type:
                 continue
+            variation_description = (
+                f"{requirement['description']} Visual variation key: {design['design_id']}. "
+                "Create a distinct silhouette, composition, and palette for this run."
+                if asset_type == "image"
+                else requirement["description"]
+            )
             assets.append(
                 {
                     **requirement,
+                    "description": variation_description,
                     "suggested_filename": f"{requirement['asset_id']}.{extension}",
                     "unity_binding_key": f"asset_registry:{requirement['asset_id']}",
                     "generation_spec": (
-                        build_image_generation_spec(
-                            requirement["purpose"], requirement["description"]
-                        )
+                        build_image_generation_spec(requirement["purpose"], variation_description)
                         if asset_type == "image"
                         else build_sound_generation_spec(
                             requirement["purpose"], requirement["description"]

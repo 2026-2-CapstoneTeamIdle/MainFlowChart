@@ -86,7 +86,15 @@ def format_csharp(check: bool) -> None:
         raise RuntimeError("The .NET SDK is required to format C# files.")
 
     run(["dotnet", "tool", "restore"])
-    command = ["dotnet", "csharpier", "check" if check else "format", "."]
+    # The tool manifest already pins CSharpier. Skipping its redundant MSBuild-version scan also
+    # prevents generated Unity workspaces with restricted permissions from breaking repo format.
+    command = [
+        "dotnet",
+        "csharpier",
+        "check" if check else "format",
+        "--no-msbuild-check",
+        ".",
+    ]
     run(command)
 
 

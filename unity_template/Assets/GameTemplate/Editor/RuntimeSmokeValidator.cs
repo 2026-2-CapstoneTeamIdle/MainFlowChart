@@ -62,6 +62,7 @@ namespace TeamIdle.GameTemplate.Editor
         private static float routeBestX;
         private static float routeLastProgressAt;
         private static float routePreviousX;
+        private static float routeTimeoutSeconds;
         private static readonly List<float> RouteObstacleXs = new();
 
         static RuntimeSmokeValidator()
@@ -319,6 +320,8 @@ namespace TeamIdle.GameTemplate.Editor
             routeGoalX = levelPlan.goal.x - 1f;
             routeBestX = player.transform.position.x;
             routePreviousX = routeBestX;
+            var routeDistance = Mathf.Max(0f, routeGoalX - routeBestX);
+            routeTimeoutSeconds = Mathf.Clamp(routeDistance / 4f + 4f, 8f, 30f);
             routeLastProgressAt = Time.timeSinceLevelLoad;
             RouteObstacleXs.Clear();
             foreach (var zone in levelPlan.zones)
@@ -371,11 +374,12 @@ namespace TeamIdle.GameTemplate.Editor
                 BeginValidationPlanTests();
                 return;
             }
-            if (now - phaseStartedAt > 8f)
+            if (now - phaseStartedAt > routeTimeoutSeconds)
             {
                 Finish(
                     false,
-                    $"runtime.route_blocked: best_x={routeBestX:F2}, goal_x={routeGoalX:F2}"
+                    $"runtime.route_blocked: best_x={routeBestX:F2}, goal_x={routeGoalX:F2}, "
+                        + $"timeout={routeTimeoutSeconds:F2}s"
                 );
             }
         }
@@ -593,9 +597,16 @@ namespace TeamIdle.GameTemplate.Editor
                     > 0.75f
                 )
                 {
+                    var distance = Vector3.Distance(
+                        player.transform.position,
+                        stageController.CurrentCheckpoint
+                    );
                     Finish(
                         false,
-                        "runtime.checkpoint_respawn: player did not return to checkpoint"
+                        "runtime.checkpoint_respawn: player did not return to checkpoint; "
+                            + $"player={player.transform.position}, "
+                            + $"checkpoint={stageController.CurrentCheckpoint}, "
+                            + $"distance={distance:F2}"
                     );
                     return;
                 }

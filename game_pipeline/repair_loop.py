@@ -1,6 +1,7 @@
 """Bounded generation/Unity-validation loop. Tests and template are never model-editable."""
 
 import os
+import time
 from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
@@ -133,7 +134,7 @@ def validate_and_repair(
             )
         # Preserve the failed project for inspection; never recursively delete user data.
         backup = _available_backup(root, attempt)
-        root.rename(backup)
+        _rename_with_retry(root, backup)
         generation = generator.generate(
             revised,
             root,
@@ -157,3 +158,21 @@ def _available_backup(root: Path, attempt: int) -> Path:
         if not candidate.exists():
             return candidate
     raise FileExistsError(f"Too many preserved failed attempts beside {root}")
+
+
+def _rename_with_retry(root: Path, backup: Path, timeout_seconds: float = 15.0) -> None:
+    """Preserve a failed Unity project after transient Windows handle release delays."""
+
+    deadline = time.monotonic() + timeout_seconds
+    delay = 0.1
+    while True:
+        try:
+            root.rename(backup)
+            return
+        except PermissionError as error:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Timed out preserving failed Unity project: {root} -> {backup}"
+                ) from error
+            time.sleep(delay)
+            delay = min(delay * 1.5, 0.75)

@@ -22,6 +22,7 @@ NODE_TOOL_ALLOWLIST: dict[str, frozenset[str]] = {
     "logic_analysis": WORKING_FILE_TOOLS,
     "design_game_logic": WORKING_FILE_TOOLS,
     "project_context_review": CONTEXT_REVIEW_TOOLS,
+    "game_quality_validator": CONTEXT_REVIEW_TOOLS,
     "generate_image": WORKING_FILE_TOOLS,
     "generate_sound": WORKING_FILE_TOOLS,
     "validate_game": WORKING_FILE_TOOLS,

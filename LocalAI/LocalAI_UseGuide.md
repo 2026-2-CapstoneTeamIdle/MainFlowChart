@@ -9,6 +9,10 @@ Unity가 사용할 여유를 남기는 구성이다.
 자동 컨텍스트 축소는 끄므로 LocalAI 시작 로그의 effective runtime tuning에서
 context=8192인지 확인한다.
 
+MainFlow에도 같은 값을 `LOCAL_LLM_CONTEXT_TOKENS=8192`로 설정한다. 이 값은 서버의
+`context_size`를 변경하지 않고 호출 전 입력 예산을 검사하는 용도이므로 두 값을 항상 같게 유지한다.
+기능 생성은 전체 API 인덱스 대신 요구사항 관련 모듈의 시그니처만 검색해 전달한다.
+
 ## 실행
 
 Docker Desktop과 NVIDIA GPU 지원을 준비한 뒤 저장소 루트에서 실행한다.

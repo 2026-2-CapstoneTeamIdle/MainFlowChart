@@ -13,6 +13,7 @@ from mainflow.nodes import (
     final_validation_node,
     generate_image_node,
     generate_sound_node,
+    game_quality_validator_node,
     logic_analysis_node,
     parse_input_node,
     user_input_node,
@@ -60,6 +61,7 @@ def build_graph():
         "final_validation",
         final_validation_node,
     )
+    add_node("game_quality_validator", game_quality_validator_node)
 
     # --------------------------------------------------------
     # Flow
@@ -132,7 +134,8 @@ def build_graph():
         "final_validation",
     )
 
-    graph.add_edge("final_validation", END)
+    graph.add_edge("final_validation", "game_quality_validator")
+    graph.add_edge("game_quality_validator", END)
 
     return graph.compile()
 

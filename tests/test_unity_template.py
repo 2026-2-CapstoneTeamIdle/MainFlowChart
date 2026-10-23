@@ -75,6 +75,9 @@ class UnityTemplateTest(unittest.TestCase):
         runtime_smoke = (
             TEMPLATE_ROOT / "Assets/GameTemplate/Editor/RuntimeSmokeValidator.cs"
         ).read_text(encoding="utf-8")
+        level_plan = (TEMPLATE_ROOT / "Assets/GameTemplate/Editor/LevelPlan.cs").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("PrefabSceneAssembler.Assemble", builder)
         self.assertIn("GeneratedAssetBinder.ImportAndConfigureAssets", builder)
@@ -105,14 +108,23 @@ class UnityTemplateTest(unittest.TestCase):
         self.assertIn("ValidationPlan.Load()", assembler)
         self.assertIn("UNITY_VALIDATION_PLAN_OK", runtime_smoke)
         self.assertIn("UNITY_VALIDATION_SCENARIO_OK", runtime_smoke)
+        self.assertIn("routeTimeoutSeconds", runtime_smoke)
+        self.assertIn("routeDistance / 4f + 4f", runtime_smoke)
         self.assertIn("PresentationSceneAssembler.AssemblePlatformer", assembler)
         self.assertIn("ApplyBlueprintEntities", assembler)
         self.assertIn("PlatformerRoutePosition", assembler)
         self.assertIn("PlatformerLandingWidth", assembler)
+        self.assertIn("ResolvePlatformerSpawn", assembler)
+        self.assertIn("ResolvePlatformerGoal", assembler)
+        self.assertIn("requiredCollectibleScore += rewardAmount", assembler)
+        self.assertIn("StageGoal overlaps collectible", assembler)
+        self.assertIn("Collectible item target mismatch", assembler)
+        self.assertIn("Collectible score target mismatch", assembler)
         self.assertIn("ValidatePlatformerTraversal", assembler)
         self.assertIn("UNITY_PLATFORMER_TRAVERSAL_OK", assembler)
         self.assertIn("PlatformerMinimumLandingWidth", assembler)
         self.assertIn("levelPlan.player_spawn", assembler)
+        self.assertIn("string.IsNullOrWhiteSpace(zone.checkpoint.placement_id)", level_plan)
         self.assertIn("foreach (var zone in levelPlan.zones)", assembler)
         self.assertIn("platformPlan.width", assembler)
         self.assertIn("BlueprintNoise", assembler)

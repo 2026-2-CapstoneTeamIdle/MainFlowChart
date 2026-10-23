@@ -161,12 +161,15 @@
   `game_pipeline/game_development_loop.py`
 - 기능 분석/모듈 선택: `game_pipeline/feature_planner.py`, `game_pipeline/design_catalog.py`
 - 부족한 C# 생성: `game_pipeline/gemini_feature_generator.py`
+- 구조화 프로젝트 인덱스: `game_pipeline/project_context_index.py`
 - Unity 생성/검증/수정: `game_pipeline/unity_project_generator.py`,
   `game_pipeline/unity_project_validator.py`, `game_pipeline/repair_loop.py`
 - Unity 씬 조립: `unity_template/Assets/GameTemplate/Editor/PrefabSceneAssembler.cs`
 - Runtime 자동검증: `unity_template/Assets/GameTemplate/Editor/RuntimeSmokeValidator.cs`
 - 에셋 적용: `game_pipeline/unity_asset_applicator.py`, `mainflow/nodes/apply_assets.py`
 - 최종 검증: `mainflow/nodes/final_validation.py`
+- 독립 게임 품질 Validator AI: `mainflow/nodes/game_quality_validator.py`,
+  `game_pipeline/game_quality_validator_ai.py`
 
 ## 6. 변경 시 지켜야 할 규칙
 

@@ -33,6 +33,16 @@ from game_pipeline.project_context_reviewer import (
     create_project_context_reviewer_from_environment,
     review_feedback,
 )
+from game_pipeline.project_context_index import (
+    build_project_context_index,
+    compact_api_contract,
+    retrieve_prompt_api_contract,
+)
+from game_pipeline.game_quality_validator_ai import (
+    GameQualityValidatorAI,
+    GameValidatorAIReport,
+    create_game_quality_validator_from_environment,
+)
 from game_pipeline.unity_project_validator import (
     UnityProjectValidator,
     UnityValidationOutcome,
@@ -52,7 +62,13 @@ __all__ = [
     "UnityProjectGenerator",
     "ProjectContextReview",
     "ProjectContextReviewer",
+    "build_project_context_index",
+    "compact_api_contract",
+    "retrieve_prompt_api_contract",
     "create_project_context_reviewer_from_environment",
+    "GameQualityValidatorAI",
+    "GameValidatorAIReport",
+    "create_game_quality_validator_from_environment",
     "review_feedback",
     "UnityProjectValidator",
     "UnityValidationOutcome",

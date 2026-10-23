@@ -9,6 +9,9 @@ always traversable under the movement limits recorded in the plan.
 
 from __future__ import annotations
 
+import hashlib
+import random
+from collections import Counter
 from itertools import pairwise
 
 from mainflow.contracts import (
@@ -27,7 +30,12 @@ from mainflow.contracts import (
 )
 
 
-def build_design_v2(game_spec: GameSpec, design_intent: str) -> DesignV2Bundle:
+def build_design_v2(
+    game_spec: GameSpec,
+    design_intent: str,
+    *,
+    variation_seed: str = "",
+) -> DesignV2Bundle:
     """Build a complete, executable design bundle.
 
     Platformer is the first vertical-slice profile. Other genres receive a
@@ -48,12 +56,12 @@ def build_design_v2(game_spec: GameSpec, design_intent: str) -> DesignV2Bundle:
     ]
     game_design = _game_design(game_spec, intent)
     system_design = _system_design(game_spec)
-    content_plan = _content_plan(game_spec)
     level_plan = (
-        _platformer_level_plan(game_spec)
+        _platformer_level_plan(game_spec, intent, variation_seed=variation_seed)
         if game_spec["genre"] == "Platformer"
         else _generic_level_plan(game_spec)
     )
+    content_plan = _content_plan(game_spec, level_plan, intent)
     balance_plan = _balance_plan(game_spec)
     presentation_plan: PresentationPlan = {
         "plan_version": "2.0.0",
@@ -216,95 +224,72 @@ def _system_design(game_spec: GameSpec) -> SystemDesign:
     }
 
 
-def _content_plan(game_spec: GameSpec) -> ContentPlan:
+def _content_plan(game_spec: GameSpec, level_plan: LevelPlan, intent: str) -> ContentPlan:
     if game_spec["genre"] == "Platformer":
+        enemy_counts = _placement_counts(level_plan, "enemies")
+        obstacle_counts = _placement_counts(level_plan, "hazards")
+        reward_counts = _placement_counts(level_plan, "collectibles")
+        enemy_profiles = {
+            "patrol_enemy": (1, 1.8, 1, 1.5, "이동 타이밍 학습"),
+            "fast_patrol_enemy": (1, 3.0, 1, 2.0, "빠른 대응과 이동 기능 사용 유도"),
+            "armored_patrol_enemy": (3, 1.1, 2, 1.2, "응용 구간의 회피 경로 압박"),
+        }
+        obstacle_profiles = {
+            "floor_spike": (1, 0.3, "점프 정확도 검사"),
+            "timed_spike": (1, 0.2, "이동 타이밍과 정지 판단 검사"),
+            "damage_orb": (2, 0.1, "공중 이동 경로 제한"),
+        }
+        reward_profiles = {
+            "route_collectible": (1, "주 진행 경로 유도"),
+            "bonus_collectible": (3, "위험한 선택 경로에 추가 보상 제공"),
+        }
         return {
             "plan_version": "2.0.0",
             "enemies": [
                 {
-                    "content_id": "patrol_enemy",
-                    "role": "이동 타이밍 학습",
-                    "count": 2,
+                    "content_id": content_id,
+                    "role": f"{role}: {intent[:36]}",
+                    "count": count,
                     "stats": [
-                        {"stat_id": "health", "value": 1},
-                        {"stat_id": "speed", "value": 1.8},
-                        {"stat_id": "contact_damage", "value": 1},
-                        {"stat_id": "patrol_range", "value": 1.5},
+                        {"stat_id": "health", "value": profile[0]},
+                        {"stat_id": "speed", "value": profile[1]},
+                        {"stat_id": "contact_damage", "value": profile[2]},
+                        {"stat_id": "patrol_range", "value": profile[3]},
                     ],
                     "behaviors": ["patrol platform", "turn at edge", "damage on contact"],
-                },
-                {
-                    "content_id": "fast_patrol_enemy",
-                    "role": "빠른 대응과 대시 사용 유도",
-                    "count": 1,
-                    "stats": [
-                        {"stat_id": "health", "value": 1},
-                        {"stat_id": "speed", "value": 3.0},
-                        {"stat_id": "contact_damage", "value": 1},
-                        {"stat_id": "patrol_range", "value": 2.0},
-                    ],
-                    "behaviors": ["fast patrol", "turn at edge", "damage on contact"],
-                },
-                {
-                    "content_id": "armored_patrol_enemy",
-                    "role": "마지막 구역의 회피 경로 압박",
-                    "count": 1,
-                    "stats": [
-                        {"stat_id": "health", "value": 3},
-                        {"stat_id": "speed", "value": 1.1},
-                        {"stat_id": "contact_damage", "value": 2},
-                        {"stat_id": "patrol_range", "value": 1.2},
-                    ],
-                    "behaviors": ["slow patrol", "high durability", "damage on contact"],
-                },
+                }
+                for content_id, count in enemy_counts.items()
+                for profile in [enemy_profiles[content_id]]
+                for role in [profile[4]]
             ],
             "obstacles": [
                 {
-                    "content_id": "floor_spike",
-                    "role": "점프 정확도 검사",
-                    "count": 3,
+                    "content_id": content_id,
+                    "role": role,
+                    "count": count,
                     "stats": [
-                        {"stat_id": "damage", "value": 1},
-                        {"stat_id": "reset_delay", "value": 0.3},
+                        {"stat_id": "damage", "value": profile[0]},
+                        {"stat_id": "reset_delay", "value": profile[1]},
                     ],
                     "behaviors": ["damage on contact", "respawn at checkpoint"],
-                },
-                {
-                    "content_id": "timed_spike",
-                    "role": "이동 타이밍과 정지 판단 검사",
-                    "count": 2,
-                    "stats": [
-                        {"stat_id": "damage", "value": 1},
-                        {"stat_id": "reset_delay", "value": 0.2},
-                    ],
-                    "behaviors": ["timed danger", "damage on contact", "checkpoint respawn"],
-                },
-                {
-                    "content_id": "damage_orb",
-                    "role": "최종 구역의 공중 경로 제한",
-                    "count": 1,
-                    "stats": [{"stat_id": "damage", "value": 2}],
-                    "behaviors": ["stationary aerial hazard", "checkpoint respawn"],
-                },
+                }
+                for content_id, count in obstacle_counts.items()
+                for profile in [obstacle_profiles[content_id]]
+                for role in [profile[2]]
             ],
             "rewards": [
                 {
-                    "content_id": "route_collectible",
-                    "role": "안전 경로 유도",
-                    "count": 6,
-                    "stats": [{"stat_id": "score", "value": 1}],
-                    "behaviors": ["pickup", "update hud"],
-                },
-                {
-                    "content_id": "bonus_collectible",
-                    "role": "위험한 응용 경로에 추가 보상 제공",
-                    "count": 3,
-                    "stats": [{"stat_id": "score", "value": 3}],
+                    "content_id": content_id,
+                    "role": profile[1],
+                    "count": count,
+                    "stats": [{"stat_id": "score", "value": profile[0]}],
                     "behaviors": ["pickup", "bonus feedback", "update hud"],
-                },
+                }
+                for content_id, count in reward_counts.items()
+                for profile in [reward_profiles[content_id]]
             ],
-            "stages": ["movement tutorial", "hazard challenge", "mastery run"],
-            "final_goal": "필수 수집물을 획득하고 세 번째 구역의 목표 문에 도달",
+            "stages": [zone["title"] for zone in level_plan["zones"]],
+            "final_goal": f"필수 보상을 획득하고 {intent[:48]}의 최종 목표에 도달",
         }
     return {
         "plan_version": "2.0.0",
@@ -342,113 +327,162 @@ def _placement(placement_id: str, archetype: str, x: float, y: float) -> LevelPl
     }
 
 
-def _platformer_level_plan(game_spec: GameSpec) -> LevelPlan:
+def _platformer_level_plan(
+    game_spec: GameSpec,
+    intent: str,
+    *,
+    variation_seed: str = "",
+) -> LevelPlan:
+    """Create a stable but request-specific, traversable platformer route."""
+
+    seed = int(
+        hashlib.sha256(
+            (
+                f"platformer-v2|{game_spec['title']}|{intent}|"
+                f"{'|'.join(game_spec['mechanics'])}|variation:{variation_seed}"
+            ).encode()
+        ).hexdigest()[:16],
+        16,
+    )
+    rng = random.Random(seed)
     mechanics = list(dict.fromkeys(game_spec["mechanics"]))
-    tutorial_mechanics = mechanics[: max(1, len(mechanics) // 3)]
-    challenge_mechanics = mechanics[: max(1, (len(mechanics) * 2) // 3)]
-    zones: list[LevelZone] = [
-        {
-            "zone_id": "tutorial",
-            "title": "움직임 훈련장",
-            "purpose": "tutorial",
-            "challenge": "이동·점프·요청 이동 기능을 안전하게 한 번씩 사용",
-            "reward": "첫 체크포인트와 수집물 3개",
-            "difficulty": 1,
-            "required_mechanics": tutorial_mechanics,
-            "start_x": -18,
-            "end_x": -6,
-            "checkpoint": _placement("checkpoint_1", "checkpoint", -6.5, -2.7),
-            "platforms": [
-                _platform("tutorial_1", -15.5, -2.2, 3.2),
-                _platform("tutorial_2", -12.2, -1.3, 3.0),
-                _platform("tutorial_3", -9.0, -0.4, 3.0),
-                _platform("tutorial_4", -6.2, -1.2, 2.8),
-            ],
-            "hazards": [_placement("hazard_1", "floor_spike", -10.6, -3.35)],
-            "enemies": [],
-            "collectibles": [
-                _placement("collectible_1", "route_collectible", -15.5, -1.35),
-                _placement("collectible_2", "route_collectible", -12.2, -0.45),
-                _placement("collectible_3", "bonus_collectible", -9.0, 0.45),
-            ],
-        },
-        {
-            "zone_id": "challenge",
-            "title": "교차 위험 구간",
-            "purpose": "challenge",
-            "challenge": "순찰 적과 바닥 함정을 피해 높이가 다른 발판을 연속 통과",
-            "reward": "두 번째 체크포인트와 수집물 3개",
-            "difficulty": 2,
-            "required_mechanics": challenge_mechanics,
-            "start_x": -6,
-            "end_x": 7,
-            "checkpoint": _placement("checkpoint_2", "checkpoint", 6.5, -2.7),
-            "platforms": [
-                _platform("challenge_1", -3.5, -2.0, 2.8),
-                _platform("challenge_2", -0.5, -0.9, 2.8),
-                _platform("challenge_3", 2.5, 0.1, 2.8),
-                _platform("challenge_4", 5.4, -1.0, 2.8),
-            ],
-            "hazards": [
-                _placement("hazard_2", "floor_spike", -2.0, -3.35),
-                _placement("hazard_3", "timed_spike", 4.0, -3.35),
-            ],
-            "enemies": [
-                _placement("enemy_1", "patrol_enemy", -0.5, -0.05),
-                _placement("enemy_2", "fast_patrol_enemy", 5.4, -0.15),
-            ],
-            "collectibles": [
-                _placement("collectible_4", "route_collectible", -3.5, -1.15),
-                _placement("collectible_5", "route_collectible", 2.5, 0.95),
-                _placement("collectible_6", "bonus_collectible", 5.4, -0.15),
-            ],
-        },
-        {
-            "zone_id": "mastery",
-            "title": "최종 응용 구간",
-            "purpose": "mastery",
-            "challenge": "적과 연속 함정 사이에서 배운 이동 기능을 조합",
-            "reward": "목표 문 개방과 클리어",
-            "difficulty": 3,
-            "required_mechanics": mechanics,
-            "start_x": 7,
-            "end_x": 20,
-            "checkpoint": None,
-            "platforms": [
-                _platform("mastery_1", 8.5, -1.9, 2.8),
-                _platform("mastery_2", 11.4, -0.8, 2.8),
-                _platform("mastery_3", 14.3, 0.25, 2.8),
-                _platform("mastery_4", 17.2, -0.7, 3.0),
-                _platform("mastery_goal", 19.5, -1.7, 3.2, "goal"),
-            ],
-            "hazards": [
-                _placement("hazard_4", "floor_spike", 10.0, -3.35),
-                _placement("hazard_5", "timed_spike", 13.0, -3.35),
-                _placement("hazard_6", "damage_orb", 16.0, -2.2),
-            ],
-            "enemies": [
-                _placement("enemy_3", "patrol_enemy", 11.4, 0.05),
-                _placement("enemy_4", "armored_patrol_enemy", 17.2, 0.15),
-            ],
-            "collectibles": [
-                _placement("collectible_7", "route_collectible", 8.5, -1.05),
-                _placement("collectible_8", "route_collectible", 14.3, 1.1),
-                _placement("collectible_9", "bonus_collectible", 17.2, 0.2),
-            ],
-        },
-    ]
+    if not mechanics:
+        mechanics = ["move", "jump"]
+    zone_count = 3 + rng.randrange(3)
+    purposes = ["tutorial", *("challenge" for _ in range(zone_count - 2)), "mastery"]
+    theme_words = [word for word in intent.replace(",", " ").split() if len(word) > 1]
+    platform_groups: list[list[LevelPlatform]] = []
+    cursor_x = -18.0
+    previous_width = 3.2
+    previous_y = -2.35
+    platform_index = 0
+    for zone_index in range(zone_count):
+        group: list[LevelPlatform] = []
+        count = 4 + rng.randrange(3)
+        for local_index in range(count):
+            width = round(rng.uniform(2.5, 3.6), 2)
+            if platform_index == 0:
+                x = cursor_x
+            else:
+                gap = rng.uniform(0.35, 1.05)
+                x = cursor_x + previous_width / 2 + width / 2 + gap
+            step = rng.uniform(-1.0, 0.9)
+            y = round(max(-2.6, min(1.4, previous_y + step)), 2)
+            role = (
+                "goal" if zone_index == zone_count - 1 and local_index == count - 1 else "landing"
+            )
+            platform_index += 1
+            group.append(_platform(f"route_{platform_index}", round(x, 2), y, width, role))
+            cursor_x, previous_width, previous_y = x, width, y
+        platform_groups.append(group)
+
+    zones: list[LevelZone] = []
+    hazard_index = 0
+    enemy_index = 0
+    collectible_index = 0
+    checkpoint_index = 0
+    for zone_index, (purpose, platforms) in enumerate(zip(purposes, platform_groups, strict=True)):
+        introduced_count = max(1, round(len(mechanics) * (zone_index + 1) / zone_count))
+        required_mechanics = mechanics if purpose == "mastery" else mechanics[:introduced_count]
+        hazards: list[LevelPlacement] = []
+        enemies: list[LevelPlacement] = []
+        collectibles: list[LevelPlacement] = []
+        danger_count = 0 if purpose == "tutorial" else 1 + min(2, zone_index)
+        for danger_offset in range(danger_count):
+            target = platforms[min(len(platforms) - 1, danger_offset + 1)]
+            hazard_index += 1
+            hazard_kind = ("floor_spike", "timed_spike", "damage_orb")[
+                (zone_index + danger_offset + seed) % 3
+            ]
+            hazard_y = -3.35 if hazard_kind != "damage_orb" else target["y"] + 1.15
+            hazards.append(
+                _placement(f"hazard_{hazard_index}", hazard_kind, target["x"] + 0.45, hazard_y)
+            )
+        enemy_count = 0 if purpose == "tutorial" else 1 + (zone_index % 2)
+        for enemy_offset in range(enemy_count):
+            target = platforms[-(enemy_offset + 2)]
+            enemy_index += 1
+            enemy_kind = ("patrol_enemy", "fast_patrol_enemy", "armored_patrol_enemy")[
+                min(2, zone_index + enemy_offset - 1)
+            ]
+            enemies.append(
+                _placement(f"enemy_{enemy_index}", enemy_kind, target["x"], target["y"] + 0.65)
+            )
+        reward_targets = platforms[::2]
+        if purpose == "mastery" and reward_targets and reward_targets[-1] is platforms[-1]:
+            reward_targets = reward_targets[:-1]
+        for reward_offset, target in enumerate(reward_targets):
+            collectible_index += 1
+            reward_kind = (
+                "bonus_collectible"
+                if reward_offset == len(reward_targets) - 1 and purpose != "tutorial"
+                else "route_collectible"
+            )
+            collectibles.append(
+                _placement(
+                    f"collectible_{collectible_index}",
+                    reward_kind,
+                    target["x"],
+                    target["y"] + 0.9,
+                )
+            )
+        checkpoint = None
+        if purpose != "mastery":
+            checkpoint_index += 1
+            checkpoint_platform = platforms[-1]
+            checkpoint = _placement(
+                f"checkpoint_{checkpoint_index}",
+                "checkpoint",
+                checkpoint_platform["x"],
+                checkpoint_platform["y"] + 1.15,
+            )
+        title_word = theme_words[zone_index % len(theme_words)] if theme_words else "핵심"
+        start_x = round(platforms[0]["x"] - platforms[0]["width"] / 2 - 0.8, 2)
+        end_x = round(platforms[-1]["x"] + platforms[-1]["width"] / 2 + 0.8, 2)
+        zones.append(
+            {
+                "zone_id": f"{purpose}_{zone_index + 1}",
+                "title": f"{title_word} {purpose} 구역",
+                "purpose": purpose,  # type: ignore[typeddict-item]
+                "challenge": f"{', '.join(required_mechanics)}를 사용해 {title_word} 도전을 통과",
+                "reward": "체크포인트와 진행 보상" if checkpoint else "목표 문 개방과 클리어",
+                "difficulty": zone_index + 1,
+                "required_mechanics": required_mechanics,
+                "start_x": start_x,
+                "end_x": end_x,
+                "checkpoint": checkpoint,
+                "platforms": platforms,
+                "hazards": hazards,
+                "enemies": enemies,
+                "collectibles": collectibles,
+            }
+        )
+
+    first_platform = platform_groups[0][0]
+    final_platform = platform_groups[-1][-1]
+    goal_x = final_platform["x"] + final_platform["width"] * 0.5 - 0.5
     return {
         "plan_version": "2.0.0",
         "genre": "Platformer",
-        "player_spawn": _placement("player_spawn", "player", -19, -2.75),
-        "goal": _placement("stage_goal", "goal", 20, -0.45),
+        "player_spawn": _placement(
+            "player_spawn", "player", first_platform["x"], first_platform["y"] + 0.95
+        ),
+        "goal": _placement("stage_goal", "goal", goal_x, final_platform["y"] + 1.25),
         "zones": zones,
-        "safe_start_seconds": 8.0,
-        "camera_orthographic_size": 5.5,
-        "max_horizontal_gap": 1.4,
+        "safe_start_seconds": round(rng.uniform(5.0, 8.0), 2),
+        "camera_orthographic_size": round(rng.uniform(5.0, 6.2), 2),
+        "max_horizontal_gap": 1.35,
         "max_step_up": 1.15,
         "minimum_landing_width": 2.4,
     }
+
+
+def _placement_counts(level_plan: LevelPlan, collection: str) -> Counter[str]:
+    return Counter(
+        placement["archetype"]
+        for zone in level_plan["zones"]
+        for placement in zone[collection]  # type: ignore[literal-required]
+    )
 
 
 def _generic_level_plan(game_spec: GameSpec) -> LevelPlan:
@@ -521,7 +555,7 @@ def _validation_plan(game_spec: GameSpec, level_plan: LevelPlan) -> ValidationPl
     ]
     required_objects = ["Player", "StageGoal"]
     if level_plan["genre"] == "Platformer":
-        required_objects += ["Zone_tutorial", "Zone_challenge", "Zone_mastery"]
+        required_objects += [f"Zone_{zone['zone_id']}" for zone in level_plan["zones"]]
     return {
         "plan_version": "2.0.0",
         "scenarios": scenarios,

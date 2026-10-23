@@ -80,6 +80,20 @@ namespace TeamIdle.GameTemplate.Editor
                 );
             }
 
+            // JsonUtility can materialize a JSON null reference as an empty serializable object.
+            // Convert that sentinel back to null so a mastery zone without a checkpoint does not
+            // create a phantom checkpoint at world origin.
+            foreach (var zone in plan.zones)
+            {
+                if (
+                    zone.checkpoint != null
+                    && string.IsNullOrWhiteSpace(zone.checkpoint.placement_id)
+                )
+                {
+                    zone.checkpoint = null;
+                }
+            }
+
             return plan;
         }
     }

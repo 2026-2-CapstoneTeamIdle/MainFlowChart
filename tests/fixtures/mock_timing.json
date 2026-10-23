@@ -11,5 +11,6 @@
   "validate_image": 40,
   "validate_sound": 40,
   "apply_assets_to_game": 20,
-  "final_validation": 25
+  "final_validation": 25,
+  "game_quality_validator": 15
 }

@@ -8,13 +8,13 @@
   },
   "expected": {
     "final_status": "passed",
-    "artifact_count": 18,
+    "artifact_count": 19,
     "category_counts": {
       "data": 3,
       "image": 2,
       "sound": 2,
       "game": 6,
-      "validation": 5
+      "validation": 6
     }
   }
 }

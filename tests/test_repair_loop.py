@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from game_pipeline.feature_contract import build_feature_contract
-from game_pipeline.repair_loop import validate_and_repair
+from game_pipeline.repair_loop import _rename_with_retry, validate_and_repair
 from game_pipeline.unity_project_validator import UnityValidationOutcome
 
 
@@ -18,6 +18,30 @@ def failure(code, message):
 
 
 class RepairLoopTest(unittest.TestCase):
+    def test_failed_project_backup_retries_windows_handle_contention(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "unity_project"
+            backup = Path(directory) / "unity_project_failed_attempt_0"
+            root.mkdir()
+            original_rename = Path.rename
+            calls = 0
+
+            def flaky_rename(source, target):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise PermissionError(32, "file is in use")
+                return original_rename(source, target)
+
+            with (
+                patch.object(Path, "rename", autospec=True, side_effect=flaky_rename),
+                patch("game_pipeline.repair_loop.time.sleep"),
+            ):
+                _rename_with_retry(root, backup, timeout_seconds=1)
+
+            self.assertEqual(calls, 2)
+            self.assertTrue(backup.is_dir())
+
     def run_loop(self, outcomes, max_repairs=2):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "game/unity_project"

@@ -106,6 +106,7 @@ def main() -> int:
     image_generation = manager.read_json(final_state["image_draft"])
     sound_generation = manager.read_json(final_state["sound_draft"])
     final_validation = manager.read_json(final_state["final_validation_result"])
+    game_validator_ai = manager.read_json(final_state["game_validator_ai_result"])
     project_root = manager.ensure_project(final_state["project_id"])
 
     output: dict[str, Any] = {
@@ -115,6 +116,7 @@ def main() -> int:
         "image_generation": image_generation,
         "sound_generation": sound_generation,
         "final_validation": final_validation,
+        "game_validator_ai": game_validator_ai,
         "final_state": final_state,
     }
     print(json.dumps(output, ensure_ascii=False, indent=2))
@@ -122,6 +124,13 @@ def main() -> int:
         print(
             "Game did not pass final validation. Do not distribute this project; "
             "inspect final_validation.issues first.",
+            file=sys.stderr,
+        )
+        return 1
+    if game_validator_ai.get("status") != "passed":
+        print(
+            "Game passed hard validation but did not pass the independent Validator AI review. "
+            "Inspect game_validator_ai.findings before distribution.",
             file=sys.stderr,
         )
         return 1

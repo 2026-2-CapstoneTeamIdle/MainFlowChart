@@ -9,11 +9,18 @@ namespace TeamIdle.GameTemplate.Platformer
         [SerializeField]
         private int requiredCount;
 
+        [SerializeField]
+        private int requiredScore;
+
         public override string ModuleId => "collectible_system";
 
         public int CollectedCount { get; private set; }
 
         public int RequiredCount => requiredCount;
+
+        public int Score { get; private set; }
+
+        public int RequiredScore => requiredScore;
 
         public bool RequirementMet => CollectedCount >= requiredCount;
 
@@ -21,7 +28,8 @@ namespace TeamIdle.GameTemplate.Platformer
 
         public void Collect(int amount = 1)
         {
-            CollectedCount = Mathf.Max(0, CollectedCount + amount);
+            CollectedCount++;
+            Score = Mathf.Max(0, Score + amount);
             Collected?.Invoke(CollectedCount, requiredCount);
         }
 

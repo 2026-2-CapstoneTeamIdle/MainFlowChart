@@ -191,6 +191,14 @@ LLM이 MCP로 Unity 소스 등 생성 중인 작업 파일을 수정할 때도 `
 - `validation/final_unity_validation.log`: 에셋 적용 후 Unity 컴파일·Play Mode 실행 로그.
 - `validation/final_asset_binding_report.json`: 이번 실행의 import·registry·씬 바인딩 보고서 snapshot.
 - `validation/final_validation_result.json`: 기준별 판정, 실패 원인, `evidence` 참조와 최종 패키지 참조.
+- `validation/game_validator_ai_result.json`: 완성된 게임에 대한 독립 Validator AI의 요구사항
+  충족도, 품질 점수, 근거, 수정 권고.
+- `validation/project_context_review_attempt_N.json`: Unity 실행 전 문맥 검수의 제한된 재시도별
+  결과와 발견 사항.
+- `game/project_context_index.json`: 완성된 Unity 프로젝트의 C# 파일 해시, 클래스, 상속 관계,
+  실제 공개 메서드·속성·필드·이벤트, 모듈 ID와 원본 기능·검증 기준·이벤트 연결을 보존한
+  결정적 인덱스. LLM 자연어 요약의 대체물이므로 생성 코드와 Validator가 정확한 식별자를
+  조회할 때 사용한다.
 - `game/validated_unity_project.zip`: 최종 통과한 경우에만 생성되는 Unity 실행 이후의 프로젝트 ZIP.
 
 기존 `game/integrated_unity_project.zip`은 에셋 복사 직후 패키지다. 최종 검증된 결과를 받을 때는

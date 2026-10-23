@@ -57,10 +57,12 @@ class GameDesignTest(unittest.TestCase):
             },
         )
         level = design_v2["level_plan"]
-        self.assertEqual(
-            [zone["purpose"] for zone in level["zones"]],
-            ["tutorial", "challenge", "mastery"],
-        )
+        purposes = [zone["purpose"] for zone in level["zones"]]
+        self.assertGreaterEqual(len(purposes), 3)
+        self.assertLessEqual(len(purposes), 5)
+        self.assertEqual(purposes[0], "tutorial")
+        self.assertEqual(purposes[-1], "mastery")
+        self.assertTrue(all(purpose == "challenge" for purpose in purposes[1:-1]))
         self.assertGreaterEqual(
             sum(len(zone["platforms"]) for zone in level["zones"]),
             10,
@@ -70,11 +72,19 @@ class GameDesignTest(unittest.TestCase):
             3,
         )
         content = design_v2["content_plan"]
-        self.assertGreaterEqual(len(content["enemies"]), 3)
-        self.assertGreaterEqual(len(content["obstacles"]), 3)
+        self.assertGreaterEqual(len(content["enemies"]), 2)
+        self.assertGreaterEqual(len(content["obstacles"]), 2)
         self.assertGreaterEqual(len(content["rewards"]), 2)
         balance_ids = {stat["stat_id"] for stat in design_v2["balance_plan"]["stats"]}
         self.assertTrue({"player_health", "move_speed", "jump_height"}.issubset(balance_ids))
+        final_platform = level["zones"][-1]["platforms"][-1]
+        self.assertGreater(level["goal"]["x"], final_platform["x"])
+        self.assertTrue(
+            all(
+                collectible["x"] != level["goal"]["x"]
+                for collectible in level["zones"][-1]["collectibles"]
+            )
+        )
 
     def test_blueprint_is_deterministic_but_changes_with_user_intent(self) -> None:
         spec = normalize_game_spec("플랫포머")
@@ -98,6 +108,42 @@ class GameDesignTest(unittest.TestCase):
         )
         self.assertGreaterEqual(len(first["game_blueprint"]["entities"]), 5)
         self.assertGreaterEqual(len(first["game_blueprint"]["content"]), 4)
+
+    def test_platformer_level_and_content_change_with_user_intent(self) -> None:
+        spec = normalize_game_spec("플랫포머")
+        first = build_game_logic_design(
+            spec,
+            design_intent="얼음 성벽을 타고 바람을 이용해 공중 대시로 탈출한다.",
+        )["design_v2"]
+        repeated = build_game_logic_design(
+            spec,
+            design_intent="얼음 성벽을 타고 바람을 이용해 공중 대시로 탈출한다.",
+        )["design_v2"]
+        second = build_game_logic_design(
+            spec,
+            design_intent="무너지는 용암 광산에서 광차를 피해 보석을 모은다.",
+        )["design_v2"]
+
+        self.assertEqual(first["level_plan"], repeated["level_plan"])
+        self.assertNotEqual(first["level_plan"], second["level_plan"])
+        self.assertNotEqual(first["content_plan"], second["content_plan"])
+        self.assertNotEqual(
+            [zone["title"] for zone in first["level_plan"]["zones"]],
+            [zone["title"] for zone in second["level_plan"]["zones"]],
+        )
+
+    def test_platformer_level_changes_with_variation_seed_and_is_reproducible(self) -> None:
+        spec = normalize_game_spec("플랫포머")
+        intent = "벽을 타고 공중 대시로 고성을 탈출한다."
+        first = build_game_logic_design(spec, design_intent=intent, variation_seed="run-a")
+        repeated = build_game_logic_design(spec, design_intent=intent, variation_seed="run-a")
+        second = build_game_logic_design(spec, design_intent=intent, variation_seed="run-b")
+
+        self.assertEqual(first["design_v2"]["level_plan"], repeated["design_v2"]["level_plan"])
+        self.assertEqual(first["game_blueprint"], repeated["game_blueprint"])
+        self.assertNotEqual(first["design_v2"]["level_plan"], second["design_v2"]["level_plan"])
+        self.assertNotEqual(first["game_blueprint"], second["game_blueprint"])
+        self.assertNotEqual(first["design_id"], second["design_id"])
 
     def test_legacy_action_maps_to_survivor_profile(self) -> None:
         spec = normalize_game_spec("Action")

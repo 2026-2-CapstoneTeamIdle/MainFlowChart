@@ -6,6 +6,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import ArtifactCategory
@@ -87,6 +88,54 @@ class ArtifactManagerTest(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=3) as executor:
             list(executor.map(write, jobs))
         self.assertEqual(len(self.manager.list_artifacts(project_id)), 3)
+
+    def test_windows_permission_error_on_existing_manifest_lock_is_retried(self) -> None:
+        project_id = self.manager.create_project(date(2026, 9, 26))
+        lock_path = self.workspace / project_id / self.manager.MANIFEST_LOCK_RELATIVE_PATH
+        original_open = __import__("os").open
+        calls = 0
+        lock_path.write_text("other writer", encoding="utf-8")
+
+        def open_with_windows_contention(path, flags, mode=0o777):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise PermissionError("sharing violation")
+            return original_open(path, flags, mode)
+
+        def release_lock(_seconds):
+            lock_path.unlink(missing_ok=True)
+
+        with (
+            patch("mainflow.ArtifactManager.os.open", side_effect=open_with_windows_contention),
+            patch("mainflow.ArtifactManager.time.sleep", side_effect=release_lock),
+        ):
+            with self.manager._manifest_lock(project_id):
+                self.assertTrue(lock_path.exists())
+
+        self.assertEqual(calls, 2)
+        self.assertFalse(lock_path.exists())
+
+    def test_windows_permission_error_after_lock_release_is_retried(self) -> None:
+        project_id = self.manager.create_project(date(2026, 9, 26))
+        original_open = __import__("os").open
+        calls = 0
+
+        def open_with_release_race(path, flags, mode=0o777):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise PermissionError("sharing violation after owner removed lock")
+            return original_open(path, flags, mode)
+
+        with (
+            patch("mainflow.ArtifactManager.os.open", side_effect=open_with_release_race),
+            patch("mainflow.ArtifactManager.time.sleep"),
+        ):
+            with self.manager._manifest_lock(project_id):
+                pass
+
+        self.assertEqual(calls, 2)
 
     def test_mutable_project_files_use_safe_paths_and_optimistic_locking(self) -> None:
         project_id = self.manager.create_project(date(2026, 9, 26))

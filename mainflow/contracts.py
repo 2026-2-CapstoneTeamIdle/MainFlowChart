@@ -139,6 +139,7 @@ class GeneratedGameModule(TypedDict):
     class_name: str
     source_code: str
     source_sha256: str
+    implementation_plan: NotRequired[dict[str, object]]
 
 
 class ImplementationSystem(TypedDict):
@@ -666,6 +667,47 @@ class FinalValidationResult(TypedDict):
     issues: list[ValidationIssue]
 
 
+class GameValidatorAIRequirement(TypedDict):
+    requirement: str
+    status: Literal["satisfied", "partial", "missing", "unverifiable"]
+    evidence: list[str]
+
+
+class GameValidatorAIFinding(TypedDict):
+    severity: Severity
+    category: Literal[
+        "requirement",
+        "gameplay",
+        "progression",
+        "balance",
+        "content",
+        "presentation",
+        "integration",
+        "evidence",
+    ]
+    message: str
+    evidence: list[str]
+    recommendation: str
+
+
+class GameValidatorAIResult(TypedDict):
+    report_version: Literal["1.0.0"]
+    contract_version: ContractVersion
+    status: Literal["passed", "needs_revision", "failed"]
+    score: float
+    summary: str
+    requirement_coverage: list[GameValidatorAIRequirement]
+    findings: list[GameValidatorAIFinding]
+    strengths: list[str]
+    limitations: list[str]
+    inspected_files: list[str]
+    provider: str
+    model: str
+    attempts: int
+    turns: int
+    tool_calls: list[str]
+
+
 # ---------------------------------------------------------------------------
 # LangGraph shared state
 # total=False is intentional because the graph fills fields incrementally.
@@ -692,6 +734,7 @@ class WorkflowState(TypedDict, total=False):
     sound_validation_result: ArtifactReference
     integrated_game: ArtifactReference
     final_validation_result: ArtifactReference
+    game_validator_ai_result: ArtifactReference
 
 
 # ---------------------------------------------------------------------------
@@ -860,3 +903,19 @@ class FinalValidationAgentInput(TypedDict):
 
 class FinalValidationAgentOutput(TypedDict):
     final_validation_result: ArtifactReference
+
+
+class GameValidatorAIAgentInput(TypedDict):
+    project_id: str
+    parsed_request: ArtifactReference
+    logic_analysis: ArtifactReference
+    game_logic_draft: ArtifactReference
+    game_validation_result: ArtifactReference
+    image_validation_result: ArtifactReference
+    sound_validation_result: ArtifactReference
+    integrated_game: ArtifactReference
+    final_validation_result: ArtifactReference
+
+
+class GameValidatorAIAgentOutput(TypedDict):
+    game_validator_ai_result: ArtifactReference

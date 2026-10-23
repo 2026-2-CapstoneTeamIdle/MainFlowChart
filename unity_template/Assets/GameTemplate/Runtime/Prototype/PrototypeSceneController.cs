@@ -98,6 +98,8 @@ namespace TeamIdle.GameTemplate.Prototype
             {
                 GUILayout.Label(
                     $"Collectibles: {collectibles.CollectedCount} / "
+                        + $"{collectibles.RequiredCount}, score: {collectibles.Score} / "
+                        + $"{collectibles.RequiredScore} "
                         + (collectibles.RequirementMet ? "ready" : "required")
                 );
             }
