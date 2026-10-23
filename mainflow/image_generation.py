@@ -114,6 +114,8 @@ ORIGINAL_DESIGN_PROMPT = "original design, not based on any existing game, franc
 # TODO: move to ImageAsset/ImageDraft fields once the contract carries them.
 BINDING_NOTE_PREFIX = "unity_binding:"
 MISSING_REQUIRED_NOTE_PREFIX = "missing_required_asset:"
+# sprite_sheet:{asset_id}={sheet artifact_id},{metadata artifact_id}
+SPRITE_SHEET_NOTE_PREFIX = "sprite_sheet:"
 
 
 @dataclass(frozen=True)
@@ -423,6 +425,12 @@ IMAGE_CRITERIA: tuple[ValidationCriterion, ...] = (
         "criterion_id": "image-transparency",
         "target": "image",
         "description": "Sprites, portraits and UI drawn over the scene have transparent pixels",
+        "required": True,
+    },
+    {
+        "criterion_id": "image-sprite-sheet",
+        "target": "image",
+        "description": "Animation sprite sheets match their frame grid and every frame is drawn",
         "required": True,
     },
 )

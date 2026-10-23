@@ -123,6 +123,46 @@ uv run --locked python -m mainflow.run_flow `
   --condition "점프와 공격이 가능한 게임"
 ```
 
+### 캐릭터 애니메이션 스프라이트 시트
+
+플레이어·캐릭터·적 스프라이트는 기본 이미지와 함께 애니메이션 시트를 만든다. 프레임은 생성된 기본
+스프라이트를 변형(흔들림, 웅크림·늘어남, 기울임)해 만들기 때문에 모든 백엔드에서 동작하고 캐릭터가
+프레임마다 동일하며 추가 API 호출이 없다. `MAINFLOW_IMAGE_SPRITE_SHEETS=off`로 끌 수 있다.
+
+| 장르 | 애니메이션 |
+|---|---|
+| 플랫포머 | `idle`(4), `run`(6), `jump`(3: 도약·체공·착지) |
+| 뱀서류 | `idle`(4), `walk`(6), `hit`(3) |
+| 타워 디펜스 | `walk`(6), `hit`(3) |
+
+에셋 요청에 애니메이션 목록 필드가 생기기 전까지 위 장르별 기본값을 사용한다. 투사체·타워·타일·
+배경·UI·초상화는 시트를 만들지 않는다.
+
+```text
+generated/images/platformer_player.png          # 기존 단일 스프라이트 (asset_id 그대로)
+generated/images/platformer_player_sheet.png    # 애니메이션별 1행, 프레임 64x64
+generated/images/platformer_player_sheet.json   # Unity 슬라이싱·클립 생성용 메타데이터
+```
+
+```json
+{
+  "asset_id": "platformer_player",
+  "unity_binding_key": "asset_registry:platformer_player",
+  "frame_width": 64, "frame_height": 64, "columns": 6, "rows": 3,
+  "pivot": [0.5, 0.0],
+  "sheet_relative_path": "generated/images/platformer_player_sheet.png",
+  "animations": {
+    "idle": {"row": 0, "frames": 4, "fps": 6, "loop": true},
+    "run": {"row": 1, "frames": 6, "fps": 12, "loop": true},
+    "jump": {"row": 2, "frames": 3, "fps": 10, "loop": false}
+  }
+}
+```
+
+`pivot`은 발밑 중앙이며 모든 프레임의 발 위치가 같은 높이에 맞춰져 있다. `image_draft.json`의
+`notes`에는 `sprite_sheet:{asset_id}={시트 artifact_id},{메타데이터 artifact_id}`가 기록되고
+`validate_image`가 격자 크기, 빈 프레임, 프레임 간 캐릭터 높이를 검사한다.
+
 ## 테스트
 
 ```powershell

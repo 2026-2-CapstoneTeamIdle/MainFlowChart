@@ -21,11 +21,20 @@ from mainflow.image_generation import (
     BINDING_NOTE_PREFIX,
     MISSING_REQUIRED_NOTE_PREFIX,
     PNG_MEDIA_TYPE,
+    SPRITE_SHEET_NOTE_PREFIX,
     ImageGenerator,
     ImageRequest,
     ReferenceImage,
     build_prompt,
     plan_assets,
+)
+from mainflow.image_spritesheet import (
+    SHEET_MEDIA_TYPE,
+    animations_for,
+    build_sprite_sheet,
+    metadata_filename,
+    sheet_filename,
+    sprite_sheets_enabled,
 )
 from mainflow.nodes._common import log
 
@@ -36,7 +45,8 @@ from mainflow.nodes._common import log
 # - 입력 파일: data/*.json, game/asset_requests/image_asset_request.json,
 #   generated/images/references/custom_style.*(Custom 스타일일 때)
 # - 출력 State: image_draft(ArtifactReference)
-# - 출력 파일: generated/images/{suggested_filename}, generated/images/image_draft.json
+# - 출력 파일: generated/images/{suggested_filename}, generated/images/image_draft.json,
+#   캐릭터 스프라이트의 애니메이션 시트 generated/images/{asset}_sheet.png/.json
 # - 다음 Node: validate_image (asset_validation_spec과 합류)
 def generate_image_node(
     state: GenerateImageAgentInput,
@@ -108,6 +118,39 @@ def generate_image_node(
         )
         notes.append(f"{BINDING_NOTE_PREFIX}{plan.asset_id}={plan.unity_binding_key}")
         log(f"  - {plan.asset_id} ({plan.kind}, {width}x{height}) 저장")
+
+        # MAINFLOW_IMAGE_SPRITE_SHEETS=off로 끌 수 있다 (기본값 on)
+        animations = animations_for(plan, asset_request["genre"])
+        if not animations or not sprite_sheets_enabled():
+            continue
+        try:
+            sheet, metadata = build_sprite_sheet(
+                content, plan, animations, asset_request["image_style"]
+            )
+        except Exception as error:  # 시트는 부가 산출물이므로 실패해도 기본 에셋은 유지
+            notes.append(f"{plan.asset_id} 스프라이트 시트 생성 실패: {error}")
+            continue
+        sheet_artifact = manager.write_bytes(
+            state["project_id"],
+            "image",
+            sheet_filename(plan),
+            sheet,
+            producer="generate_image",
+            media_type=SHEET_MEDIA_TYPE,
+        )
+        metadata["sheet_relative_path"] = sheet_artifact["relative_path"]
+        metadata_artifact = manager.write_json(
+            state["project_id"],
+            "image",
+            metadata_filename(plan),
+            metadata,
+            producer="generate_image",
+        )
+        notes.append(
+            f"{SPRITE_SHEET_NOTE_PREFIX}{plan.asset_id}="
+            f"{sheet_artifact['artifact_id']},{metadata_artifact['artifact_id']}"
+        )
+        log(f"  - {plan.asset_id} 스프라이트 시트 ({', '.join(metadata['animations'])}) 저장")
 
     draft: ImageDraft = {
         "contract_version": CONTRACT_VERSION,
