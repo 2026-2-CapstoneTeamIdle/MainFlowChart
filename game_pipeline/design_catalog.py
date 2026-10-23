@@ -6,6 +6,7 @@ but the pipeline normalizes it here before any Unity files are generated.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any, cast
@@ -451,7 +452,12 @@ def normalize_game_spec(
     }
 
 
-def build_game_logic_design(game_spec: GameSpec, *, design_intent: str = "") -> GameLogicDesign:
+def build_game_logic_design(
+    game_spec: GameSpec,
+    *,
+    design_intent: str = "",
+    variation_seed: str = "",
+) -> GameLogicDesign:
     """Map normalized mechanics to the reusable Unity module catalog."""
 
     genre_modules = _unique_strings(
@@ -464,13 +470,19 @@ def build_game_logic_design(game_spec: GameSpec, *, design_intent: str = "") -> 
     unsupported = [
         mechanic for mechanic in game_spec["mechanics"] if mechanic not in MECHANIC_TO_MODULE
     ]
-    design_v2 = build_design_v2(game_spec, design_intent)
+    design_v2 = build_design_v2(game_spec, design_intent, variation_seed=variation_seed)
     validate_design_v2(design_v2)
+    variation_id = (
+        hashlib.sha256(variation_seed.encode("utf-8")).hexdigest()[:10] if variation_seed else ""
+    )
     design = cast(
         GameLogicDesign,
         {
             "contract_version": CONTRACT_VERSION,
-            "design_id": f"{game_spec['genre'].lower()}-game-design",
+            "design_id": (
+                f"{game_spec['genre'].lower()}-game-design"
+                + (f"-{variation_id}" if variation_id else "")
+            ),
             "game_spec": game_spec,
             "common_modules": list(COMMON_MODULES),
             "genre_modules": genre_modules,
@@ -484,7 +496,11 @@ def build_game_logic_design(game_spec: GameSpec, *, design_intent: str = "") -> 
                 "time_budget_seconds": 1_800,
                 "tasks": [],
             },
-            "game_blueprint": build_game_blueprint(game_spec, design_intent),
+            "game_blueprint": build_game_blueprint(
+                game_spec,
+                design_intent,
+                variation_seed=variation_seed,
+            ),
             "design_v2": design_v2,
         },
     )

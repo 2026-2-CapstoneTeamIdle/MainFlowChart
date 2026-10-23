@@ -8,7 +8,7 @@ from mainflow.run_flow import main
 
 
 class RunFlowExitTest(unittest.TestCase):
-    def run_cli(self, status):
+    def run_cli(self, status, ai_status="passed"):
         state = {
             key: key
             for key in (
@@ -17,10 +17,17 @@ class RunFlowExitTest(unittest.TestCase):
                 "image_draft",
                 "sound_draft",
                 "final_validation_result",
+                "game_validator_ai_result",
             )
         }
         manager = MagicMock()
-        manager.read_json.side_effect = [{"status": "passed"}, {}, {}, {"status": status}]
+        manager.read_json.side_effect = [
+            {"status": "passed"},
+            {},
+            {},
+            {"status": status},
+            {"status": ai_status},
+        ]
         with (
             patch("mainflow.run_flow.load_request", return_value={}),
             patch("mainflow.run_flow.build_graph") as graph,
@@ -38,6 +45,9 @@ class RunFlowExitTest(unittest.TestCase):
 
     def test_final_success_sets_zero_exit(self):
         self.assertEqual(self.run_cli("passed"), 0)
+
+    def test_validator_ai_revision_sets_nonzero_exit(self):
+        self.assertEqual(self.run_cli("passed", "needs_revision"), 1)
 
 
 if __name__ == "__main__":

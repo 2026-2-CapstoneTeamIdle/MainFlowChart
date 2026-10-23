@@ -259,7 +259,8 @@ namespace TeamIdle.GameTemplate.Prototype
                 $"HP  {Mathf.CeilToInt(playerHealth.Current)} / "
                 + Mathf.CeilToInt(playerHealth.Maximum);
             collectibleText.text =
-                $"ITEM  {collectibles.CollectedCount} / {collectibles.RequiredCount}"
+                $"ITEM  {collectibles.CollectedCount} / {collectibles.RequiredCount}    "
+                + $"SCORE  {collectibles.Score} / {collectibles.RequiredScore}"
                 + (collectibles.RequirementMet ? "  READY" : string.Empty);
         }
 

@@ -137,6 +137,19 @@ class AssetPlanTest(unittest.TestCase):
             self.assertEqual((info.width, info.height), (width, height), kind)
             self.assertEqual(info.has_transparent_pixel, plan.transparent, kind)
 
+    def test_placeholder_variation_follows_prompt_seed_and_is_reproducible(self) -> None:
+        generator = PlaceholderImageGenerator()
+        plan = plan_assets(image_asset_request())[0]
+        first_request = ImageRequest(
+            plan, "Pixel Art", "Fantasy", "사이드뷰", "Platformer", 64, 64, "seed-a"
+        )
+        second_request = ImageRequest(
+            plan, "Pixel Art", "Fantasy", "사이드뷰", "Platformer", 64, 64, "seed-b"
+        )
+
+        self.assertEqual(generator.generate(first_request), generator.generate(first_request))
+        self.assertNotEqual(generator.generate(first_request), generator.generate(second_request))
+
 
 class ImageNodeTest(unittest.TestCase):
     def setUp(self) -> None:

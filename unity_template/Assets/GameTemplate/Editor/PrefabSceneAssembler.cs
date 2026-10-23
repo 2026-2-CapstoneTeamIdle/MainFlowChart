@@ -356,6 +356,17 @@ namespace TeamIdle.GameTemplate.Editor
                     continue;
                 }
 
+                // Platformer gameplay geometry is authored by LevelPlan. Rendering blueprint
+                // feature/objective markers on top of it produced unrelated colored blocks and
+                // made different requests look like the same sample scene with extra noise.
+                if (
+                    context.Config.Genre == "Platformer"
+                    && (entity.archetype == "feature_marker" || entity.archetype == "objective")
+                )
+                {
+                    continue;
+                }
+
                 var color = ColorUtility.TryParseHtmlString(entity.color_hex, out var parsedColor)
                     ? parsedColor
                     : Color.white;
@@ -400,7 +411,7 @@ namespace TeamIdle.GameTemplate.Editor
             var levelPlan = context.Level;
             context.Camera.orthographicSize = Mathf.Max(4f, levelPlan.camera_orthographic_size);
             context.Camera.transform.position = new Vector3(0f, 0f, -10f);
-            var playerSpawn = new Vector2(levelPlan.player_spawn.x, levelPlan.player_spawn.y);
+            var playerSpawn = ResolvePlatformerSpawn(levelPlan);
             var player = CreateSpriteObject(
                 "Player",
                 context.Entities,
@@ -435,6 +446,7 @@ namespace TeamIdle.GameTemplate.Editor
             );
             var platformIndex = 0;
             var collectibleIndex = 0;
+            var requiredCollectibleScore = 0;
             var hazardIndex = 0;
             var enemyIndex = 0;
             var checkpointIndex = 0;
@@ -467,12 +479,11 @@ namespace TeamIdle.GameTemplate.Editor
                     var collider = collectible.AddComponent<CircleCollider2D>();
                     collider.isTrigger = true;
                     var collectibleDefinition = context.Content.Find(collectiblePlan.archetype);
+                    var rewardAmount = Mathf.RoundToInt(collectibleDefinition.Stat("score", 1f));
                     collectible
                         .AddComponent<PrototypeCollectible>()
-                        .Configure(
-                            collectiblePlan.archetype,
-                            Mathf.RoundToInt(collectibleDefinition.Stat("score", 1f))
-                        );
+                        .Configure(collectiblePlan.archetype, rewardAmount);
+                    requiredCollectibleScore += rewardAmount;
                 }
 
                 foreach (var hazardPlan in zone.hazards)
@@ -556,11 +567,17 @@ namespace TeamIdle.GameTemplate.Editor
             GetModule<WallClimbModule>(context)?.Bind(playerBody);
             GetModule<AirDashModule>(context)?.Bind(playerBody, groundCheck);
             SetInt(GetModule<CollectibleSystemModule>(context), "requiredCount", collectibleIndex);
+            SetInt(
+                GetModule<CollectibleSystemModule>(context),
+                "requiredScore",
+                requiredCollectibleScore
+            );
 
+            var goalPosition = ResolvePlatformerGoal(levelPlan);
             var goal = CreateSpriteObject(
                 "StageGoal",
                 context.Entities,
-                new Vector2(levelPlan.goal.x, levelPlan.goal.y),
+                goalPosition,
                 new Vector2(0.8f, 2f),
                 new Color(0.2f, 1f, 0.45f),
                 "goal"
@@ -1048,6 +1065,57 @@ namespace TeamIdle.GameTemplate.Editor
             );
         }
 
+        private static Vector2 ResolvePlatformerSpawn(LevelPlan levelPlan)
+        {
+            var spawn = new Vector2(levelPlan.player_spawn.x, levelPlan.player_spawn.y);
+            var safeY = spawn.y;
+            foreach (var zone in levelPlan.zones)
+            {
+                foreach (var platform in zone.platforms)
+                {
+                    var halfWidth = platform.width * 0.5f;
+                    if (spawn.x < platform.x - halfWidth || spawn.x > platform.x + halfWidth)
+                    {
+                        continue;
+                    }
+
+                    var platformTop = platform.y + platform.height * 0.5f;
+                    safeY = Mathf.Max(safeY, platformTop + PlatformerPlayerHeight * 0.5f + 0.05f);
+                }
+            }
+
+            return new Vector2(spawn.x, safeY);
+        }
+
+        private static Vector2 ResolvePlatformerGoal(LevelPlan levelPlan)
+        {
+            var finalZone = levelPlan.zones[^1];
+            var platform = finalZone.platforms.Find(item => item.role == "goal");
+            platform ??= finalZone.platforms[^1];
+            var halfWidth = platform.width * 0.5f;
+            var goalX = Mathf.Clamp(
+                levelPlan.goal.x,
+                platform.x - halfWidth + 0.5f,
+                platform.x + halfWidth - 0.5f
+            );
+            foreach (var collectible in finalZone.collectibles)
+            {
+                if (Mathf.Abs(goalX - collectible.x) >= 1f)
+                {
+                    continue;
+                }
+
+                goalX = platform.x + halfWidth - 0.5f;
+                if (Mathf.Abs(goalX - collectible.x) < 1f)
+                {
+                    goalX = platform.x - halfWidth + 0.5f;
+                }
+            }
+
+            var platformTop = platform.y + platform.height * 0.5f;
+            return new Vector2(goalX, Mathf.Max(levelPlan.goal.y, platformTop + 1f));
+        }
+
         private static void ValidatePlatformerTraversal(
             Transform generatedRoot,
             LevelPlan levelPlan,
@@ -1134,7 +1202,44 @@ namespace TeamIdle.GameTemplate.Editor
             RequireCount<PrototypeHazard>(generatedRoot, expectedHazards, "hazards");
             RequireCount<PrototypePatrolEnemy>(generatedRoot, expectedEnemies, "enemies");
             RequireCount<PrototypeCheckpoint>(generatedRoot, expectedCheckpoints, "checkpoints");
-            RequireObject(FindChildByName(generatedRoot, "StageGoal"), "StageGoal");
+            var stageGoal = FindChildByName(generatedRoot, "StageGoal");
+            RequireObject(stageGoal, "StageGoal");
+            var goalCollider = stageGoal.GetComponent<Collider2D>();
+            RequireObject(goalCollider, "StageGoal Collider2D");
+            var expectedScore = 0;
+            foreach (
+                var collectible in generatedRoot.GetComponentsInChildren<PrototypeCollectible>(true)
+            )
+            {
+                expectedScore += collectible.Amount;
+                var collectibleCollider = collectible.GetComponent<Collider2D>();
+                if (
+                    collectibleCollider != null
+                    && goalCollider.bounds.Intersects(collectibleCollider.bounds)
+                )
+                {
+                    throw new InvalidOperationException(
+                        $"StageGoal overlaps collectible: {collectible.name}"
+                    );
+                }
+            }
+            var collectibleSystem =
+                UnityEngine.Object.FindFirstObjectByType<CollectibleSystemModule>();
+            RequireObject(collectibleSystem, "CollectibleSystemModule");
+            if (collectibleSystem.RequiredCount != expectedCollectibles)
+            {
+                throw new InvalidOperationException(
+                    $"Collectible item target mismatch: expected {expectedCollectibles}, "
+                        + $"found {collectibleSystem.RequiredCount}."
+                );
+            }
+            if (collectibleSystem.RequiredScore != expectedScore)
+            {
+                throw new InvalidOperationException(
+                    $"Collectible score target mismatch: expected {expectedScore}, "
+                        + $"found {collectibleSystem.RequiredScore}."
+                );
+            }
             ValidatePlatformerTuning(generatedRoot, contentPlan, balancePlan);
 
             var minimumLandingWidth = Mathf.Max(

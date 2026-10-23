@@ -83,6 +83,26 @@ class UnityProjectValidatorTest(unittest.TestCase):
             [issue["code"] for issue in outcome.issues],
         )
 
+    def test_failed_diagnostic_project_still_reaches_unity_validation(self) -> None:
+        failed_draft = cast(GameLogicDraft, {**self.draft, "status": "failed"})
+
+        outcome = UnityProjectValidator(mode="static").validate(
+            self.unity_root,
+            failed_draft,
+            self.request,
+            allow_failed_diagnostic=True,
+        )
+
+        self.assertEqual(outcome.status, "passed")
+        self.assertIn(
+            "unity.batchmode",
+            [check["criterion_id"] for check in outcome.checks],
+        )
+        draft_check = next(
+            check for check in outcome.checks if check["criterion_id"] == "game.draft"
+        )
+        self.assertIn("diagnostic Unity project", draft_check["message"])
+
     def test_asset_id_mismatch_fails_validation(self) -> None:
         request_path = (
             self.unity_root / "Assets/GameTemplate/Generated/AssetRequests/image_asset_request.json"
@@ -237,6 +257,87 @@ class ValidateGameNodeTest(unittest.TestCase):
 
 
 class GameFailureIsolationTest(unittest.TestCase):
+    def test_one_generated_feature_failure_does_not_skip_later_features(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory) / "workspace"
+            feature_generator = MagicMock()
+            attempted: list[str] = []
+            first_module: list[str] = []
+
+            def generate_feature(_design, requirements):
+                module_id, requirement = next(iter(requirements.items()))
+                attempted.append(module_id)
+                if not first_module:
+                    first_module.append(module_id)
+                if module_id == first_module[0]:
+                    raise ValueError("simulated isolated feature failure")
+                class_name = "".join(part.title() for part in module_id.split("_")) + "Module"
+                source = f"// generated diagnostic source for {module_id}\n"
+                return [
+                    {
+                        "module_id": module_id,
+                        "feature_id": requirement["feature_id"],
+                        "feature_description": requirement["feature_description"],
+                        "class_name": class_name,
+                        "source_code": source,
+                        "source_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+                    }
+                ]
+
+            feature_generator.generate.side_effect = generate_feature
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "MAINFLOW_WORKSPACE": str(workspace),
+                        "MAINFLOW_UNITY_VALIDATION_MODE": "static",
+                        "SOUND_PROVIDER": "procedural",
+                        "SOUND_BGM_SECONDS": "4",
+                    },
+                ),
+                patch(
+                    "mainflow.nodes.design_game_logic.create_feature_generator_from_environment",
+                    return_value=feature_generator,
+                ),
+            ):
+                final_state = cast(
+                    WorkflowState,
+                    build_graph().invoke(
+                        {
+                            "image_style": "Pixel Art",
+                            "mood_style": "Fantasy",
+                            "genre": "플랫포머",
+                            "viewpoint": "사이드뷰",
+                            "condition": (
+                                "시간을 역행한다, 중력을 반전한다, 목적지에 도달하는 게임"
+                            ),
+                        }
+                    ),
+                )
+
+            with patch.dict(os.environ, {"MAINFLOW_WORKSPACE": str(workspace)}):
+                manager = ArtifactManager()
+                failed_design = manager.read_json(
+                    next(
+                        artifact
+                        for artifact in manager.list_artifacts(final_state["project_id"], "game")
+                        if artifact["relative_path"] == "game/failed_game_logic_design.json"
+                    )
+                )
+
+            self.assertGreaterEqual(len(set(attempted)), 2)
+            self.assertEqual(attempted.count(first_module[0]), 2)
+            self.assertGreater(len(failed_design["generated_modules"]), 0)
+            task_statuses = {
+                task["task_id"]: task["status"]
+                for task in failed_design["implementation_tasks"]["tasks"]
+            }
+            self.assertEqual(
+                task_statuses[f"generate-{first_module[0].replace('_', '-')}"],
+                "failed",
+            )
+            self.assertIn("passed", task_statuses.values())
+
     def test_repair_failure_reuses_existing_blueprint_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             workspace = Path(temporary_directory) / "workspace"
@@ -389,10 +490,26 @@ class GameFailureIsolationTest(unittest.TestCase):
                 final_validation = manager.read_json(final_state["final_validation_result"])
 
                 self.assertEqual(game_draft["status"], "failed")
+                self.assertIsNotNone(game_draft["entry_scene"])
+                self.assertTrue(
+                    (
+                        manager.ensure_project(final_state["project_id"])
+                        / "game/unity_project/GenerationManifest.json"
+                    ).is_file()
+                )
                 self.assertEqual(game_validation["status"], "failed")
                 self.assertIn(
                     "GAME_GENERATION_FAILED",
                     [issue["code"] for issue in game_validation["issues"]],
+                )
+                self.assertGreater(len(game_validation["checks"]), 1)
+                self.assertIn(
+                    "game.generation",
+                    [check["criterion_id"] for check in game_validation["checks"]],
+                )
+                self.assertIn(
+                    "unity.batchmode",
+                    [check["criterion_id"] for check in game_validation["checks"]],
                 )
                 self.assertGreater(len(image_request["assets"]), 0)
                 self.assertGreater(len(sound_request["assets"]), 0)

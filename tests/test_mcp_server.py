@@ -51,6 +51,25 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
                     )
                     self.assertEqual(read.structured_content["content"], "second")
 
+                    ArtifactManager().write_project_text(
+                        project_id,
+                        "game/working/lines.txt",
+                        "one\ntwo\nthree\nfour\n",
+                    )
+                    ranged = await client.call_tool(
+                        "read_project_text",
+                        {
+                            "project_id": project_id,
+                            "relative_path": "game/working/lines.txt",
+                            "start_line": 2,
+                            "end_line": 3,
+                        },
+                    )
+                    self.assertEqual(ranged.structured_content["content"], "two\nthree\n")
+                    self.assertEqual(ranged.structured_content["start_line"], 2)
+                    self.assertEqual(ranged.structured_content["end_line"], 3)
+                    self.assertEqual(ranged.structured_content["total_lines"], 4)
+
                     listed = await client.call_tool(
                         "list_project_files",
                         {"project_id": project_id, "relative_directory": "game"},
@@ -104,6 +123,12 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(PermissionError):
             await reviewer.call_tool("write_project_text", {})
+
+        validator = MCPManager("game_quality_validator", server_target=mcp)
+        validator_names = {tool["name"] for tool in await validator.tool_definitions()}
+        self.assertEqual(validator_names, reviewer_names)
+        with self.assertRaises(PermissionError):
+            await validator.call_tool("write_project_text", {})
 
     async def test_node_manager_rejects_a_different_project_id(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -7,6 +7,7 @@ from mainflow.nodes.design_game_logic import design_game_logic_node
 from mainflow.nodes.final_validation import final_validation_node
 from mainflow.nodes.generate_image import generate_image_node
 from mainflow.nodes.generate_sound import generate_sound_node
+from mainflow.nodes.game_quality_validator import game_quality_validator_node
 from mainflow.nodes.logic_analysis import logic_analysis_node
 from mainflow.nodes.parse_input import parse_input_node
 from mainflow.nodes.user_input import user_input_node
@@ -22,6 +23,7 @@ __all__ = [
     "final_validation_node",
     "generate_image_node",
     "generate_sound_node",
+    "game_quality_validator_node",
     "logic_analysis_node",
     "parse_input_node",
     "user_input_node",
