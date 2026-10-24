@@ -18,9 +18,11 @@ from mainflow.contracts import (
 )
 from mainflow.image_generation import (
     MISSING_REQUIRED_NOTE_PREFIX,
+    SPRITE_SHEET_NOTE_PREFIX,
     TRANSPARENT_PROMPT,
     inspect_png,
 )
+from mainflow.image_spritesheet import validate_sheet
 from mainflow.nodes._common import log
 
 
@@ -62,11 +64,13 @@ def validate_image_node(
             }
         )
 
+    sheet_errors = _check_sprite_sheets(manager, state["project_id"], draft["notes"])
+
     failed: dict[str, set[str]] = {}
     validated_asset_ids: list[str] = []
     for asset in draft["assets"]:
         asset_id = asset["asset_id"]
-        errors: list[tuple[str, str]] = []
+        errors: list[tuple[str, str]] = list(sheet_errors.get(asset_id, []))
         try:
             info = inspect_png(manager.read_bytes(asset["artifact"]))
         except (OSError, ValueError) as error:
@@ -133,3 +137,27 @@ def validate_image_node(
             producer="validate_image",
         )
     }
+
+
+def _check_sprite_sheets(
+    manager: ArtifactManager,
+    project_id: str,
+    notes: list[str],
+) -> dict[str, list[tuple[str, str]]]:
+    """Validate each sprite sheet recorded by generate_image, keyed by asset_id."""
+
+    errors: dict[str, list[tuple[str, str]]] = {}
+    for note in notes:
+        if not note.startswith(SPRITE_SHEET_NOTE_PREFIX):
+            continue
+        asset_id, _, artifact_ids = note.removeprefix(SPRITE_SHEET_NOTE_PREFIX).partition("=")
+        try:
+            sheet_id, metadata_id = artifact_ids.split(",")
+            sheet = manager.read_bytes(manager.get_artifact(project_id, sheet_id))
+            metadata = manager.read_json(manager.get_artifact(project_id, metadata_id))
+            problems = validate_sheet(sheet, metadata)
+        except (KeyError, OSError, ValueError) as error:
+            problems = [("image-sprite-sheet", f"스프라이트 시트를 읽을 수 없습니다: {error}")]
+        if problems:
+            errors.setdefault(asset_id, []).extend(problems)
+    return errors

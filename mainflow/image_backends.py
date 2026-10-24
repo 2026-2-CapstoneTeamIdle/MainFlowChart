@@ -21,14 +21,16 @@ from __future__ import annotations
 
 import base64
 import io
+import math
 import os
 import re
 import urllib.request
 from typing import Any
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 from mainflow.image_generation import (
+    STYLE_PROMPTS,
     ImageGenerator,
     ImageKind,
     ImageRequest,
@@ -37,10 +39,14 @@ from mainflow.image_generation import (
 
 BACKEND_ENVIRONMENT_KEY = "MAINFLOW_IMAGE_BACKEND"
 OPENAI_MODEL_ENVIRONMENT_KEY = "MAINFLOW_OPENAI_IMAGE_MODEL"
-# gpt-image-1 has stable transparent-background support; newer models can be
-# selected through MAINFLOW_OPENAI_IMAGE_MODEL once verified.
-DEFAULT_OPENAI_MODEL = "gpt-image-1"
+# gpt-image-1 was shut down on 2026-10-23.  Override with
+# MAINFLOW_OPENAI_IMAGE_MODEL when OpenAI retires or replaces this one.
+DEFAULT_OPENAI_MODEL = "gpt-image-2.5-sunburst"
 
+# Only the gpt-image-1 family takes input_fidelity on image edits.  gpt-image-2
+# and later always use high fidelity for input images and expect the
+# parameter to be omitted.
+INPUT_FIDELITY_MODEL_PREFIXES = ("gpt-image-1",)
 OPENAI_QUALITY_ENVIRONMENT_KEY = "MAINFLOW_OPENAI_IMAGE_QUALITY"
 DEFAULT_OPENAI_QUALITY = "medium"
 OPENAI_QUALITIES = frozenset({"low", "medium", "high"})
@@ -56,9 +62,14 @@ PIXEL_ART_COLORS = 32
 # Sprites keep this fraction of the canvas as empty margin after cropping.
 SPRITE_MARGIN = 0.08
 BACKGROUND_REMOVAL_THRESHOLD = 40
+# Larger images find the connected background on a reduced copy (much faster).
+EXACT_FLOODFILL_MAX_PIXELS = 256 * 256
 # Prompt additions tried in order when the provider's safety system blocks a
 # result.  Output-stage blocks are usually false positives on a look-alike of
 # an existing character, so steering away from a generic look often passes.
+# Models that cannot output alpha draw sprites on a flat background, which
+# postprocess() removes afterwards.
+FLAT_BACKGROUND_PROMPT = " Plain solid white background, no shadow, no scenery."
 MODERATION_RETRY_SUFFIXES = (
     "",
     " Give it a unique silhouette and an unusual color scheme.",
@@ -80,7 +91,7 @@ class OpenAIImageGenerator:
         max_retries: int = 3,
         timeout_seconds: float = 120.0,
     ) -> None:
-        self.model = model or os.environ.get(OPENAI_MODEL_ENVIRONMENT_KEY, DEFAULT_OPENAI_MODEL)
+        self.model = model or os.environ.get(OPENAI_MODEL_ENVIRONMENT_KEY) or DEFAULT_OPENAI_MODEL
         self.quality = (
             quality or os.environ.get(OPENAI_QUALITY_ENVIRONMENT_KEY) or DEFAULT_OPENAI_QUALITY
         ).lower()
@@ -95,28 +106,114 @@ class OpenAIImageGenerator:
             # The SDK retries 429/5xx responses with exponential backoff.
             client = OpenAI(max_retries=max_retries, timeout=timeout_seconds)
         self.client = client
+        # Full-resolution output per asset_id, used as the reference image for
+        # animation strips (the post-processed sprite is only 64x64).
+        self.raw_outputs: dict[str, bytes] = {}
+        # Some models (e.g. gpt-image-2 without the transparency preview)
+        # reject background="transparent".  After the first rejection every
+        # request asks for a flat background instead.
+        self.transparent_supported = True
 
     def generate(self, request: ImageRequest) -> bytes:
-        blocked: Exception | None = None
-        for suffix in MODERATION_RETRY_SUFFIXES:
-            try:
-                return self._generate_once(request, request.prompt + suffix)
-            except Exception as error:
-                if getattr(error, "code", None) != "moderation_blocked":
-                    raise
-                blocked = error
-        raise RuntimeError(
-            f"Blocked by the safety system after "
-            f"{len(MODERATION_RETRY_SUFFIXES)} prompt variants: {blocked}"
-        ) from blocked
+        return self._explain_model_errors(
+            lambda: _retry_moderation(
+                lambda suffix: self._with_transparency_fallback(
+                    request.plan.transparent,
+                    lambda background, extra: self._generate_once(
+                        request, request.prompt + suffix + extra, background
+                    ),
+                )
+            )
+        )
 
-    def _generate_once(self, request: ImageRequest, prompt: str) -> bytes:
+    def _with_transparency_fallback(self, transparent: bool, call: Any) -> bytes:
+        """Run ``call(background, prompt_extra)``, retrying opaque if alpha is rejected."""
+
+        if not transparent:
+            return call("opaque", "")
+        if self.transparent_supported:
+            try:
+                return call("transparent", "")
+            except Exception as error:
+                if getattr(error, "param", None) != "background":
+                    raise
+                self.transparent_supported = False
+        return call("opaque", FLAT_BACKGROUND_PROMPT)
+
+    def _explain_model_errors(self, call: Any) -> bytes:
+        """Point at the setting to change when OpenAI rejects the model name."""
+
+        try:
+            return call()
+        except Exception as error:
+            if getattr(error, "param", None) != "model":
+                raise
+            raise RuntimeError(
+                f"Image model {self.model!r} is not available ({error}). Set "
+                f"{OPENAI_MODEL_ENVIRONMENT_KEY} to a supported model such as {DEFAULT_OPENAI_MODEL}."
+            ) from error
+
+    def generate_animation_strip(
+        self,
+        request: ImageRequest,
+        base_png: bytes,
+        animation: str,
+        frames: int,
+        description: str,
+    ) -> bytes:
+        """Draw one animation as a single horizontal strip of ``frames`` poses.
+
+        The base sprite is sent as the reference image so the character keeps
+        its look.  Returns the raw strip PNG; image_spritesheet splits it.
+        """
+
+        prompt = (
+            f"Sprite sheet of the exact same character as the reference image: {frames} frames "
+            f"of {description} ({animation} animation). Frames are arranged left to right in a "
+            "single row with even spacing and empty space between them. Every frame shows the "
+            "full body facing right at the same scale, with the same face, outfit, colors and "
+            f"proportions as the reference. Art style: {STYLE_PROMPTS[request.style]}. "
+            "No text, no grid lines, no frame borders, no shadows."
+        )
+
+        def call(suffix: str) -> bytes:
+            return self._with_transparency_fallback(
+                True,
+                lambda background, extra: edit(
+                    prompt
+                    + (" Transparent background." if background == "transparent" else extra)
+                    + suffix,
+                    background,
+                ),
+            )
+
+        def edit(full_prompt: str, background: str) -> bytes:
+            options: dict[str, Any] = {
+                "model": self.model,
+                "image": ("character.png", base_png, "image/png"),
+                "prompt": full_prompt,
+                "size": "1536x1024",
+                "quality": self.quality,
+                "background": background,
+                "output_format": "png",
+                "n": 1,
+            }
+            if self.model.startswith(INPUT_FIDELITY_MODEL_PREFIXES):
+                options["input_fidelity"] = "high"
+            response = self.client.images.edit(**options)
+            if not response.data or not response.data[0].b64_json:
+                raise RuntimeError("OpenAI image response did not contain image data")
+            return base64.b64decode(response.data[0].b64_json)
+
+        return self._explain_model_errors(lambda: _retry_moderation(call))
+
+    def _generate_once(self, request: ImageRequest, prompt: str, background: str) -> bytes:
         options: dict[str, Any] = {
             "model": self.model,
             "prompt": prompt,
             "size": OPENAI_SIZES[request.plan.kind],
             "quality": self.quality,
-            "background": "transparent" if request.plan.transparent else "opaque",
+            "background": background,
             "output_format": "png",
             "n": 1,
         }
@@ -134,7 +231,26 @@ class OpenAIImageGenerator:
             )
         if not response.data or not response.data[0].b64_json:
             raise RuntimeError("OpenAI image response did not contain image data")
-        return postprocess(base64.b64decode(response.data[0].b64_json), request)
+        raw = base64.b64decode(response.data[0].b64_json)
+        self.raw_outputs[request.plan.asset_id] = raw
+        return postprocess(raw, request)
+
+
+def _retry_moderation(call: Any) -> bytes:
+    """Run ``call(suffix)`` with each moderation retry suffix until one passes."""
+
+    blocked: Exception | None = None
+    for suffix in MODERATION_RETRY_SUFFIXES:
+        try:
+            return call(suffix)
+        except Exception as error:
+            if getattr(error, "code", None) != "moderation_blocked":
+                raise
+            blocked = error
+    raise RuntimeError(
+        f"Blocked by the safety system after "
+        f"{len(MODERATION_RETRY_SUFFIXES)} prompt variants: {blocked}"
+    ) from blocked
 
 
 LOCAL_BASE_URL_ENVIRONMENT_KEY = "MAINFLOW_LOCAL_IMAGE_BASE_URL"
@@ -152,7 +268,7 @@ LOCAL_TIMEOUT_ENVIRONMENT_KEY = "MAINFLOW_LOCAL_IMAGE_TIMEOUT_SECONDS"
 DEFAULT_LOCAL_TIMEOUT_SECONDS = 600.0
 # Diffusion models cannot output alpha, so sprites are drawn on a flat
 # background that postprocess() removes afterwards.
-LOCAL_FLAT_BACKGROUND_PROMPT = " Plain solid white background, no shadow, no scenery."
+LOCAL_FLAT_BACKGROUND_PROMPT = FLAT_BACKGROUND_PROMPT
 SIZE_PATTERN = re.compile(r"^[1-9][0-9]*x[1-9][0-9]*$")
 
 
@@ -307,6 +423,44 @@ def remove_flat_background(
     removes regions connected to the corners, so interior colors survive.
     """
 
+    width, height = image.size
+    if width * height <= EXACT_FLOODFILL_MAX_PIXELS:
+        return _floodfill_corners(image, threshold)
+
+    # Pillow's floodfill runs per pixel in Python, which takes seconds on a
+    # 1536x1024 strip.  Find the connected background on a reduced copy, then
+    # keep only full-resolution pixels whose color is close to a corner color
+    # so edges stay exact.
+    factor = math.ceil(math.sqrt(width * height / EXACT_FLOODFILL_MAX_PIXELS))
+    small = image.resize(
+        (max(1, width // factor), max(1, height // factor)), Image.Resampling.NEAREST
+    )
+    connected = (
+        _floodfill_corners(small, threshold)
+        .getchannel("A")
+        .point(lambda value: 255 if value == 0 else 0)
+        .resize((width, height), Image.Resampling.NEAREST)
+    )
+    rgb = image.convert("RGB")
+    close = Image.new("L", (width, height), 0)
+    for corner in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)):
+        if image.getpixel(corner)[3] == 0:
+            continue
+        solid = Image.new("RGB", (width, height), image.getpixel(corner)[:3])
+        difference = ImageChops.difference(rgb, solid).split()
+        distance = ImageChops.lighter(
+            ImageChops.lighter(difference[0], difference[1]), difference[2]
+        )
+        close = ImageChops.lighter(
+            close, distance.point(lambda value: 255 if value <= threshold else 0)
+        )
+    remove = ImageChops.multiply(connected, close)
+    result = image.copy()
+    result.putalpha(ImageChops.subtract(image.getchannel("A"), remove))
+    return result
+
+
+def _floodfill_corners(image: Image.Image, threshold: int) -> Image.Image:
     result = image.copy()
     width, height = result.size
     for corner in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)):

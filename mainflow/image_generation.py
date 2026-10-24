@@ -114,6 +114,8 @@ ORIGINAL_DESIGN_PROMPT = "original design, not based on any existing game, franc
 # TODO: move to ImageAsset/ImageDraft fields once the contract carries them.
 BINDING_NOTE_PREFIX = "unity_binding:"
 MISSING_REQUIRED_NOTE_PREFIX = "missing_required_asset:"
+# sprite_sheet:{asset_id}={sheet artifact_id},{metadata artifact_id}
+SPRITE_SHEET_NOTE_PREFIX = "sprite_sheet:"
 
 
 @dataclass(frozen=True)
@@ -164,11 +166,35 @@ def plan_assets(request: AssetGenerationRequest) -> list[ImageAssetPlan]:
     return [plan_from_item(item) for item in request["assets"] if item["asset_type"] == "image"]
 
 
+# Genres whose character sprites get animation sheets (see image_spritesheet).
+ANIMATED_GENRES: frozenset[GenreProfile] = frozenset({"Platformer", "SurvivorLike", "TowerDefense"})
+# Only character-like sprites are animated; projectiles, towers and items are
+# left as single images.
+ANIMATED_PURPOSE_KEYWORDS = ("플레이어", "player", "캐릭터", "character", "적", "enemy")
+# Animation frames are derived from the base sprite, so it must show a pose
+# that can be animated: full body, legs and arms visible, props held close.
+ANIMATION_BASE_POSE_PROMPT = (
+    "Full body facing right, neutral standing pose with both legs and arms clearly "
+    "visible and slightly apart, any props held close to the body, centered"
+)
+
+
+def is_animated_character(plan: ImageAssetPlan, genre: GenreProfile) -> bool:
+    if plan.kind != "sprite" or genre not in ANIMATED_GENRES:
+        return False
+    text = f"{plan.purpose} {plan.description}".lower()
+    return any(keyword in text for keyword in ANIMATED_PURPOSE_KEYWORDS)
+
+
 def build_prompt(plan: ImageAssetPlan, request: AssetGenerationRequest) -> str:
     background = TRANSPARENT_PROMPT if plan.transparent else OPAQUE_PROMPT
+    pose = (
+        f"{ANIMATION_BASE_POSE_PROMPT}. " if is_animated_character(plan, request["genre"]) else ""
+    )
     return (
         f'{KIND_PROMPTS[plan.kind]} for the {request["genre"]} game "{request["game_title"]}": '
         f"{plan.description} (role: {plan.purpose}). "
+        f"{pose}"
         f"Art style: {STYLE_PROMPTS[request['image_style']]}. "
         f"Mood: {MOOD_PROMPTS[request['mood_style']]}. "
         f"Viewpoint: {VIEWPOINT_PROMPTS[request['viewpoint']]}. "
@@ -423,6 +449,12 @@ IMAGE_CRITERIA: tuple[ValidationCriterion, ...] = (
         "criterion_id": "image-transparency",
         "target": "image",
         "description": "Sprites, portraits and UI drawn over the scene have transparent pixels",
+        "required": True,
+    },
+    {
+        "criterion_id": "image-sprite-sheet",
+        "target": "image",
+        "description": "Animation sprite sheets match their frame grid and every frame is drawn",
         "required": True,
     },
 )
