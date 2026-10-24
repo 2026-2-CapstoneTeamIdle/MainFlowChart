@@ -70,7 +70,7 @@ docker compose run --rm mainflow `
 | `openai` | OpenAI Images API로 생성 후 리사이즈·투명화·Pixel Art 팔레트 축소 | `OPENAI_API_KEY` |
 | `local` | 로컬 OpenAI 호환 이미지 서버(LocalAI 등)로 생성 후 동일한 후처리 | 서버에 설치된 이미지 모델 |
 
-- `MAINFLOW_OPENAI_IMAGE_MODEL`: 모델, 기본값 `gpt-image-2` (`gpt-image-1`은 2026-10-23 서비스 종료)
+- `MAINFLOW_OPENAI_IMAGE_MODEL`: 모델, 기본값 `gpt-image-2.5-sunburst` (`gpt-image-1`은 2026-10-23 서비스 종료)
 - `MAINFLOW_OPENAI_IMAGE_QUALITY`: `low | medium | high`, 기본값 `medium`
 - `Custom` 스타일의 참고 이미지(`reference_image`)는 이미지 편집 endpoint로 함께 전달한다.
 - 결과가 안전 필터에 차단되면 프롬프트를 바꿔 최대 3회 시도하고, 실패는 draft `notes`에 남긴다.

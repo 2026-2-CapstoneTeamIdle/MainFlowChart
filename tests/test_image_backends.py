@@ -158,7 +158,7 @@ class OpenAIImageGeneratorTest(unittest.TestCase):
     def test_default_model_is_not_the_retired_gpt_image_1(self) -> None:
         with mock.patch.dict(os.environ, {"MAINFLOW_OPENAI_IMAGE_MODEL": ""}):
             generator = OpenAIImageGenerator(client=FakeImagesClient())
-        self.assertEqual(generator.model, "gpt-image-2")
+        self.assertEqual(generator.model, "gpt-image-2.5-sunburst")
 
     def test_unknown_model_error_names_the_setting(self) -> None:
         class ModelError(Exception):
