@@ -143,7 +143,9 @@ def generate_image_node(
             notes.append(f"{plan.asset_id} 스프라이트 시트 생성 실패: {error}")
             continue
         for name, reason in metadata.get("fallbacks", {}).items():
-            notes.append(f"{plan.asset_id} {name} AI 프레임 실패, transform으로 대체: {reason}")
+            message = f"{plan.asset_id} {name} AI 프레임 실패, transform으로 대체: {reason}"
+            notes.append(message)
+            log(f"  ! {message}")
         sheet_artifact = manager.write_bytes(
             state["project_id"],
             "image",

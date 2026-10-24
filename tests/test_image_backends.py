@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import os
+import re
 import tempfile
 import time
 import unittest
@@ -536,9 +537,9 @@ class TransparencyFallbackTest(unittest.TestCase):
 
 
 class AnimationStripRequestTest(unittest.TestCase):
-    def test_strip_uses_edit_with_reference_and_high_fidelity(self) -> None:
+    def test_strip_uses_edit_with_reference_image(self) -> None:
         client = FakeImagesClient()
-        generator = OpenAIImageGenerator("m", client=client, quality="low")
+        generator = OpenAIImageGenerator("gpt-image-2", client=client, quality="low")
         reference = sprite_png(512)
 
         generator.generate_animation_strip(
@@ -548,12 +549,27 @@ class AnimationStripRequestTest(unittest.TestCase):
         (call,) = client.calls
         self.assertEqual(call["endpoint"], "edit")
         self.assertEqual(call["image"], ("character.png", reference, "image/png"))
-        self.assertEqual(call["input_fidelity"], "high")
+        # gpt-image-2 always uses high input fidelity; the parameter must be omitted.
+        self.assertNotIn("input_fidelity", call)
         self.assertEqual(call["size"], "1536x1024")
         self.assertEqual(call["background"], "transparent")
         self.assertEqual(call["quality"], "low")
         for expected in ("6 frames", "a running cycle", "single row", "pixel art"):
             self.assertIn(expected, call["prompt"])
+
+    def test_input_fidelity_is_sent_only_to_the_gpt_image_1_family(self) -> None:
+        for model, expected in (
+            ("gpt-image-2", None),
+            ("gpt-image-2.5-sunburst", None),
+            ("gpt-image-1.5", "high"),
+            ("gpt-image-1-mini", "high"),
+        ):
+            with self.subTest(model=model):
+                client = FakeImagesClient()
+                OpenAIImageGenerator(model, client=client).generate_animation_strip(
+                    make_request(), sprite_png(), "run", 6, "a run"
+                )
+                self.assertEqual(client.calls[0].get("input_fidelity"), expected)
 
     def test_strip_retries_on_moderation(self) -> None:
         client = BlockingImagesClient(blocked_attempts=1)
@@ -567,6 +583,69 @@ class AnimationStripRequestTest(unittest.TestCase):
         generator.generate(make_request("hero"))
         with Image.open(io.BytesIO(generator.raw_outputs["hero"])) as raw:
             self.assertEqual(raw.size, (1024, 1024))
+
+
+class InputFidelityRejectedError(Exception):
+    param = "input_fidelity"
+
+
+class StrictGptImage2Client(FakeImagesClient):
+    """Behaves like gpt-image-2: rejects input_fidelity and returns real strips."""
+
+    def _respond(self, kwargs: dict[str, Any]) -> SimpleNamespace:
+        if "input_fidelity" in kwargs:
+            raise InputFidelityRejectedError("input_fidelity is not supported for gpt-image-2")
+        frames = re.search(r"(\d+) frames", kwargs["prompt"])
+        if frames is None:
+            content = sprite_png()
+        else:
+            # An animation strip: evenly spaced poses on a transparent canvas.
+            count = int(frames.group(1))
+            strip = Image.new("RGBA", (1536, 1024))
+            slot = 1536 // count
+            for index in range(count):
+                pose = Image.open(io.BytesIO(sprite_png(200 + 10 * (index % 2)))).convert("RGBA")
+                pose = pose.crop(pose.getchannel("A").getbbox())
+                strip.alpha_composite(
+                    pose, (index * slot + (slot - pose.width) // 2, 900 - pose.height)
+                )
+            content = _encode(strip)
+        encoded = base64.b64encode(content).decode("ascii")
+        return SimpleNamespace(data=[SimpleNamespace(b64_json=encoded)])
+
+
+class GptImage2AiSheetTest(unittest.TestCase):
+    def test_ai_sheet_is_built_without_falling_back(self) -> None:
+        client = StrictGptImage2Client()
+        with tempfile.TemporaryDirectory() as directory:
+            environment = {
+                "MAINFLOW_WORKSPACE": str(Path(directory) / "workspace"),
+                "MAINFLOW_IMAGE_SPRITE_SHEETS": "on",
+                "MAINFLOW_IMAGE_SPRITE_SHEET_MODE": "auto",
+            }
+            with mock.patch.dict(os.environ, environment):
+                manager = ArtifactManager()
+                project_id = manager.create_project()
+                state = write_image_inputs(manager, project_id, image_asset_request(ASSETS))
+                state["image_draft"] = generate_image_node(
+                    state, OpenAIImageGenerator("gpt-image-2", client=client)
+                )["image_draft"]
+
+                draft = manager.read_json(state["image_draft"])
+                (note,) = [n for n in draft["notes"] if n.startswith("sprite_sheet:hero=")]
+                metadata_id = note.split("=")[1].split(",")[1]
+                metadata = manager.read_json(manager.get_artifact(project_id, metadata_id))
+                self.assertEqual(
+                    {name: a["source"] for name, a in metadata["animations"].items()},
+                    {"idle": "ai", "run": "ai", "jump": "ai"},
+                )
+                self.assertNotIn("fallbacks", metadata)
+                self.assertFalse(any("transform으로 대체" in note for note in draft["notes"]))
+                edits = [call for call in client.calls if call["endpoint"] == "edit"]
+                self.assertEqual(len(edits), 3)
+                self.assertTrue(all("input_fidelity" not in call for call in edits))
+                result = manager.read_json(validate_image_node(state)["image_validation_result"])
+                self.assertEqual(result["status"], "passed", result["issues"])
 
 
 if __name__ == "__main__":

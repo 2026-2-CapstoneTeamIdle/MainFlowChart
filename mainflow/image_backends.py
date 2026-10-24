@@ -43,6 +43,10 @@ OPENAI_MODEL_ENVIRONMENT_KEY = "MAINFLOW_OPENAI_IMAGE_MODEL"
 # MAINFLOW_OPENAI_IMAGE_MODEL when OpenAI retires or replaces this one.
 DEFAULT_OPENAI_MODEL = "gpt-image-2.5-sunburst"
 
+# Only the gpt-image-1 family takes input_fidelity on image edits.  gpt-image-2
+# and later always use high fidelity for input images and expect the
+# parameter to be omitted.
+INPUT_FIDELITY_MODEL_PREFIXES = ("gpt-image-1",)
 OPENAI_QUALITY_ENVIRONMENT_KEY = "MAINFLOW_OPENAI_IMAGE_QUALITY"
 DEFAULT_OPENAI_QUALITY = "medium"
 OPENAI_QUALITIES = frozenset({"low", "medium", "high"})
@@ -184,17 +188,19 @@ class OpenAIImageGenerator:
             )
 
         def edit(full_prompt: str, background: str) -> bytes:
-            response = self.client.images.edit(
-                model=self.model,
-                image=("character.png", base_png, "image/png"),
-                prompt=full_prompt,
-                size="1536x1024",
-                quality=self.quality,
-                background=background,
-                output_format="png",
-                input_fidelity="high",
-                n=1,
-            )
+            options: dict[str, Any] = {
+                "model": self.model,
+                "image": ("character.png", base_png, "image/png"),
+                "prompt": full_prompt,
+                "size": "1536x1024",
+                "quality": self.quality,
+                "background": background,
+                "output_format": "png",
+                "n": 1,
+            }
+            if self.model.startswith(INPUT_FIDELITY_MODEL_PREFIXES):
+                options["input_fidelity"] = "high"
+            response = self.client.images.edit(**options)
             if not response.data or not response.data[0].b64_json:
                 raise RuntimeError("OpenAI image response did not contain image data")
             return base64.b64decode(response.data[0].b64_json)
