@@ -239,6 +239,8 @@ class GameFailureIsolationTest(unittest.TestCase):
                     {
                         "MAINFLOW_WORKSPACE": str(workspace),
                         "MAINFLOW_UNITY_VALIDATION_MODE": "static",
+                        "SOUND_PROVIDER": "procedural",
+                        "SOUND_BGM_SECONDS": "4",
                     },
                 ),
                 patch(
@@ -277,10 +279,11 @@ class GameFailureIsolationTest(unittest.TestCase):
                 )
                 self.assertGreater(len(image_request["assets"]), 0)
                 self.assertGreater(len(sound_request["assets"]), 0)
-                # The image branch generates every requested asset on its own.
+                # The image and sound branches generate every requested asset on their own.
                 self.assertEqual(image_draft["status"], "generated")
                 self.assertEqual(len(image_draft["assets"]), len(image_request["assets"]))
-                self.assertEqual(sound_draft["status"], "pending")
+                self.assertEqual(sound_draft["status"], "generated")
+                self.assertEqual(len(sound_draft["assets"]), len(sound_request["assets"]))
                 self.assertEqual(integrated_game["status"], "failed")
                 self.assertEqual(final_validation["status"], "failed")
 

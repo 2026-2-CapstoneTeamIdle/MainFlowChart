@@ -50,6 +50,8 @@ def apply_assets_to_game_node(
     )
 
     # TODO: 실제 Unity/Godot 프로젝트에 에셋 적용
+    # 사운드 파일은 sound_draft.assets[].artifact로 찾는다. 요청서의 suggested_filename은
+    # 항상 .wav지만 ELEVENLABS_OUTPUT_FORMAT=mp3_*이면 실제 파일은 .mp3다.
     game_failed = game_draft["status"] == "failed"
     integrated_game: IntegratedGame = {
         "contract_version": CONTRACT_VERSION,

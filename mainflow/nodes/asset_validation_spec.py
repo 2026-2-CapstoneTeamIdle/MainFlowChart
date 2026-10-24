@@ -15,6 +15,7 @@ from mainflow.contracts import (
 )
 from mainflow.image_generation import image_criteria
 from mainflow.nodes._common import log
+from sound_pipeline.validation import SOUND_CRITERIA
 
 
 # Node 계약
@@ -43,7 +44,15 @@ def create_asset_validation_spec_node(
         "contract_version": CONTRACT_VERSION,
         "spec_id": "asset-validation",
         "image_criteria": image_criteria(),
-        "sound_criteria": [],
+        "sound_criteria": [
+            {
+                "criterion_id": criterion_id,
+                "target": "sound",
+                "description": description,
+                "required": required,
+            }
+            for criterion_id, description, required in SOUND_CRITERIA
+        ],
     }
     return {
         "asset_validation_spec": manager.write_json(
