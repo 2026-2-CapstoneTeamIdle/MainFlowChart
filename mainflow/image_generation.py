@@ -166,11 +166,35 @@ def plan_assets(request: AssetGenerationRequest) -> list[ImageAssetPlan]:
     return [plan_from_item(item) for item in request["assets"] if item["asset_type"] == "image"]
 
 
+# Genres whose character sprites get animation sheets (see image_spritesheet).
+ANIMATED_GENRES: frozenset[GenreProfile] = frozenset({"Platformer", "SurvivorLike", "TowerDefense"})
+# Only character-like sprites are animated; projectiles, towers and items are
+# left as single images.
+ANIMATED_PURPOSE_KEYWORDS = ("플레이어", "player", "캐릭터", "character", "적", "enemy")
+# Animation frames are derived from the base sprite, so it must show a pose
+# that can be animated: full body, legs and arms visible, props held close.
+ANIMATION_BASE_POSE_PROMPT = (
+    "Full body facing right, neutral standing pose with both legs and arms clearly "
+    "visible and slightly apart, any props held close to the body, centered"
+)
+
+
+def is_animated_character(plan: ImageAssetPlan, genre: GenreProfile) -> bool:
+    if plan.kind != "sprite" or genre not in ANIMATED_GENRES:
+        return False
+    text = f"{plan.purpose} {plan.description}".lower()
+    return any(keyword in text for keyword in ANIMATED_PURPOSE_KEYWORDS)
+
+
 def build_prompt(plan: ImageAssetPlan, request: AssetGenerationRequest) -> str:
     background = TRANSPARENT_PROMPT if plan.transparent else OPAQUE_PROMPT
+    pose = (
+        f"{ANIMATION_BASE_POSE_PROMPT}. " if is_animated_character(plan, request["genre"]) else ""
+    )
     return (
         f'{KIND_PROMPTS[plan.kind]} for the {request["genre"]} game "{request["game_title"]}": '
         f"{plan.description} (role: {plan.purpose}). "
+        f"{pose}"
         f"Art style: {STYLE_PROMPTS[request['image_style']]}. "
         f"Mood: {MOOD_PROMPTS[request['mood_style']]}. "
         f"Viewpoint: {VIEWPOINT_PROMPTS[request['viewpoint']]}. "

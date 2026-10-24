@@ -70,7 +70,7 @@ docker compose run --rm mainflow `
 | `openai` | OpenAI Images API로 생성 후 리사이즈·투명화·Pixel Art 팔레트 축소 | `OPENAI_API_KEY` |
 | `local` | 로컬 OpenAI 호환 이미지 서버(LocalAI 등)로 생성 후 동일한 후처리 | 서버에 설치된 이미지 모델 |
 
-- `MAINFLOW_OPENAI_IMAGE_MODEL`: 모델, 기본값 `gpt-image-1`
+- `MAINFLOW_OPENAI_IMAGE_MODEL`: 모델, 기본값 `gpt-image-2` (`gpt-image-1`은 2026-10-23 서비스 종료)
 - `MAINFLOW_OPENAI_IMAGE_QUALITY`: `low | medium | high`, 기본값 `medium`
 - `Custom` 스타일의 참고 이미지(`reference_image`)는 이미지 편집 endpoint로 함께 전달한다.
 - 결과가 안전 필터에 차단되면 프롬프트를 바꿔 최대 3회 시도하고, 실패는 draft `notes`에 남긴다.
@@ -125,9 +125,28 @@ uv run --locked python -m mainflow.run_flow `
 
 ### 캐릭터 애니메이션 스프라이트 시트
 
-플레이어·캐릭터·적 스프라이트는 기본 이미지와 함께 애니메이션 시트를 만든다. 프레임은 생성된 기본
-스프라이트를 변형(흔들림, 웅크림·늘어남, 기울임)해 만들기 때문에 모든 백엔드에서 동작하고 캐릭터가
-프레임마다 동일하며 추가 API 호출이 없다. `MAINFLOW_IMAGE_SPRITE_SHEETS=off`로 끌 수 있다.
+플레이어·캐릭터·적 스프라이트는 기본 이미지와 함께 애니메이션 시트를 만든다. 애니메이션마다
+프레임을 만드는 방식(`source`)을 고르며, `MAINFLOW_IMAGE_SPRITE_SHEET_MODE`로 정한다.
+
+| 모드 | 동작 |
+|---|---|
+| `auto` (기본) | 백엔드가 지원하면 `ai`, 아니면 `transform` |
+| `ai` | 기본 스프라이트를 참조 이미지로 넘겨 애니메이션 하나를 한 줄(strip)로 생성한 뒤 프레임으로 분리. 실제 자세(팔다리)가 바뀐다. 현재 `openai` 백엔드가 지원하며 캐릭터당 애니메이션 수만큼 API 호출이 추가된다. |
+| `transform` | 기본 스프라이트를 정수 픽셀 연산(위아래 이동, 행 단위 기울임, 행 삭제·복제로 웅크림/늘어남, 다리 벌림)으로 변형. 회전·비정수 리사이즈가 없어 도트가 깨지지 않고 API 비용이 없다. |
+
+`ai` 프레임은 다음 후처리를 거친다.
+
+- 흰 배경이면 제거하고, 빈 열을 기준으로 프레임을 분리한다. 지팡이 끝처럼 얇게 맞닿은 프레임은
+  가장 얇은 열에서 자른다.
+- 몸통 중심으로 가로 정렬하고 발을 기준선에 맞춘다. 12% 이내의 크기 차이는 같은 높이로 맞추고,
+  웅크림처럼 큰 차이는 유지한다.
+- Pixel Art는 모든 프레임을 기본 스프라이트 팔레트로 고정한다.
+- 프레임 수가 맞지 않거나(겹침), 색이 기본 스프라이트와 크게 다르거나, API가 실패하면 그
+  애니메이션만 `transform`으로 대체하고 사유를 메타데이터 `fallbacks`와 draft `notes`에 남긴다.
+
+애니메이션 캐릭터의 기본 스프라이트는 "전신, 오른쪽을 바라봄, 팔다리가 보이는 중립 자세, 소품은 몸에
+붙게"로 요청해 프레임 생성에 적합한 자세를 만든다. `MAINFLOW_IMAGE_SPRITE_SHEETS=off`로 시트 생성
+자체를 끌 수 있다.
 
 | 장르 | 애니메이션 |
 |---|---|
@@ -152,10 +171,11 @@ generated/images/platformer_player_sheet.json   # Unity 슬라이싱·클립 생
   "pivot": [0.5, 0.0],
   "sheet_relative_path": "generated/images/platformer_player_sheet.png",
   "animations": {
-    "idle": {"row": 0, "frames": 4, "fps": 6, "loop": true},
-    "run": {"row": 1, "frames": 6, "fps": 12, "loop": true},
-    "jump": {"row": 2, "frames": 3, "fps": 10, "loop": false}
-  }
+    "idle": {"row": 0, "frames": 4, "fps": 6, "loop": true, "source": "ai"},
+    "run": {"row": 1, "frames": 6, "fps": 12, "loop": true, "source": "ai"},
+    "jump": {"row": 2, "frames": 3, "fps": 10, "loop": false, "source": "transform"}
+  },
+  "fallbacks": {"jump": "ValueError: expected 3 frames in the strip, found 2"}
 }
 ```
 

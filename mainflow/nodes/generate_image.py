@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import io
 from typing import cast
+
+from PIL import Image
 
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
@@ -30,10 +33,13 @@ from mainflow.image_generation import (
 )
 from mainflow.image_spritesheet import (
     SHEET_MEDIA_TYPE,
+    AnimationSpec,
+    StripSource,
     animations_for,
     build_sprite_sheet,
     metadata_filename,
     sheet_filename,
+    sheet_mode,
     sprite_sheets_enabled,
 )
 from mainflow.nodes._common import log
@@ -123,13 +129,21 @@ def generate_image_node(
         animations = animations_for(plan, asset_request["genre"])
         if not animations or not sprite_sheets_enabled():
             continue
+        strip_source = _strip_source(generator, image_request, content, sheet_mode())
+        if strip_source is None and sheet_mode() == "ai":
+            notes.append(
+                f"{plan.asset_id}: {generator.name} 백엔드는 AI 스프라이트 시트를 지원하지 않아 "
+                "transform으로 생성"
+            )
         try:
             sheet, metadata = build_sprite_sheet(
-                content, plan, animations, asset_request["image_style"]
+                content, plan, animations, asset_request["image_style"], strip_source
             )
         except Exception as error:  # 시트는 부가 산출물이므로 실패해도 기본 에셋은 유지
             notes.append(f"{plan.asset_id} 스프라이트 시트 생성 실패: {error}")
             continue
+        for name, reason in metadata.get("fallbacks", {}).items():
+            notes.append(f"{plan.asset_id} {name} AI 프레임 실패, transform으로 대체: {reason}")
         sheet_artifact = manager.write_bytes(
             state["project_id"],
             "image",
@@ -150,7 +164,15 @@ def generate_image_node(
             f"{SPRITE_SHEET_NOTE_PREFIX}{plan.asset_id}="
             f"{sheet_artifact['artifact_id']},{metadata_artifact['artifact_id']}"
         )
-        log(f"  - {plan.asset_id} 스프라이트 시트 ({', '.join(metadata['animations'])}) 저장")
+        summary = ", ".join(
+            f"{name}:{animation['source']}" for name, animation in metadata["animations"].items()
+        )
+        log(f"  - {plan.asset_id} 스프라이트 시트 ({summary}) 저장")
+
+    if getattr(generator, "transparent_supported", True) is False:
+        notes.append(
+            "투명 배경을 지원하지 않는 모델이라 흰 단색 배경으로 생성한 뒤 후처리로 배경을 제거함"
+        )
 
     draft: ImageDraft = {
         "contract_version": CONTRACT_VERSION,
@@ -168,3 +190,40 @@ def generate_image_node(
             producer="generate_image",
         )
     }
+
+
+def _strip_source(
+    generator: ImageGenerator,
+    image_request: ImageRequest,
+    sprite_png: bytes,
+    mode: str,
+) -> StripSource | None:
+    """Return a callable that draws one animation strip, if ai sheets apply."""
+
+    draw_strip = getattr(generator, "generate_animation_strip", None)
+    if mode == "transform" or draw_strip is None:
+        return None
+    raw_outputs: dict[str, bytes] = getattr(generator, "raw_outputs", {})
+    reference = raw_outputs.get(image_request.plan.asset_id) or _upscale(sprite_png)
+
+    def source(animation: AnimationSpec) -> bytes:
+        return draw_strip(
+            image_request,
+            reference,
+            animation.name,
+            len(animation.keyframes),
+            animation.ai_description,
+        )
+
+    return source
+
+
+def _upscale(png: bytes, factor: int = 8) -> bytes:
+    """Pixel-exact enlargement so a small sprite works as a reference image."""
+
+    with Image.open(io.BytesIO(png)) as source:
+        image = source.convert("RGBA")
+    enlarged = image.resize((image.width * factor, image.height * factor), Image.Resampling.NEAREST)
+    output = io.BytesIO()
+    enlarged.save(output, format="PNG")
+    return output.getvalue()

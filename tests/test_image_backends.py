@@ -4,6 +4,7 @@ import base64
 import io
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from PIL import Image, ImageDraw
 
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.image_backends import (
+    FLAT_BACKGROUND_PROMPT,
     LOCAL_FLAT_BACKGROUND_PROMPT,
     LocalImageGenerator,
     OpenAIImageGenerator,
@@ -153,6 +155,24 @@ class OpenAIImageGeneratorTest(unittest.TestCase):
             generator = OpenAIImageGenerator(client=FakeImagesClient())
         self.assertEqual((generator.model, generator.quality), ("gpt-image-2", "low"))
 
+    def test_default_model_is_not_the_retired_gpt_image_1(self) -> None:
+        with mock.patch.dict(os.environ, {"MAINFLOW_OPENAI_IMAGE_MODEL": ""}):
+            generator = OpenAIImageGenerator(client=FakeImagesClient())
+        self.assertEqual(generator.model, "gpt-image-2")
+
+    def test_unknown_model_error_names_the_setting(self) -> None:
+        class ModelError(Exception):
+            param = "model"
+
+        client = mock.Mock()
+        client.images.generate.side_effect = ModelError("The model 'gpt-image-1' does not exist.")
+        client.images.edit.side_effect = ModelError("The model 'gpt-image-1' does not exist.")
+        generator = OpenAIImageGenerator("gpt-image-1", client=client)
+        with self.assertRaisesRegex(RuntimeError, "MAINFLOW_OPENAI_IMAGE_MODEL"):
+            generator.generate(make_request())
+        with self.assertRaisesRegex(RuntimeError, "MAINFLOW_OPENAI_IMAGE_MODEL"):
+            generator.generate_animation_strip(make_request(), b"png", "run", 6, "a run")
+
     def test_invalid_quality_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             OpenAIImageGenerator("m", client=FakeImagesClient(), quality="ultra")
@@ -226,6 +246,19 @@ class PostprocessTest(unittest.TestCase):
         info = inspect_png(postprocess(sprite_png(transparent=False), make_request("hero")))
         self.assertTrue(info.has_transparent_pixel)
 
+    def test_large_background_removal_keeps_interior_and_is_fast(self) -> None:
+        image = Image.open(io.BytesIO(sprite_png(1024, transparent=False))).convert("RGBA")
+        # A white patch inside the character must survive: it is not connected
+        # to the background.
+        ImageDraw.Draw(image).rectangle((500, 500, 520, 520), fill=(255, 255, 255, 255))
+        started = time.perf_counter()
+        result = remove_flat_background(image)
+        self.assertLess(time.perf_counter() - started, 2.0)
+        self.assertEqual(result.getpixel((0, 0))[3], 0)
+        self.assertEqual(result.getpixel((1023, 1023))[3], 0)
+        self.assertEqual(result.getpixel((510, 510))[3], 255)
+        self.assertEqual(result.getpixel((300, 512))[3], 255)
+
     def test_background_removal_keeps_interior(self) -> None:
         image = Image.open(io.BytesIO(sprite_png(256, transparent=False))).convert("RGBA")
         result = remove_flat_background(image)
@@ -256,7 +289,15 @@ class OpenAIGraphNodeTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         workspace = Path(self.temporary_directory.name) / "workspace"
-        self.environment = mock.patch.dict(os.environ, {"MAINFLOW_WORKSPACE": str(workspace)})
+        # Animation strips are covered in test_image_spritesheet; keep one
+        # API call per asset here.
+        self.environment = mock.patch.dict(
+            os.environ,
+            {
+                "MAINFLOW_WORKSPACE": str(workspace),
+                "MAINFLOW_IMAGE_SPRITE_SHEET_MODE": "transform",
+            },
+        )
         self.environment.start()
         self.manager = ArtifactManager()
         self.project_id = self.manager.create_project()
@@ -411,6 +452,121 @@ class LocalImageGeneratorTest(unittest.TestCase):
             self.assertIn("generator=local", draft["notes"])
             result = manager.read_json(validate_image_node(state)["image_validation_result"])
             self.assertEqual(result["status"], "passed", result["issues"])
+
+
+class TransparencyRejectedError(Exception):
+    """Mimics gpt-image-2 rejecting background="transparent"."""
+
+    param = "background"
+
+
+class NoAlphaImagesClient(FakeImagesClient):
+    """A model without transparency: rejects it and draws on white instead."""
+
+    def _respond(self, kwargs: dict[str, Any]) -> SimpleNamespace:
+        if kwargs["background"] == "transparent":
+            raise TransparencyRejectedError(
+                "Transparent background is not supported for this model."
+            )
+        if kwargs["size"] == "1536x1024" and "Sprite sheet" not in kwargs["prompt"]:
+            content = scene_png()
+        else:
+            content = sprite_png(transparent=False)
+        encoded = base64.b64encode(content).decode("ascii")
+        return SimpleNamespace(data=[SimpleNamespace(b64_json=encoded)])
+
+
+class TransparencyFallbackTest(unittest.TestCase):
+    def test_rejected_transparency_retries_on_a_flat_background(self) -> None:
+        client = NoAlphaImagesClient()
+        generator = OpenAIImageGenerator("gpt-image-2", client=client)
+
+        sprite = generator.generate(make_request("hero"))
+
+        rejected, retried = client.calls
+        self.assertEqual(rejected["background"], "transparent")
+        self.assertEqual(retried["background"], "opaque")
+        self.assertTrue(retried["prompt"].endswith(FLAT_BACKGROUND_PROMPT))
+        self.assertFalse(generator.transparent_supported)
+        # The white background is removed by post-processing.
+        self.assertTrue(inspect_png(sprite).has_transparent_pixel)
+
+    def test_after_one_rejection_transparency_is_not_requested_again(self) -> None:
+        client = NoAlphaImagesClient()
+        generator = OpenAIImageGenerator("gpt-image-2", client=client)
+        generator.generate(make_request("hero"))
+        generator.generate(make_request("hero_portrait"))
+        generator.generate_animation_strip(make_request(), sprite_png(), "run", 6, "a run")
+        self.assertEqual(
+            [call["background"] for call in client.calls],
+            ["transparent", "opaque", "opaque", "opaque"],
+        )
+        self.assertNotIn("Transparent background", client.calls[-1]["prompt"])
+        self.assertIn(FLAT_BACKGROUND_PROMPT.strip(), client.calls[-1]["prompt"])
+
+    def test_opaque_assets_never_ask_for_transparency(self) -> None:
+        client = NoAlphaImagesClient()
+        OpenAIImageGenerator("m", client=client).generate(make_request("stage"))
+        self.assertEqual([call["background"] for call in client.calls], ["opaque"])
+
+    def test_other_background_errors_on_opaque_requests_are_raised(self) -> None:
+        client = mock.Mock()
+        client.images.generate.side_effect = TransparencyRejectedError("bad background")
+        with self.assertRaises(TransparencyRejectedError):
+            OpenAIImageGenerator("m", client=client).generate(make_request("stage"))
+
+    def test_node_notes_the_flat_background_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            environment = {
+                "MAINFLOW_WORKSPACE": str(Path(directory) / "workspace"),
+                "MAINFLOW_IMAGE_SPRITE_SHEET_MODE": "transform",
+            }
+            with mock.patch.dict(os.environ, environment):
+                manager = ArtifactManager()
+                project_id = manager.create_project()
+                state = write_image_inputs(manager, project_id, image_asset_request(ASSETS))
+                state["image_draft"] = generate_image_node(
+                    state, OpenAIImageGenerator("gpt-image-2", client=NoAlphaImagesClient())
+                )["image_draft"]
+                draft = manager.read_json(state["image_draft"])
+                self.assertEqual(draft["status"], "generated", draft["notes"])
+                self.assertTrue(any("흰 단색 배경" in note for note in draft["notes"]))
+                result = manager.read_json(validate_image_node(state)["image_validation_result"])
+                self.assertEqual(result["status"], "passed", result["issues"])
+
+
+class AnimationStripRequestTest(unittest.TestCase):
+    def test_strip_uses_edit_with_reference_and_high_fidelity(self) -> None:
+        client = FakeImagesClient()
+        generator = OpenAIImageGenerator("m", client=client, quality="low")
+        reference = sprite_png(512)
+
+        generator.generate_animation_strip(
+            make_request("hero", style="Pixel Art"), reference, "run", 6, "a running cycle"
+        )
+
+        (call,) = client.calls
+        self.assertEqual(call["endpoint"], "edit")
+        self.assertEqual(call["image"], ("character.png", reference, "image/png"))
+        self.assertEqual(call["input_fidelity"], "high")
+        self.assertEqual(call["size"], "1536x1024")
+        self.assertEqual(call["background"], "transparent")
+        self.assertEqual(call["quality"], "low")
+        for expected in ("6 frames", "a running cycle", "single row", "pixel art"):
+            self.assertIn(expected, call["prompt"])
+
+    def test_strip_retries_on_moderation(self) -> None:
+        client = BlockingImagesClient(blocked_attempts=1)
+        client.edit = client.generate  # type: ignore[method-assign]
+        generator = OpenAIImageGenerator("m", client=client)
+        generator.generate_animation_strip(make_request(), sprite_png(), "jump", 3, "a jump")
+        self.assertEqual(len(client.calls), 2)
+
+    def test_raw_output_is_kept_as_strip_reference(self) -> None:
+        generator = OpenAIImageGenerator("m", client=FakeImagesClient())
+        generator.generate(make_request("hero"))
+        with Image.open(io.BytesIO(generator.raw_outputs["hero"])) as raw:
+            self.assertEqual(raw.size, (1024, 1024))
 
 
 if __name__ == "__main__":
