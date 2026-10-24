@@ -632,10 +632,9 @@ def design_game_logic_node(
         # This node is a fan-out boundary.  Record game failure as data instead
         # of aborting the graph so image and sound branches can still run.
         log(f"게임 생성에 실패했지만 이미지/사운드 파이프라인은 계속합니다: {error}")
-        # Preserve every module that passed its own bounded generation task even
-        # when a sibling module ultimately failed.  The diagnostic project and
-        # failure artifacts must describe the best recoverable partial result,
-        # not the original empty generated_modules collection.
+        # Preserve every source-validated module in failure artifacts so the next repair run can
+        # inspect it. These modules are not yet Unity-compiled, however, and therefore must not be
+        # copied into the user-facing diagnostic project when a sibling generation task fails.
         if generated_modules:
             design["generated_modules"] = deepcopy(generated_modules)
         if development_loop is not None:
@@ -697,22 +696,27 @@ def design_game_logic_node(
                 diagnostic_design = deepcopy(design)
                 generated_ids = {module["module_id"] for module in generated_modules}
                 unresolved_ids = set(diagnostic_design["unsupported_mechanics"])
-                diagnostic_design["generated_modules"] = deepcopy(generated_modules)
+                uncompiled_generated_ids = unresolved_ids | generated_ids
+                diagnostic_design["generated_modules"] = []
                 diagnostic_design["selected_modules"] = list(
                     dict.fromkeys(
                         [
                             module_id
                             for module_id in diagnostic_design["selected_modules"]
-                            if module_id not in unresolved_ids
-                        ]
-                        + [
-                            module_id
-                            for module_id in diagnostic_design["unsupported_mechanics"]
-                            if module_id in generated_ids
+                            if module_id not in uncompiled_generated_ids
                         ]
                     )
                 )
                 diagnostic_design["unsupported_mechanics"] = []
+                validation_plan = diagnostic_design.get("design_v2", {}).get("validation_plan")
+                if isinstance(validation_plan, dict):
+                    required_bindings = validation_plan.get("required_feature_bindings")
+                    if isinstance(required_bindings, list):
+                        validation_plan["required_feature_bindings"] = [
+                            binding
+                            for binding in required_bindings
+                            if binding not in uncompiled_generated_ids
+                        ]
                 diagnostic_generation = unity_generator.generate(
                     diagnostic_design,
                     unity_project_root,

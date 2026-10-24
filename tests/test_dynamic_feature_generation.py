@@ -847,6 +847,110 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
 
         self.assertIn("IsFeatureBound = true;", validated["source_code"])
 
+    def test_generated_source_normalizes_transform_find_for_game_object_field(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "벽을 탄다."}
+        source = GENERATED_SOURCE.replace(
+            "private GeneratedFeatureBindingContext bindingContext;",
+            "private GeneratedFeatureBindingContext bindingContext;\n"
+            "        private GameObject blockedArea;",
+        ).replace(
+            "bindingContext = context;",
+            "bindingContext = context;\n"
+            '            blockedArea = context.Environment.Find("blocked");',
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": source,
+        }
+
+        validated = GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+            module,
+            {"generated_feature_01": requirement},
+        )
+
+        self.assertIn(
+            'blockedArea = context.Environment.Find("blocked")?.gameObject;',
+            validated["source_code"],
+        )
+
+    def test_generated_source_removes_game_object_from_transform_find_assignment(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "벽을 탄다."}
+        source = GENERATED_SOURCE.replace(
+            "private GeneratedFeatureBindingContext bindingContext;",
+            "private GeneratedFeatureBindingContext bindingContext;\n"
+            "        private Transform blockedArea;",
+        ).replace(
+            "bindingContext = context;",
+            "bindingContext = context;\n"
+            '            blockedArea = context.Environment.Find("blocked").gameObject;',
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": source,
+        }
+
+        validated = GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+            module,
+            {"generated_feature_01": requirement},
+        )
+
+        self.assertIn(
+            'blockedArea = context.Environment.Find("blocked");',
+            validated["source_code"],
+        )
+        self.assertNotIn(
+            'blockedArea = context.Environment.Find("blocked").gameObject;',
+            validated["source_code"],
+        )
+
+    def test_generated_source_rejects_unity_event_get_invocation_list(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "벽을 탄다."}
+        source = GENERATED_SOURCE.replace(
+            "var direction = Vector2.right * Mathf.Sign(input.Movement.x);",
+            "var listeners = button.onClick.GetInvocationList();\n"
+            "            var direction = Vector2.right * Mathf.Sign(input.Movement.x);",
+        ).replace(
+            "private GeneratedFeatureBindingContext bindingContext;",
+            "private GeneratedFeatureBindingContext bindingContext;\n"
+            "        private UnityEngine.UI.Button button;",
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": source,
+        }
+
+        with self.assertRaisesRegex(ValueError, "GetInvocationList"):
+            GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+                module,
+                {"generated_feature_01": requirement},
+            )
+
+    def test_generated_source_requires_unity_ui_namespace_for_button(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "벽을 탄다."}
+        source = GENERATED_SOURCE.replace(
+            "private GeneratedFeatureBindingContext bindingContext;",
+            "private GeneratedFeatureBindingContext bindingContext;\n"
+            "        private Button button;",
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": source,
+        }
+
+        with self.assertRaisesRegex(ValueError, "UnityEngine.UI"):
+            GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+                module,
+                {"generated_feature_01": requirement},
+            )
+
     def test_generation_attempt_recorder_preserves_complete_failed_candidate(self) -> None:
         features: list[FeatureRequirement] = [
             {

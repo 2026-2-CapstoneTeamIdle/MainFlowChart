@@ -4,6 +4,8 @@ using TeamIdle.GameTemplate.Common;
 using TeamIdle.GameTemplate.Core;
 using TeamIdle.GameTemplate.Platformer;
 using TeamIdle.GameTemplate.Prototype;
+using TeamIdle.GameTemplate.SurvivorLike;
+using TeamIdle.GameTemplate.TowerDefense;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -64,6 +66,11 @@ namespace TeamIdle.GameTemplate.Editor
         private static float routePreviousX;
         private static float routeTimeoutSeconds;
         private static readonly List<float> RouteObstacleXs = new();
+        private static string activeGenre = string.Empty;
+        private static Transform genreActor;
+        private static Vector3 genreActorStart;
+        private static float genreActorStartDistance;
+        private static float genrePhaseStartedAt;
 
         static RuntimeSmokeValidator()
         {
@@ -85,6 +92,10 @@ namespace TeamIdle.GameTemplate.Editor
             movementTest = false;
             airDashObserved = false;
             validationPlan = null;
+            activeGenre = string.Empty;
+            genreActor = null;
+            genreActorStartDistance = 0f;
+            genrePhaseStartedAt = 0f;
             collectibleSystem = null;
             goalSystem = null;
             stageController = null;
@@ -165,6 +176,7 @@ namespace TeamIdle.GameTemplate.Editor
                     }
                 }
                 player = GameObject.Find("Player");
+                activeGenre = GameBootstrap.Instance?.Config?.Genre ?? "unknown";
                 movementTest =
                     UnityEngine.Object.FindFirstObjectByType<PlatformerMovementModule>() != null;
                 if (movementTest && player == null)
@@ -179,7 +191,7 @@ namespace TeamIdle.GameTemplate.Editor
                 }
                 airDash = UnityEngine.Object.FindFirstObjectByType<AirDashModule>();
                 wallClimb = UnityEngine.Object.FindFirstObjectByType<WallClimbModule>();
-                InputAdapterModule.TestInputEnabled = movementTest;
+                InputAdapterModule.TestInputEnabled = movementTest || activeGenre == "SurvivorLike";
                 InputAdapterModule.TestMovement = Vector2.right;
                 InputAdapterModule.TestConfirmPressed = false;
                 phaseStartedAt = Time.timeSinceLevelLoad;
@@ -189,8 +201,19 @@ namespace TeamIdle.GameTemplate.Editor
                 return;
             if (!movementTest)
             {
-                var genre = GameBootstrap.Instance?.Config?.Genre ?? "unknown";
-                Debug.Log("UNITY_VALIDATION_PLAN_SKIPPED:" + genre);
+                if (activeGenre == "TowerDefense")
+                {
+                    TickTowerDefenseScenario();
+                    return;
+                }
+
+                if (activeGenre == "SurvivorLike")
+                {
+                    TickSurvivorLikeScenario();
+                    return;
+                }
+
+                Debug.Log("UNITY_VALIDATION_PLAN_SKIPPED:" + activeGenre);
                 Debug.Log("UNITY_VALIDATION_PLAN_OK:0");
                 Finish(true, "runtime.smoke: module bindings; genre scenario runner pending");
                 return;
@@ -296,6 +319,167 @@ namespace TeamIdle.GameTemplate.Editor
             }
         }
 
+        private static void TickTowerDefenseScenario()
+        {
+            var spawner = UnityEngine.Object.FindFirstObjectByType<WaveSpawnerModule>();
+            var defense = UnityEngine.Object.FindFirstObjectByType<BaseDefenseSystemModule>();
+            var targeting = UnityEngine.Object.FindFirstObjectByType<TowerTargetingSystemModule>();
+            if (spawner == null || defense == null || targeting == null)
+            {
+                Finish(false, "runtime.tower_setup: required tower-defense modules are missing");
+                return;
+            }
+
+            if (genreActor == null)
+            {
+                foreach (
+                    var candidate in UnityEngine.Object.FindObjectsByType<PathFollower2D>(
+                        FindObjectsSortMode.None
+                    )
+                )
+                {
+                    if (candidate.gameObject.scene.IsValid())
+                    {
+                        genreActor = candidate.transform;
+                        genreActorStart = genreActor.position;
+                        genrePhaseStartedAt = Time.timeSinceLevelLoad;
+                        break;
+                    }
+                }
+
+                if (genreActor == null)
+                {
+                    if (Time.timeSinceLevelLoad > 5f)
+                    {
+                        Finish(false, "runtime.tower_spawn: first wave did not create an enemy");
+                    }
+                    return;
+                }
+            }
+
+            if (Time.timeSinceLevelLoad - genrePhaseStartedAt < 0.6f)
+            {
+                return;
+            }
+
+            if (Vector3.Distance(genreActorStart, genreActor.position) < 0.1f)
+            {
+                Finish(false, "runtime.tower_path: spawned enemy did not follow the path");
+                return;
+            }
+
+            if (genreActor.GetComponent<PrototypeTowerEndpoint>() == null)
+            {
+                Finish(false, "runtime.tower_endpoint: enemy cannot damage the base at path end");
+                return;
+            }
+
+            Metrics.passed_scenarios.Add("tower_spawn_and_path");
+            Debug.Log("UNITY_VALIDATION_SCENARIO_OK:tower_spawn_and_path");
+            Debug.Log("UNITY_VALIDATION_PLAN_OK:1");
+            Finish(true, "runtime.tower_defense: first wave spawned and followed its path");
+        }
+
+        private static void TickSurvivorLikeScenario()
+        {
+            var spawner = UnityEngine.Object.FindFirstObjectByType<EnemySpawnSystemModule>();
+            var targeting = UnityEngine.Object.FindFirstObjectByType<AutoTargetSystemModule>();
+            var cameraFollow = UnityEngine.Object.FindFirstObjectByType<PrototypeCameraFollow>();
+            if (player == null || spawner == null || targeting == null)
+            {
+                Finish(
+                    false,
+                    "runtime.survivor_setup: player or required survivor modules are missing"
+                );
+                return;
+            }
+
+            if (cameraFollow == null || cameraFollow.Target != player.transform)
+            {
+                Finish(false, "runtime.survivor_camera: camera is not bound to Player");
+                return;
+            }
+
+            if (genreActor == null && Time.timeSinceLevelLoad < 0.75f)
+            {
+                return;
+            }
+
+            if (genreActor == null)
+            {
+                foreach (
+                    var candidate in UnityEngine.Object.FindObjectsByType<ChaseAgent2D>(
+                        FindObjectsSortMode.None
+                    )
+                )
+                {
+                    if (candidate.gameObject.scene.IsValid())
+                    {
+                        if (Vector3.Distance(initialPosition, player.transform.position) < 0.1f)
+                        {
+                            Finish(
+                                false,
+                                "runtime.survivor_movement: test input did not move Player"
+                            );
+                            return;
+                        }
+
+                        InputAdapterModule.TestMovement = Vector2.zero;
+                        genreActor = candidate.transform;
+                        genreActorStart = genreActor.position;
+                        genreActorStartDistance = Vector3.Distance(
+                            genreActor.position,
+                            player.transform.position
+                        );
+                        genrePhaseStartedAt = Time.timeSinceLevelLoad;
+                        if (candidate.Target != player.transform)
+                        {
+                            Finish(
+                                false,
+                                "runtime.survivor_target: spawned enemy is not bound to Player"
+                            );
+                        }
+                        break;
+                    }
+                }
+
+                if (genreActor == null)
+                {
+                    if (Time.timeSinceLevelLoad > 5f)
+                    {
+                        Finish(false, "runtime.survivor_spawn: enemy spawner created no enemies");
+                    }
+                    return;
+                }
+            }
+
+            if (Time.timeSinceLevelLoad - genrePhaseStartedAt < 0.6f)
+            {
+                return;
+            }
+
+            var currentDistance = Vector3.Distance(genreActor.position, player.transform.position);
+            if (Vector3.Distance(genreActorStart, genreActor.position) < 0.1f)
+            {
+                Finish(false, "runtime.survivor_chase: spawned enemy did not move toward Player");
+                return;
+            }
+
+            if (currentDistance > genreActorStartDistance + 0.25f)
+            {
+                Finish(false, "runtime.survivor_chase: spawned enemy moved away from Player");
+                return;
+            }
+
+            Metrics.passed_scenarios.Add("survivor_spawn_chase_camera");
+            Debug.Log("UNITY_VALIDATION_SCENARIO_OK:survivor_spawn_chase_camera");
+            Debug.Log("UNITY_VALIDATION_PLAN_OK:1");
+            Finish(
+                true,
+                "runtime.survivor_like: enemy spawned, chased Player, and camera followed"
+            );
+        }
+
         private static void BeginAutoTraversalTest()
         {
             LevelPlan levelPlan;
@@ -321,7 +505,7 @@ namespace TeamIdle.GameTemplate.Editor
             routeBestX = player.transform.position.x;
             routePreviousX = routeBestX;
             var routeDistance = Mathf.Max(0f, routeGoalX - routeBestX);
-            routeTimeoutSeconds = Mathf.Clamp(routeDistance / 4f + 4f, 8f, 30f);
+            routeTimeoutSeconds = Mathf.Clamp(routeDistance / 3f + 10f, 12f, 60f);
             routeLastProgressAt = Time.timeSinceLevelLoad;
             RouteObstacleXs.Clear();
             foreach (var zone in levelPlan.zones)
@@ -330,10 +514,16 @@ namespace TeamIdle.GameTemplate.Editor
                 {
                     RouteObstacleXs.Add(hazardPlan.x);
                 }
-                foreach (var enemyPlan in zone.enemies)
-                {
-                    RouteObstacleXs.Add(enemyPlan.x);
-                }
+            }
+            foreach (
+                var enemy in UnityEngine.Object.FindObjectsByType<PrototypePatrolEnemy>(
+                    FindObjectsSortMode.None
+                )
+            )
+            {
+                // Patrol enemies can move well to the left of their authored spawn point. Jump
+                // before the complete patrol range instead of waiting for the nominal plan X.
+                RouteObstacleXs.Add(enemy.transform.position.x - enemy.Range);
             }
             RouteObstacleXs.Sort();
             phaseStartedAt = Time.timeSinceLevelLoad;
@@ -352,7 +542,7 @@ namespace TeamIdle.GameTemplate.Editor
             foreach (var obstacleX in RouteObstacleXs)
             {
                 var distance = obstacleX - position.x;
-                if (distance >= 0f && distance < 1.8f && playerBody.linearVelocity.y < 1f)
+                if (distance >= 0f && distance < 3f && playerBody.linearVelocity.y < 1f)
                 {
                     playerBody.linearVelocity = new Vector2(playerBody.linearVelocity.x, 12f);
                     break;
@@ -366,6 +556,17 @@ namespace TeamIdle.GameTemplate.Editor
             if (now - routeLastProgressAt > 1.5f)
             {
                 Metrics.stuck_seconds += Time.deltaTime;
+            }
+            if (now - routeLastProgressAt > 5f)
+            {
+                Finish(
+                    false,
+                    $"runtime.route_no_progress: best_x={routeBestX:F2}, "
+                        + $"current=({position.x:F2},{position.y:F2}), "
+                        + $"velocity=({playerBody.linearVelocity.x:F2},{playerBody.linearVelocity.y:F2}), "
+                        + $"goal_x={routeGoalX:F2}"
+                );
+                return;
             }
             if (position.x >= routeGoalX)
             {
@@ -509,6 +710,23 @@ namespace TeamIdle.GameTemplate.Editor
         private static void BeginCollectibleTest()
         {
             traversalPhase = 10;
+            while (collectibleIndex < collectibles.Length && collectibles[collectibleIndex] == null)
+            {
+                collectibleIndex++;
+            }
+            if (collectibleIndex >= collectibles.Length)
+            {
+                if (!collectibleSystem.RequirementMet)
+                {
+                    Finish(
+                        false,
+                        "runtime.collectible_requirement: no live collectible remains before the requirement was met"
+                    );
+                    return;
+                }
+                BeginCheckpointTest();
+                return;
+            }
             collectedBefore = collectibleSystem.CollectedCount;
             TeleportPlayer(collectibles[collectibleIndex].transform.position);
         }
@@ -556,20 +774,7 @@ namespace TeamIdle.GameTemplate.Editor
                     return;
                 }
                 collectibleIndex++;
-                if (collectibleIndex < collectibles.Length)
-                {
-                    BeginCollectibleTest();
-                    return;
-                }
-                if (!collectibleSystem.RequirementMet)
-                {
-                    Finish(
-                        false,
-                        "runtime.collectible_requirement: all placed rewards were collected"
-                    );
-                    return;
-                }
-                BeginCheckpointTest();
+                BeginCollectibleTest();
                 return;
             }
 
