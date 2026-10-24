@@ -324,6 +324,29 @@ class GameFailureIsolationTest(unittest.TestCase):
                         if artifact["relative_path"] == "game/failed_game_logic_design.json"
                     )
                 )
+                diagnostic_validation_plan = json.loads(
+                    (
+                        workspace
+                        / final_state["project_id"]
+                        / "game"
+                        / "unity_project"
+                        / "Assets"
+                        / "GameTemplate"
+                        / "Generated"
+                        / "Design"
+                        / "validation_plan.json"
+                    ).read_text(encoding="utf-8")
+                )
+                diagnostic_script_directory = (
+                    workspace
+                    / final_state["project_id"]
+                    / "game"
+                    / "unity_project"
+                    / "Assets"
+                    / "GameTemplate"
+                    / "Generated"
+                    / "Scripts"
+                )
 
             self.assertGreaterEqual(len(set(attempted)), 2)
             self.assertEqual(attempted.count(first_module[0]), 2)
@@ -337,6 +360,19 @@ class GameFailureIsolationTest(unittest.TestCase):
                 "failed",
             )
             self.assertIn("passed", task_statuses.values())
+            self.assertNotIn(
+                first_module[0],
+                diagnostic_validation_plan["required_feature_bindings"],
+            )
+            generated_ids = {
+                module["module_id"] for module in failed_design["generated_modules"]
+            }
+            self.assertTrue(
+                generated_ids.isdisjoint(
+                    diagnostic_validation_plan["required_feature_bindings"]
+                )
+            )
+            self.assertEqual(list(diagnostic_script_directory.glob("*.cs")), [])
 
     def test_repair_failure_reuses_existing_blueprint_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

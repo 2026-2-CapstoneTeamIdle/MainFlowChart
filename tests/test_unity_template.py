@@ -50,6 +50,11 @@ class UnityTemplateTest(unittest.TestCase):
             "Assets/GameTemplate/Runtime/Prototype/PrototypeCollectible.cs",
             "Assets/GameTemplate/Runtime/Prototype/PrototypeGoal.cs",
             "Assets/GameTemplate/Runtime/Prototype/PrototypeHazard.cs",
+            "Assets/GameTemplate/Runtime/Prototype/PrototypeExperienceReward.cs",
+            "Assets/GameTemplate/Runtime/Prototype/PrototypeTowerEndpoint.cs",
+            "Assets/GameTemplate/Runtime/Common/Projectile2D.cs",
+            "Assets/GameTemplate/Runtime/Common/ProjectileSystemModule.cs",
+            "Assets/GameTemplate/Runtime/SurvivorLike/ChaseAgent2D.cs",
             "Assets/GameTemplate/Runtime/Platformer/CollectibleSystemModule.cs",
             "Assets/GameTemplate/Runtime/Platformer/GoalSystemModule.cs",
             "Assets/GameTemplate/Runtime/Platformer/WallClimbModule.cs",
@@ -78,6 +83,10 @@ class UnityTemplateTest(unittest.TestCase):
         level_plan = (TEMPLATE_ROOT / "Assets/GameTemplate/Editor/LevelPlan.cs").read_text(
             encoding="utf-8"
         )
+        camera_follow = (
+            TEMPLATE_ROOT
+            / "Assets/GameTemplate/Runtime/Prototype/PlatformerPrototypeActors.cs"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("PrefabSceneAssembler.Assemble", builder)
         self.assertIn("GeneratedAssetBinder.ImportAndConfigureAssets", builder)
@@ -108,8 +117,15 @@ class UnityTemplateTest(unittest.TestCase):
         self.assertIn("ValidationPlan.Load()", assembler)
         self.assertIn("UNITY_VALIDATION_PLAN_OK", runtime_smoke)
         self.assertIn("UNITY_VALIDATION_SCENARIO_OK", runtime_smoke)
+        self.assertIn("TickTowerDefenseScenario", runtime_smoke)
+        self.assertIn("runtime.tower_spawn", runtime_smoke)
+        self.assertIn("TickSurvivorLikeScenario", runtime_smoke)
+        self.assertIn("runtime.survivor_chase", runtime_smoke)
         self.assertIn("routeTimeoutSeconds", runtime_smoke)
-        self.assertIn("routeDistance / 4f + 4f", runtime_smoke)
+        self.assertIn("routeDistance / 3f + 10f", runtime_smoke)
+        self.assertIn("runtime.route_no_progress", runtime_smoke)
+        self.assertIn("enemy.transform.position.x - enemy.Range", runtime_smoke)
+        self.assertIn("collectibles[collectibleIndex] == null", runtime_smoke)
         self.assertIn("PresentationSceneAssembler.AssemblePlatformer", assembler)
         self.assertIn("ApplyBlueprintEntities", assembler)
         self.assertIn("PlatformerRoutePosition", assembler)
@@ -120,6 +136,10 @@ class UnityTemplateTest(unittest.TestCase):
         self.assertIn("StageGoal overlaps collectible", assembler)
         self.assertIn("Collectible item target mismatch", assembler)
         self.assertIn("Collectible score target mismatch", assembler)
+        self.assertIn("cameraFollow.ConfigureBounds", assembler)
+        self.assertIn("Platformer camera bounds do not cover the route", assembler)
+        self.assertIn("public void ConfigureBounds", camera_follow)
+        self.assertIn("public Transform Target => target", camera_follow)
         self.assertIn("ValidatePlatformerTraversal", assembler)
         self.assertIn("UNITY_PLATFORMER_TRAVERSAL_OK", assembler)
         self.assertIn("PlatformerMinimumLandingWidth", assembler)
@@ -129,6 +149,8 @@ class UnityTemplateTest(unittest.TestCase):
         self.assertIn("platformPlan.width", assembler)
         self.assertIn("BlueprintNoise", assembler)
         self.assertIn("ConfigureUpgradePool(", assembler)
+        self.assertIn("cameraFollow.Bind(player.transform)", assembler)
+        self.assertIn("Generated prefab did not preserve", assembler)
         self.assertIn("context.Blueprint", assembler)
         self.assertIn("UNITY_IMPLEMENTATION_PLAN_OK", assembler)
         self.assertIn("UNITY_GAME_BLUEPRINT_OK", assembler)
@@ -166,6 +188,26 @@ class UnityTemplateTest(unittest.TestCase):
         ):
             with self.subTest(class_name=class_name):
                 source_path = platformer_root / f"{class_name}.cs"
+                self.assertTrue(source_path.is_file())
+                self.assertIn(
+                    f"public sealed class {class_name}",
+                    source_path.read_text(encoding="utf-8"),
+                )
+
+    def test_prefab_behaviours_use_dedicated_script_files(self) -> None:
+        expected = {
+            "Common/Projectile2D.cs": "Projectile2D",
+            "Common/ProjectileSystemModule.cs": "ProjectileSystemModule",
+            "SurvivorLike/ChaseAgent2D.cs": "ChaseAgent2D",
+            "SurvivorLike/AutoTargetSystemModule.cs": "AutoTargetSystemModule",
+            "SurvivorLike/UpgradeSelectionSystemModule.cs": "UpgradeSelectionSystemModule",
+            "Prototype/PrototypeExperienceReward.cs": "PrototypeExperienceReward",
+            "Prototype/PrototypeTowerEndpoint.cs": "PrototypeTowerEndpoint",
+        }
+        runtime_root = TEMPLATE_ROOT / "Assets/GameTemplate/Runtime"
+        for relative_path, class_name in expected.items():
+            with self.subTest(class_name=class_name):
+                source_path = runtime_root / relative_path
                 self.assertTrue(source_path.is_file())
                 self.assertIn(
                     f"public sealed class {class_name}",

@@ -20,9 +20,21 @@ namespace TeamIdle.GameTemplate.Prototype
         private float shakeEndsAt;
         private float shakeAmplitude;
 
+        public Transform Target => target;
+
+        public Vector2 Minimum => minimum;
+
+        public Vector2 Maximum => maximum;
+
         public void Bind(Transform nextTarget)
         {
             target = nextTarget;
+        }
+
+        public void ConfigureBounds(float minimumX, float maximumX, float minimumY, float maximumY)
+        {
+            minimum = new Vector2(Mathf.Min(minimumX, maximumX), Mathf.Min(minimumY, maximumY));
+            maximum = new Vector2(Mathf.Max(minimumX, maximumX), Mathf.Max(minimumY, maximumY));
         }
 
         public void Shake(float amplitude, float duration)

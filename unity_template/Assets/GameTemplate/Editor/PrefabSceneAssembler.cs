@@ -438,6 +438,13 @@ namespace TeamIdle.GameTemplate.Editor
 
             var stageStart = levelPlan.zones[0].start_x;
             var stageEnd = levelPlan.zones[^1].end_x;
+            var cameraYBounds = ResolvePlatformerCameraYBounds(levelPlan);
+            cameraFollow.ConfigureBounds(
+                Mathf.Min(stageStart, playerSpawn.x),
+                Mathf.Max(stageEnd, levelPlan.goal.x),
+                cameraYBounds.x,
+                cameraYBounds.y
+            );
             CreatePlatform(
                 context,
                 "Ground",
@@ -857,6 +864,13 @@ namespace TeamIdle.GameTemplate.Editor
             player.AddComponent<HealthComponent>();
             player.AddComponent<PrototypeWingUpgradeApplier>();
             GetModule<TopDownMovementModule>(context)?.Bind(body);
+            var cameraFollow =
+                context.Camera.GetComponent<PrototypeCameraFollow>()
+                ?? context.Camera.gameObject.AddComponent<PrototypeCameraFollow>();
+            var halfWidth = Mathf.Max(10f, context.Blueprint.scene_width * 0.5f);
+            var halfHeight = Mathf.Max(7f, context.Blueprint.scene_height * 0.5f);
+            cameraFollow.Bind(player.transform);
+            cameraFollow.ConfigureBounds(-halfWidth, halfWidth, -halfHeight, halfHeight);
 
             CreateSpriteObject(
                 "LeftWing",
@@ -928,6 +942,10 @@ namespace TeamIdle.GameTemplate.Editor
             );
             source.layer = 8;
             source.AddComponent<CircleCollider2D>();
+            var body = source.AddComponent<Rigidbody2D>();
+            body.gravityScale = 0f;
+            body.freezeRotation = true;
+            body.bodyType = RigidbodyType2D.Kinematic;
             var health = source.AddComponent<HealthComponent>();
             SetBool(health, "destroyOnDeath", true);
             source.AddComponent<PrototypeExperienceReward>();
@@ -995,8 +1013,30 @@ namespace TeamIdle.GameTemplate.Editor
                 throw new InvalidOperationException($"Failed to save generated prefab: {path}");
             }
 
+            AssetDatabase.SaveAssets();
+            AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+            var reloaded = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            var component = reloaded != null ? reloaded.GetComponent<T>() : null;
+            if (component == null)
+            {
+                throw new InvalidOperationException(
+                    $"Generated prefab did not preserve {typeof(T).Name}: {path}. "
+                        + "Attachable MonoBehaviours must be declared in a matching .cs file."
+                );
+            }
+
+            if (
+                component is MonoBehaviour behaviour
+                && MonoScript.FromMonoBehaviour(behaviour) == null
+            )
+            {
+                throw new InvalidOperationException(
+                    $"Generated prefab contains an unresolved script for {typeof(T).Name}: {path}"
+                );
+            }
+
             context.Report.generatedPrefabs.Add(path);
-            return saved.GetComponent<T>();
+            return component;
         }
 
         private static void ConfigureUpgradePool(
@@ -1116,6 +1156,51 @@ namespace TeamIdle.GameTemplate.Editor
             return new Vector2(goalX, Mathf.Max(levelPlan.goal.y, platformTop + 1f));
         }
 
+        private static Vector2 ResolvePlatformerCameraYBounds(LevelPlan levelPlan)
+        {
+            var minimumY = levelPlan.player_spawn.y;
+            var maximumY = levelPlan.player_spawn.y;
+            foreach (var zone in levelPlan.zones)
+            {
+                foreach (var platform in zone.platforms)
+                {
+                    minimumY = Mathf.Min(minimumY, platform.y);
+                    maximumY = Mathf.Max(
+                        maximumY,
+                        platform.y + platform.height * 0.5f + PlatformerPlayerHeight
+                    );
+                }
+
+                foreach (var collectible in zone.collectibles)
+                {
+                    minimumY = Mathf.Min(minimumY, collectible.y);
+                    maximumY = Mathf.Max(maximumY, collectible.y);
+                }
+
+                foreach (var hazard in zone.hazards)
+                {
+                    minimumY = Mathf.Min(minimumY, hazard.y);
+                    maximumY = Mathf.Max(maximumY, hazard.y);
+                }
+
+                foreach (var enemy in zone.enemies)
+                {
+                    minimumY = Mathf.Min(minimumY, enemy.y);
+                    maximumY = Mathf.Max(maximumY, enemy.y);
+                }
+
+                if (zone.checkpoint != null)
+                {
+                    minimumY = Mathf.Min(minimumY, zone.checkpoint.y);
+                    maximumY = Mathf.Max(maximumY, zone.checkpoint.y);
+                }
+            }
+
+            minimumY = Mathf.Min(minimumY, levelPlan.goal.y) - 1f;
+            maximumY = Mathf.Max(maximumY, levelPlan.goal.y) + 1f;
+            return new Vector2(minimumY, maximumY);
+        }
+
         private static void ValidatePlatformerTraversal(
             Transform generatedRoot,
             LevelPlan levelPlan,
@@ -1206,6 +1291,27 @@ namespace TeamIdle.GameTemplate.Editor
             RequireObject(stageGoal, "StageGoal");
             var goalCollider = stageGoal.GetComponent<Collider2D>();
             RequireObject(goalCollider, "StageGoal Collider2D");
+            var cameraFollow = UnityEngine.Object.FindFirstObjectByType<PrototypeCameraFollow>();
+            RequireObject(cameraFollow, "PrototypeCameraFollow");
+            if (cameraFollow.Target != player)
+            {
+                throw new InvalidOperationException(
+                    "Platformer camera follow target is not the generated player."
+                );
+            }
+            var requiredCameraMinimumX = Mathf.Min(levelPlan.zones[0].start_x, player.position.x);
+            var requiredCameraMaximumX = Mathf.Max(levelPlan.zones[^1].end_x, stageGoal.position.x);
+            if (
+                cameraFollow.Minimum.x > requiredCameraMinimumX + 0.01f
+                || cameraFollow.Maximum.x < requiredCameraMaximumX - 0.01f
+            )
+            {
+                throw new InvalidOperationException(
+                    $"Platformer camera bounds do not cover the route: "
+                        + $"camera={cameraFollow.Minimum.x:F2}..{cameraFollow.Maximum.x:F2}, "
+                        + $"route={requiredCameraMinimumX:F2}..{requiredCameraMaximumX:F2}."
+                );
+            }
             var expectedScore = 0;
             foreach (
                 var collectible in generatedRoot.GetComponentsInChildren<PrototypeCollectible>(true)

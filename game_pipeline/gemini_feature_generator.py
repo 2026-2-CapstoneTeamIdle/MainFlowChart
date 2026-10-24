@@ -417,6 +417,7 @@ class GeminiFeatureGenerator:
         "Environment.SetEnvironmentVariable(",
         "Environment.Exit(",
         "Environment.FailFast(",
+        ".GetInvocationList(",
         "unsafe ",
     )
 
@@ -460,7 +461,18 @@ class GeminiFeatureGenerator:
     ) -> list[GeneratedGameModule]:
         """Repair generated sources only; the host owns tests, APIs and all other files."""
         repaired = []
+        diagnostics = str(feedback.get("diagnostics", ""))
+        named_targets = {
+            module["module_id"]
+            for module in design["generated_modules"]
+            if module["class_name"] in diagnostics or f"{module['class_name']}.cs" in diagnostics
+        }
         for module in design["generated_modules"]:
+            # Compiler diagnostics name the generated source file. Preserve unrelated modules
+            # byte-for-byte so a repair cannot regress code that already compiled.
+            if named_targets and module["module_id"] not in named_targets:
+                repaired.append(deepcopy(module))
+                continue
             implementation_plan = cast(
                 Mapping[str, object] | None,
                 module.get("implementation_plan"),
@@ -950,6 +962,11 @@ Each source file must:
   duplicate those behaviors and do not call invented members such as IsGrounded, jumpVelocity,
   or moveSpeed; use only ModuleId or Bind exactly as listed in the allowed API contract;
 - use only deterministic local Unity runtime APIs and existing TeamIdle.GameTemplate runtime types;
+- GeneratedFeatureBindingContext.Environment, Entities, Ui, and Modules are Transform roots;
+  Transform.Find(...) also returns Transform. Append .gameObject (null-safely when needed) before
+  assigning that result to a GameObject variable;
+- UnityEvent and Button.onClick do not expose GetInvocationList(). Register callbacks exactly once
+  with AddListener during BindGeneratedFeature; never poll listeners or invoke a Button every frame;
 - import the namespace recorded for every project type used from allowed_api_contract;
 - contain no UnityEditor, file/network/process/reflection/native/unsafe API;
 - contain raw C# only, without Markdown fences.
@@ -1043,6 +1060,7 @@ Context:
             raise ValueError(f"Feature description mismatch for {module_id}")
         if not CLASS_NAME_PATTERN.fullmatch(class_name):
             raise ValueError(f"Invalid generated C# class name: {class_name}")
+        source = self._normalize_transform_find_assignments(source)
         source = self._normalize_host_owned_binding_scaffold(source)
         if len(source) > 20_000:
             raise ValueError(f"Generated source is too large for {module_id}")
@@ -1054,6 +1072,7 @@ Context:
             "InputAdapterModule": "TeamIdle.GameTemplate.Common",
             "HealthComponent": "TeamIdle.GameTemplate.Common",
             "PlatformerMovementModule": "TeamIdle.GameTemplate.Platformer",
+            "Button": "UnityEngine.UI",
         }
         missing_namespaces = [
             namespace
@@ -1160,6 +1179,42 @@ Context:
             "source_code": source,
             "source_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
         }
+
+    @staticmethod
+    def _normalize_transform_find_assignments(source: str) -> str:
+        """Keep hierarchy lookup results compatible with their declared destination type.
+
+        The binding contract deliberately exposes hierarchy roots as Transform. Small models
+        frequently remember GameObject.Find semantics and assign Transform.Find directly to a
+        GameObject field, or append ``.gameObject`` even when the destination is a Transform.
+        Both are deterministic CS0029 errors that do not need another LLM call to repair.
+        """
+
+        game_object_names = set(
+            re.findall(r"\bGameObject\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:[;=,])", source)
+        )
+        for name in game_object_names:
+            pattern = re.compile(
+                rf"(\b{re.escape(name)}\s*=\s*)"
+                r"(context\s*\.\s*(?:Environment|Entities|Ui|Modules)\s*\.\s*"
+                r"Find\s*\([^;\r\n]*?\))"
+                r"(\s*;)"
+            )
+            source = pattern.sub(r"\1\2?.gameObject\3", source)
+
+        transform_names = set(
+            re.findall(r"\bTransform\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:[;=,])", source)
+        )
+        for name in transform_names:
+            pattern = re.compile(
+                rf"(\b{re.escape(name)}\s*=\s*)"
+                r"(context\s*\.\s*(?:Environment|Entities|Ui|Modules)\s*\.\s*"
+                r"Find\s*\([^;\r\n]*?\))"
+                r"(?:\?\.|\.)gameObject"
+                r"(\s*;)"
+            )
+            source = pattern.sub(r"\1\2\3", source)
+        return source
 
     @classmethod
     def _normalize_host_owned_binding_scaffold(cls, source: str) -> str:

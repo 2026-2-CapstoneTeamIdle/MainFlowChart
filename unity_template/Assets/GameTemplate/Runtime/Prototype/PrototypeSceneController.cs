@@ -114,11 +114,30 @@ namespace TeamIdle.GameTemplate.Prototype
         {
             var waves = FindFirstObjectByType<WaveSpawnerModule>();
             var defense = FindFirstObjectByType<BaseDefenseSystemModule>();
+            GUILayout.Label("HOW TO PLAY", GUI.skin.box);
+            GUILayout.Label("The tower attacks enemies automatically.");
+            GUILayout.Label("Stop enemies before they reach the green base.");
+            GUILayout.Label(
+                "The first wave starts automatically. Press Space/Enter or use the button for the next wave."
+            );
             GUILayout.Label($"Wave: {waves?.WaveNumber ?? 0}");
+            GUILayout.Label(
+                waves?.IsWaveRunning == true ? "Wave in progress" : "Ready for next wave"
+            );
             GUILayout.Label($"Base lives: {defense?.Lives ?? 0}");
-            if (waves != null && GUILayout.Button("Start next wave"))
+            var keyboardStart =
+                Event.current.type == EventType.KeyDown
+                && (
+                    Event.current.keyCode == KeyCode.Space
+                    || Event.current.keyCode == KeyCode.Return
+                );
+            if (waves != null && (GUILayout.Button("Start next wave") || keyboardStart))
             {
                 waves.StartNextWave();
+                if (keyboardStart)
+                {
+                    Event.current.Use();
+                }
             }
         }
 
@@ -244,6 +263,8 @@ namespace TeamIdle.GameTemplate.Prototype
         private static void DrawSurvivorLike()
         {
             GUILayout.Label("Move: WASD or arrow keys");
+            GUILayout.Label("Enemies spawn around you and chase automatically.");
+            GUILayout.Label("Your wing projectiles automatically attack the nearest enemy.");
             var experience = FindFirstObjectByType<ExperienceSystemModule>();
             var upgrades = FindFirstObjectByType<UpgradeSelectionSystemModule>();
             GUILayout.Label(
@@ -273,36 +294,6 @@ namespace TeamIdle.GameTemplate.Prototype
                     }
                 }
             }
-        }
-    }
-
-    public sealed class PrototypeExperienceReward : MonoBehaviour
-    {
-        [SerializeField]
-        private int amount = 2;
-
-        private HealthComponent health;
-
-        private void Awake()
-        {
-            health = GetComponent<HealthComponent>();
-            if (health != null)
-            {
-                health.Died += Grant;
-            }
-        }
-
-        private void OnDestroy()
-        {
-            if (health != null)
-            {
-                health.Died -= Grant;
-            }
-        }
-
-        private void Grant()
-        {
-            FindFirstObjectByType<ExperienceSystemModule>()?.Add(amount);
         }
     }
 
@@ -360,34 +351,6 @@ namespace TeamIdle.GameTemplate.Prototype
                     autoTarget.ProjectileCount += Mathf.Max(1, Mathf.RoundToInt(multiplier));
                     break;
             }
-        }
-    }
-
-    public sealed class PrototypeTowerEndpoint : MonoBehaviour
-    {
-        private PathFollower2D follower;
-
-        private void Awake()
-        {
-            follower = GetComponent<PathFollower2D>();
-            if (follower != null)
-            {
-                follower.ReachedEnd += ReachEnd;
-            }
-        }
-
-        private void OnDestroy()
-        {
-            if (follower != null)
-            {
-                follower.ReachedEnd -= ReachEnd;
-            }
-        }
-
-        private void ReachEnd()
-        {
-            FindFirstObjectByType<BaseDefenseSystemModule>()?.LoseLives();
-            Destroy(gameObject);
         }
     }
 }
