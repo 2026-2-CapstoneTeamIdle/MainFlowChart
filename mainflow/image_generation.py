@@ -101,6 +101,7 @@ MISSING_REQUIRED_NOTE_PREFIX = "missing_required_asset:"
 # sprite_sheet:{asset_id}={sheet artifact_id},{metadata artifact_id}
 SPRITE_SHEET_NOTE_PREFIX = "sprite_sheet:"
 
+
 @dataclass(frozen=True)
 class ImageAssetPlan:
     """One requested image, derived from an ``AssetGenerationItem``."""
