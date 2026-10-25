@@ -298,6 +298,8 @@ namespace TeamIdle.GameTemplate.Editor
                 ["collectible"] = "collectible_system",
                 ["goal"] = "goal_system",
                 ["health_damage"] = "health_damage_system",
+                ["item_collect"] = "item_collection_system",
+                ["player_stats"] = "player_stat_display",
                 ["wave_spawn"] = "wave_spawner",
                 ["tower_targeting"] = "tower_targeting_system",
                 ["base_defense"] = "base_defense_system",

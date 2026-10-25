@@ -850,6 +850,8 @@ namespace TeamIdle.GameTemplate.Editor
                 ["collectible"] = "collectible_system",
                 ["goal"] = "goal_system",
                 ["health_damage"] = "health_damage_system",
+                ["item_collect"] = "item_collection_system",
+                ["player_stats"] = "player_stat_display",
             };
             foreach (var binding in validationPlan.required_feature_bindings)
             {

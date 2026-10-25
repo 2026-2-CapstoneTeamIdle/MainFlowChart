@@ -177,6 +177,22 @@ class UnityTemplateTest(unittest.TestCase):
         fixed_update = movement.split("private void FixedUpdate()", maxsplit=1)[1]
         self.assertNotIn("input.ConfirmPressed", fixed_update)
 
+    def test_feature_binding_aliases_match_selected_module_ids(self) -> None:
+        validators = (
+            "Assets/GameTemplate/Editor/PrefabSceneAssembler.cs",
+            "Assets/GameTemplate/Editor/RuntimeSmokeValidator.cs",
+        )
+        expected_aliases = {
+            "item_collect": "item_collection_system",
+            "player_stats": "player_stat_display",
+        }
+
+        for relative_path in validators:
+            source = (TEMPLATE_ROOT / relative_path).read_text(encoding="utf-8")
+            for feature_id, module_id in expected_aliases.items():
+                with self.subTest(relative_path=relative_path, feature_id=feature_id):
+                    self.assertIn(f'["{feature_id}"] = "{module_id}"', source)
+
     def test_persistent_platformer_behaviours_use_matching_script_filenames(self) -> None:
         platformer_root = TEMPLATE_ROOT / "Assets/GameTemplate/Runtime/Platformer"
         for class_name in (
