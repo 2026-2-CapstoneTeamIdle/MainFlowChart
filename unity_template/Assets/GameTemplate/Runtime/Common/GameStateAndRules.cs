@@ -1,3 +1,4 @@
+#if false // Compatibility shell: MonoBehaviours were moved to filename-matched scripts.
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -225,3 +226,4 @@ namespace TeamIdle.GameTemplate.Common
         }
     }
 }
+#endif

@@ -676,6 +676,10 @@ class UnityProjectValidator:
         detail = f"exit={completed.returncode}"
         if missing_markers:
             detail += ", missing=" + ",".join(missing_markers)
+        if not passed:
+            diagnostics = self._summarize_unity_failure(outcome.unity_log)
+            if diagnostics:
+                detail += "; diagnostics=" + " | ".join(diagnostics)
         self._add_check(
             outcome,
             "unity.batchmode",
@@ -685,6 +689,32 @@ class UnityProjectValidator:
         )
         if passed and os.environ.get("MAINFLOW_UNITY_RUNTIME_TESTS", "1") == "1":
             self._run_runtime_tests(outcome, root, editor)
+
+    @staticmethod
+    def _summarize_unity_failure(log: str) -> list[str]:
+        """Expose actionable compiler/runtime failures instead of marker noise alone."""
+
+        tokens = (
+            "error CS",
+            "ArgumentException:",
+            "NullReferenceException:",
+            "MissingReferenceException:",
+            "Unhandled Exception",
+            "Scripts have compiler errors",
+        )
+        diagnostics: list[str] = []
+        seen: set[str] = set()
+        for line in log.splitlines():
+            normalized = line.strip()
+            if not normalized or not any(token in normalized for token in tokens):
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            diagnostics.append(normalized[:800])
+            if len(diagnostics) == 3:
+                break
+        return diagnostics
 
     def _run_runtime_tests(self, outcome: UnityValidationOutcome, root: Path, editor: Path) -> None:
         """A separate Play Mode process; no -quit until the host-owned test exits."""

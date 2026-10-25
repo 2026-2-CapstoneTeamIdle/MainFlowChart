@@ -22,6 +22,13 @@ namespace TeamIdle.GameTemplate.Core
 
         public GameTemplateConfig Config => config;
 
+        public IReadOnlyList<IGameModule> InitializedModules => initializedModules;
+
+        public bool IsModuleInitialized(string moduleId)
+        {
+            return initializedModules.Exists(module => module.ModuleId == moduleId);
+        }
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetStatics()
         {
@@ -81,6 +88,7 @@ namespace TeamIdle.GameTemplate.Core
             var context = new GameContext(config, validationProbe);
             var root = moduleRoot == null ? transform : moduleRoot;
             var moduleIds = new HashSet<string>(StringComparer.Ordinal);
+            var discovered = new Dictionary<string, IGameModule>(StringComparer.Ordinal);
 
             foreach (var behaviour in root.GetComponentsInChildren<MonoBehaviour>(true))
             {
@@ -104,26 +112,70 @@ namespace TeamIdle.GameTemplate.Core
                     continue;
                 }
 
-                try
+                discovered[module.ModuleId] = module;
+            }
+
+            foreach (var moduleId in config.SelectedModules)
+            {
+                if (moduleId == "game_bootstrap" || moduleId == "validation_probe")
                 {
-                    module.Initialize(context);
-                    initializedModules.Add(module);
-                    validationProbe.Pass("template.module_initialized", module.ModuleId);
+                    continue;
                 }
-                catch (Exception exception)
+
+                if (!discovered.TryGetValue(moduleId, out var module))
                 {
-                    validationProbe.Fail(
-                        "template.module_exception",
-                        $"{module.ModuleId}: {exception.Message}"
-                    );
-                    Debug.LogException(exception, behaviour);
+                    validationProbe.Fail("template.missing_module", moduleId);
+                    continue;
                 }
+
+                InitializeModule(context, module);
+                discovered.Remove(moduleId);
+            }
+
+            foreach (var module in discovered.Values)
+            {
+                InitializeModule(context, module);
+            }
+
+            var expectedCount = 0;
+            foreach (var moduleId in config.SelectedModules)
+            {
+                if (moduleId != "game_bootstrap" && moduleId != "validation_probe")
+                {
+                    expectedCount++;
+                }
+            }
+
+            if (initializedModules.Count != expectedCount)
+            {
+                validationProbe.Fail(
+                    "template.module_count",
+                    $"Expected {expectedCount} initialized modules but found {initializedModules.Count}."
+                );
             }
 
             validationProbe.Pass(
                 "template.bootstrap_ready",
                 $"UNITY_TEMPLATE_READY:{config.GameTitle}:{config.Genre}:{initializedModules.Count}"
             );
+        }
+
+        private void InitializeModule(GameContext context, IGameModule module)
+        {
+            try
+            {
+                module.Initialize(context);
+                initializedModules.Add(module);
+                validationProbe.Pass("template.module_initialized", module.ModuleId);
+            }
+            catch (Exception exception)
+            {
+                validationProbe.Fail(
+                    "template.module_exception",
+                    $"{module.ModuleId}: {exception.Message}"
+                );
+                Debug.LogException(exception, module as UnityEngine.Object);
+            }
         }
     }
 }

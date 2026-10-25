@@ -38,7 +38,10 @@ FEATURE_PATTERNS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("타워 배치", ("타워배치", "방어탑배치"), "맵에 방어 시설을 배치할 수 있다."),
 )
 
-CLAUSE_SEPARATOR = re.compile(r"\s*(?:,|;|그리고|하며|면서|하고|며)\s*")
+# Commas and Korean connective endings often join one coherent mechanic. Splitting on them
+# produced meaningless generated features such as just "크기" or "회전속도". Dynamic code
+# generation receives sentence-sized, semantically complete requirements instead.
+CLAUSE_SEPARATOR = re.compile(r"\s*(?:[.!?]+|;|\r?\n)\s*")
 
 
 # Node 계약
@@ -110,9 +113,21 @@ def _unmatched_clauses(condition: str) -> list[str]:
     unmatched: list[str] = []
     for clause in clauses:
         compact = clause.replace(" ", "")
-        if any(pattern in compact for _, patterns, _ in FEATURE_PATTERNS for pattern in patterns):
+        matching_patterns = [
+            pattern
+            for _, patterns, _ in FEATURE_PATTERNS
+            for pattern in patterns
+            if pattern in compact
+        ]
+        # A short sentence that is fully explained by a catalogued feature needs no dynamic
+        # module. A longer sentence may contain the known feature plus an unseen qualifier or
+        # interaction, so preserve it as one coherent custom requirement.
+        if matching_patterns and (
+            len(set(matching_patterns)) >= 2
+            or len(compact) <= max(len(item) for item in matching_patterns) + 12
+        ):
             continue
         cleaned = re.sub(r"(?:이|가)?\s*가능한\s*게임$", "", clause).strip()
-        if cleaned and cleaned not in unmatched:
+        if len(cleaned.replace(" ", "")) >= 6 and cleaned not in unmatched:
             unmatched.append(cleaned)
     return unmatched

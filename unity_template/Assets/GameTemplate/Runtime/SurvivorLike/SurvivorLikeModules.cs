@@ -1,3 +1,4 @@
+#if false // Compatibility shell: MonoBehaviours were moved to filename-matched scripts.
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -202,3 +203,4 @@ namespace TeamIdle.GameTemplate.SurvivorLike
         public string description = string.Empty;
     }
 }
+#endif

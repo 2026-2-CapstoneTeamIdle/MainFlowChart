@@ -153,6 +153,34 @@ class UnityProjectValidatorTest(unittest.TestCase):
         )
         self.assertTrue(batch_check["passed"])
 
+    def test_failed_batch_validation_exposes_compiler_diagnostic(self) -> None:
+        fake_editor = self.project_root / "Unity.exe"
+        fake_editor.write_bytes(b"")
+
+        def run_unity(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            log_path = Path(command[command.index("-logFile") + 1])
+            log_path.write_text(
+                "Assets/Generated.cs(72,17): error CS0103: The name 'baseHealth' "
+                "does not exist in the current context",
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(command, 1, "", "")
+
+        with patch(
+            "game_pipeline.unity_project_validator.subprocess.run",
+            side_effect=run_unity,
+        ):
+            outcome = UnityProjectValidator(
+                mode="required",
+                unity_editor=fake_editor,
+            ).validate(self.unity_root, self.draft, self.request)
+
+        batch_check = next(
+            check for check in outcome.checks if check["criterion_id"] == "unity.batchmode"
+        )
+        self.assertFalse(batch_check["passed"])
+        self.assertIn("error CS0103", batch_check["message"])
+
 
 class ValidateGameNodeTest(unittest.TestCase):
     def test_node_writes_passed_result_for_valid_static_project(self) -> None:
@@ -364,13 +392,9 @@ class GameFailureIsolationTest(unittest.TestCase):
                 first_module[0],
                 diagnostic_validation_plan["required_feature_bindings"],
             )
-            generated_ids = {
-                module["module_id"] for module in failed_design["generated_modules"]
-            }
+            generated_ids = {module["module_id"] for module in failed_design["generated_modules"]}
             self.assertTrue(
-                generated_ids.isdisjoint(
-                    diagnostic_validation_plan["required_feature_bindings"]
-                )
+                generated_ids.isdisjoint(diagnostic_validation_plan["required_feature_bindings"])
             )
             self.assertEqual(list(diagnostic_script_directory.glob("*.cs")), [])
 

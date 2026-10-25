@@ -71,6 +71,11 @@ namespace TeamIdle.GameTemplate.Editor
         private static Vector3 genreActorStart;
         private static float genreActorStartDistance;
         private static float genrePhaseStartedAt;
+        private static bool genreCombatObserved;
+        private static bool genreProgressionTriggered;
+        private static int genreCurrencyAfterBuild;
+        private static float genreEnemyHealthAtAttackStart;
+        private static int genreExperienceAtAttackStart;
 
         static RuntimeSmokeValidator()
         {
@@ -96,6 +101,11 @@ namespace TeamIdle.GameTemplate.Editor
             genreActor = null;
             genreActorStartDistance = 0f;
             genrePhaseStartedAt = 0f;
+            genreCombatObserved = false;
+            genreProgressionTriggered = false;
+            genreCurrencyAfterBuild = -1;
+            genreEnemyHealthAtAttackStart = -1f;
+            genreExperienceAtAttackStart = -1;
             collectibleSystem = null;
             goalSystem = null;
             stageController = null;
@@ -154,6 +164,26 @@ namespace TeamIdle.GameTemplate.Editor
             frames++;
             if (frames == 10)
             {
+                var bootstrap = GameBootstrap.Instance;
+                if (bootstrap?.Config == null)
+                {
+                    Finish(false, "runtime.bootstrap: GameBootstrap or config is missing");
+                    return;
+                }
+
+                foreach (var moduleId in bootstrap.Config.SelectedModules)
+                {
+                    if (
+                        moduleId != "game_bootstrap"
+                        && moduleId != "validation_probe"
+                        && !bootstrap.IsModuleInitialized(moduleId)
+                    )
+                    {
+                        Finish(false, "runtime.missing_module: " + moduleId);
+                        return;
+                    }
+                }
+
                 foreach (
                     var module in UnityEngine.Object.FindObjectsByType<GameModuleBehaviour>(
                         FindObjectsSortMode.None
@@ -324,10 +354,43 @@ namespace TeamIdle.GameTemplate.Editor
             var spawner = UnityEngine.Object.FindFirstObjectByType<WaveSpawnerModule>();
             var defense = UnityEngine.Object.FindFirstObjectByType<BaseDefenseSystemModule>();
             var targeting = UnityEngine.Object.FindFirstObjectByType<TowerTargetingSystemModule>();
-            if (spawner == null || defense == null || targeting == null)
+            var economy = UnityEngine.Object.FindFirstObjectByType<EconomySystemModule>();
+            var build = UnityEngine.Object.FindFirstObjectByType<PrototypeTowerBuildController>();
+            if (
+                spawner == null
+                || defense == null
+                || targeting == null
+                || economy == null
+                || build == null
+            )
             {
                 Finish(false, "runtime.tower_setup: required tower-defense modules are missing");
                 return;
+            }
+
+            if (build.BuiltTowerCount == 0)
+            {
+                var slot = UnityEngine.Object.FindFirstObjectByType<PrototypeTowerBuildSlot>();
+                var currencyBeforeBuild = economy.Currency;
+                if (slot == null || !slot.Activate())
+                {
+                    Finish(
+                        false,
+                        "runtime.tower_build_input: activating a build pad could not place a tower"
+                    );
+                    return;
+                }
+
+                if (economy.Currency != currencyBeforeBuild - build.BuildCost)
+                {
+                    Finish(false, "runtime.tower_economy: tower cost was not deducted");
+                    return;
+                }
+
+                genreCurrencyAfterBuild = economy.Currency;
+
+                Metrics.passed_scenarios.Add("tower_build_and_spend");
+                Debug.Log("UNITY_VALIDATION_SCENARIO_OK:tower_build_and_spend");
             }
 
             if (genreActor == null)
@@ -374,8 +437,24 @@ namespace TeamIdle.GameTemplate.Editor
                 return;
             }
 
+            var enemyHealth = genreActor.GetComponent<HealthComponent>();
+            if (enemyHealth == null)
+            {
+                Finish(false, "runtime.tower_combat: enemy has no damageable health");
+                return;
+            }
+
+            enemyHealth.Damage(enemyHealth.Maximum);
+            if (economy.Currency <= genreCurrencyAfterBuild)
+            {
+                Finish(false, "runtime.tower_reward: killing an enemy granted no gold");
+                return;
+            }
+
             Metrics.passed_scenarios.Add("tower_spawn_and_path");
+            Metrics.passed_scenarios.Add("tower_kill_reward");
             Debug.Log("UNITY_VALIDATION_SCENARIO_OK:tower_spawn_and_path");
+            Debug.Log("UNITY_VALIDATION_SCENARIO_OK:tower_kill_reward");
             Debug.Log("UNITY_VALIDATION_PLAN_OK:1");
             Finish(true, "runtime.tower_defense: first wave spawned and followed its path");
         }
@@ -398,6 +477,19 @@ namespace TeamIdle.GameTemplate.Editor
             {
                 Finish(false, "runtime.survivor_camera: camera is not bound to Player");
                 return;
+            }
+
+            foreach (
+                var projectile in UnityEngine.Object.FindObjectsByType<Projectile2D>(
+                    FindObjectsSortMode.None
+                )
+            )
+            {
+                if (projectile.gameObject.scene.IsValid())
+                {
+                    genreCombatObserved = true;
+                    break;
+                }
             }
 
             if (genreActor == null && Time.timeSinceLevelLoad < 0.75f)
@@ -425,6 +517,9 @@ namespace TeamIdle.GameTemplate.Editor
                         }
 
                         InputAdapterModule.TestMovement = Vector2.zero;
+                        candidate.transform.position =
+                            player.transform.position + Vector3.right * 2.5f;
+                        Physics2D.SyncTransforms();
                         genreActor = candidate.transform;
                         genreActorStart = genreActor.position;
                         genreActorStartDistance = Vector3.Distance(
@@ -432,6 +527,11 @@ namespace TeamIdle.GameTemplate.Editor
                             player.transform.position
                         );
                         genrePhaseStartedAt = Time.timeSinceLevelLoad;
+                        var health = candidate.GetComponent<HealthComponent>();
+                        genreEnemyHealthAtAttackStart = health?.Current ?? -1f;
+                        var experienceAtSpawn =
+                            UnityEngine.Object.FindFirstObjectByType<ExperienceSystemModule>();
+                        genreExperienceAtAttackStart = experienceAtSpawn?.Experience ?? -1;
                         if (candidate.Target != player.transform)
                         {
                             Finish(
@@ -471,8 +571,71 @@ namespace TeamIdle.GameTemplate.Editor
                 return;
             }
 
-            Metrics.passed_scenarios.Add("survivor_spawn_chase_camera");
-            Debug.Log("UNITY_VALIDATION_SCENARIO_OK:survivor_spawn_chase_camera");
+            if (!genreCombatObserved)
+            {
+                if (Time.timeSinceLevelLoad > 8f)
+                {
+                    Finish(false, "runtime.survivor_attack: automatic attack fired no projectile");
+                }
+                return;
+            }
+
+            var experience = UnityEngine.Object.FindFirstObjectByType<ExperienceSystemModule>();
+            var upgrades = UnityEngine.Object.FindFirstObjectByType<UpgradeSelectionSystemModule>();
+            if (experience == null || upgrades == null)
+            {
+                Finish(false, "runtime.survivor_progression: XP or upgrade module is missing");
+                return;
+            }
+
+            if (genreActor != null)
+            {
+                var enemyHealth = genreActor.GetComponent<HealthComponent>();
+                if (
+                    enemyHealth != null
+                    && genreEnemyHealthAtAttackStart >= 0f
+                    && enemyHealth.Current >= genreEnemyHealthAtAttackStart
+                )
+                {
+                    if (Time.timeSinceLevelLoad > 10f)
+                    {
+                        Finish(
+                            false,
+                            "runtime.survivor_damage: projectiles never damaged the chased enemy"
+                        );
+                    }
+                    return;
+                }
+
+                if (enemyHealth != null)
+                {
+                    enemyHealth.Damage(enemyHealth.Maximum);
+                }
+            }
+
+            if (
+                genreExperienceAtAttackStart >= 0
+                && experience.Experience <= genreExperienceAtAttackStart
+            )
+            {
+                Finish(false, "runtime.survivor_reward: defeating an enemy granted no XP");
+                return;
+            }
+
+            if (!genreProgressionTriggered)
+            {
+                experience.Add(experience.RequiredExperience);
+                genreProgressionTriggered = true;
+            }
+
+            if (experience.Level < 2 || upgrades.CurrentChoices.Count == 0)
+            {
+                Finish(false, "runtime.survivor_progression: level-up produced no upgrade choices");
+                return;
+            }
+
+            Metrics.passed_scenarios.Add("survivor_spawn_chase_attack_progression");
+            Debug.Log("UNITY_VALIDATION_SCENARIO_OK:survivor_spawn_chase_attack_progression");
             Debug.Log("UNITY_VALIDATION_PLAN_OK:1");
             Finish(
                 true,

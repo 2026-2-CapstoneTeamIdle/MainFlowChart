@@ -364,7 +364,7 @@ def design_game_logic_node(
                         report = reviewer.review(state["project_id"], current_design, project_index)
                     except Exception as error:  # noqa: BLE001 - Unity remains authoritative
                         report = {
-                            "approved": False,
+                            "approved": True,
                             "summary": (
                                 "Project-context preflight exhausted its bounded retries; "
                                 "Unity compilation must provide the authoritative diagnosis."
@@ -403,7 +403,11 @@ def design_game_logic_node(
                         report,
                         producer="design_game_logic",
                     )
-                    if report["approved"] or review_index >= max_repairs:
+                    if (
+                        report["approved"]
+                        or report.get("review_execution_failed") is True
+                        or review_index >= max_repairs
+                    ):
                         return (
                             current_design,
                             current_generation,
@@ -412,7 +416,10 @@ def design_game_logic_node(
                                 "repair_applied": repair_applied,
                                 "preserved_projects": preserved_projects,
                                 "review_history": history,
-                                "review_exhausted": not report["approved"],
+                                "review_exhausted": (
+                                    report.get("review_execution_failed") is True
+                                    or not report["approved"]
+                                ),
                             },
                         )
                     if feature_generator is None:

@@ -593,6 +593,28 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
 
         self.assertEqual(validated["module_id"], "generated_feature_01")
 
+    def test_generated_source_recovers_double_encoded_csharp(self) -> None:
+        requirement = {
+            "feature_id": "feature_01",
+            "feature_description": "문을 연다.",
+        }
+        encoded_source = GENERATED_SOURCE.replace("\n", "\\n").replace('"', '\\"')
+        encoded_source += '"}]} '
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": encoded_source,
+        }
+
+        validated = GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+            module,
+            {"generated_feature_01": requirement},
+        )
+
+        self.assertIn("\nnamespace TeamIdle.GameTemplate.Generated\n", validated["source_code"])
+        self.assertFalse(validated["source_code"].rstrip().endswith('"}]}'))
+
     def test_unknown_feature_is_generated_and_written_to_unity_project(self) -> None:
         features: list[FeatureRequirement] = [
             {
@@ -790,11 +812,11 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
                 {"generated_feature_01": requirement},
             )
 
-    def test_generated_source_rejects_custom_tag_lookup(self) -> None:
+    def test_generated_source_normalizes_known_enemy_tag_lookup(self) -> None:
         requirement = {"feature_id": "feature_01", "feature_description": "벽을 탄다."}
         invalid_source = GENERATED_SOURCE.replace(
             "var direction = Vector2.right * Mathf.Sign(input.Movement.x);",
-            'var direction = gameObject.CompareTag("Wall") ? Vector2.up : Vector2.right;',
+            'var direction = gameObject.CompareTag("Enemy") ? Vector2.up : Vector2.right;',
         )
         module = {
             "module_id": "generated_feature_01",
@@ -803,11 +825,331 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
             "source_code": invalid_source,
         }
 
-        with self.assertRaisesRegex(ValueError, "banned APIs"):
+        validated = GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+            module,
+            {"generated_feature_01": requirement},
+        )
+
+        self.assertNotIn("CompareTag", validated["source_code"])
+        self.assertIn("gameObject.layer == 8", validated["source_code"])
+
+    def test_generated_source_normalizes_undeclared_custom_tag_lookup(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "벽을 탄다."}
+        invalid_source = GENERATED_SOURCE.replace(
+            "var direction = Vector2.right * Mathf.Sign(input.Movement.x);",
+            'var direction = gameObject.CompareTag("Tower") ? Vector2.up : Vector2.right;',
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": invalid_source,
+        }
+
+        validated = GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+            module,
+            {"generated_feature_01": requirement},
+        )
+
+        self.assertNotIn("CompareTag", validated["source_code"])
+        self.assertIn('gameObject.name == "Tower"', validated["source_code"])
+
+    def test_generated_source_normalizes_asset_registry_get_prefab_hallucination(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "벽을 탄다."}
+        source = GENERATED_SOURCE.replace(
+            "private GeneratedFeatureBindingContext bindingContext;",
+            "private GeneratedFeatureBindingContext bindingContext;\n"
+            "        private GameObject wallPrefab;",
+        ).replace(
+            "bindingContext = context;",
+            "bindingContext = context;\n"
+            '            wallPrefab = context.GetModule<AssetRegistryModule>().GetPrefab("wall");',
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": source,
+        }
+
+        validated = GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+            module,
+            {"generated_feature_01": requirement},
+        )
+
+        self.assertNotIn("GetPrefab", validated["source_code"])
+
+    def test_generated_source_falls_back_when_registry_prefab_is_missing(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "벽을 탄다."}
+        source = GENERATED_SOURCE.replace(
+            "private GeneratedFeatureBindingContext bindingContext;",
+            "private GeneratedFeatureBindingContext bindingContext;\n"
+            "        private GameObject wallPrefab;",
+        ).replace(
+            "bindingContext = context;",
+            "bindingContext = context;\n"
+            "            context.GetModule<AssetRegistryModule>()"
+            '.TryGet<GameObject>("wall", out wallPrefab);\n'
+            "            GameObject wall = Instantiate("
+            "wallPrefab, context.Environment.position, Quaternion.identity);",
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": source,
+        }
+
+        validated = GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+            module,
+            {"generated_feature_01": requirement},
+        )
+
+        self.assertIn(
+            'wallPrefab == null ? new GameObject("wall") : Instantiate(',
+            validated["source_code"],
+        )
+        self.assertIn(
+            'TryGet<GameObject>("wall", out wallPrefab);',
+            validated["source_code"],
+        )
+
+    def test_generated_source_maps_lives_owner_to_base_defense_module(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "기지가 파괴되면 패배"}
+        source = (
+            GENERATED_SOURCE.replace(
+                "private GeneratedFeatureBindingContext bindingContext;",
+                "private GeneratedFeatureBindingContext bindingContext;\n"
+                "        private HealthDamageSystem healthSystem;",
+            )
+            .replace(
+                "bindingContext = context;",
+                "bindingContext = context;\n"
+                "            healthSystem = context.GetModule<HealthDamageSystem>();",
+            )
+            .replace(
+                "var direction = Vector2.right * Mathf.Sign(input.Movement.x);",
+                "var direction = healthSystem.Lives <= 0 ? Vector2.zero : Vector2.right;",
+            )
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": source,
+        }
+
+        validated = GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+            module,
+            {"generated_feature_01": requirement},
+        )
+
+        self.assertNotIn("HealthDamageSystem ", validated["source_code"])
+        self.assertIn("BaseDefenseSystemModule healthSystem", validated["source_code"])
+        self.assertIn(
+            "context.GetModule<BaseDefenseSystemModule>()",
+            validated["source_code"],
+        )
+
+    def test_generated_source_restores_project_module_suffix_from_index(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "승패 이벤트를 처리"}
+        source = GENERATED_SOURCE.replace(
+            "private GeneratedFeatureBindingContext bindingContext;",
+            "private GeneratedFeatureBindingContext bindingContext;\n"
+            "        private EventRuleEngine rules;",
+        ).replace(
+            "bindingContext = context;",
+            "bindingContext = context;\n            rules = context.GetModule<EventRuleEngine>();",
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": source,
+        }
+
+        validated = GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+            module,
+            {"generated_feature_01": requirement},
+        )
+
+        self.assertIn("EventRuleEngineModule rules", validated["source_code"])
+        self.assertIn(
+            "context.GetModule<EventRuleEngineModule>()",
+            validated["source_code"],
+        )
+        self.assertIn(
+            "using TeamIdle.GameTemplate.Common;",
+            validated["source_code"],
+        )
+
+    def test_generated_source_rejects_members_missing_from_project_index(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "승패 이벤트를 처리"}
+        source = (
+            GENERATED_SOURCE.replace(
+                "private GeneratedFeatureBindingContext bindingContext;",
+                "private GeneratedFeatureBindingContext bindingContext;\n"
+                "        private EventRuleEngineModule rules;",
+            )
+            .replace(
+                "input = context.GetModule<InputAdapterModule>();",
+                "input = context.GetModule<InputAdapterModule>();\n"
+                "            rules = context.GetModule<EventRuleEngineModule>();",
+            )
+            .replace(
+                "var direction = Vector2.right * Mathf.Sign(input.Movement.x);",
+                'rules.TriggerEvent("GameWon");\n            var direction = Vector2.right;',
+            )
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": source,
+        }
+
+        with self.assertRaisesRegex(ValueError, "EventRuleEngineModule.TriggerEvent"):
             GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
                 module,
                 {"generated_feature_01": requirement},
             )
+
+    def test_generated_source_rejects_invented_binding_context_member(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "웨이브를 확인"}
+        source = GENERATED_SOURCE.replace(
+            "var direction = Vector2.right * Mathf.Sign(input.Movement.x);",
+            "var direction = bindingContext.WaveSpawnerModule == null "
+            "? Vector2.zero : Vector2.right;",
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": source,
+        }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "GeneratedFeatureBindingContext.WaveSpawnerModule",
+        ):
+            GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+                module,
+                {"generated_feature_01": requirement},
+            )
+
+    def test_generated_source_does_not_mistake_collider_variable_for_3d_type(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "벽을 탄다."}
+        source = GENERATED_SOURCE.replace(
+            "var direction = Vector2.right * Mathf.Sign(input.Movement.x);",
+            "var swordCollider = playerBody.GetComponent<Collider2D>();\n"
+            "            var direction = swordCollider == null ? Vector2.right : Vector2.up;",
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": source,
+        }
+
+        validated = GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+            module,
+            {"generated_feature_01": requirement},
+        )
+
+        self.assertIn("swordCollider", validated["source_code"])
+
+    def test_generated_source_repairs_malformed_identity_attribute(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "벽을 탄다."}
+        source = GENERATED_SOURCE.replace(
+            '[GeneratedGameModule("generated_feature_01")]',
+            '[GeneratedGameModule("generated_feature_01")',
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": source,
+        }
+
+        validated = GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+            module,
+            {"generated_feature_01": requirement},
+        )
+
+        self.assertIn(
+            '[GeneratedGameModule("generated_feature_01")]',
+            validated["source_code"],
+        )
+
+    def test_implementation_plan_drops_conceptual_non_unity_components(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "기지 체력 감시"}
+        raw = {
+            "implementation_plan": {
+                "module_id": "generated_feature_01",
+                "feature_id": "feature_01",
+                "behavior_summary": "기지 체력이 0이면 패배한다.",
+                "binding_steps": ["기지를 연결한다"],
+                "scene_objects": [
+                    {
+                        "object_id": "base_health_monitor",
+                        "parent": "entities",
+                        "purpose": "기지 체력 상태를 감시한다",
+                        "components": ["GameObject", "HealthDamageSystem", "Timer"],
+                    }
+                ],
+                "runtime_flow": ["체력을 감시한다"],
+                "acceptance_checks": ["체력 0에서 패배한다"],
+            }
+        }
+
+        plan = GeminiFeatureGenerator._validate_implementation_plan(
+            raw,
+            "generated_feature_01",
+            requirement,
+        )
+
+        self.assertEqual(plan["scene_objects"][0]["components"], ["GameObject"])
+
+    def test_implementation_plan_bounds_scene_objects_to_feature_scope(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "두 타워를 설치한다"}
+        scene_objects = [
+            {
+                "object_id": object_id,
+                "parent": "entities",
+                "purpose": object_id,
+                "components": ["GameObject"],
+            }
+            for object_id in (
+                "arrow_tower",
+                "magic_tower",
+                "projectile",
+                "enemy",
+                "base",
+                "global_hud",
+            )
+        ]
+        raw = {
+            "implementation_plan": {
+                "module_id": "generated_feature_01",
+                "feature_id": "feature_01",
+                "behavior_summary": "서로 다른 타워를 설치한다.",
+                "binding_steps": ["타워를 생성한다"],
+                "scene_objects": scene_objects,
+                "runtime_flow": ["타워를 선택하고 설치한다"],
+                "acceptance_checks": ["두 타워가 설치된다"],
+            }
+        }
+
+        plan = GeminiFeatureGenerator._validate_implementation_plan(
+            raw,
+            "generated_feature_01",
+            requirement,
+        )
+
+        self.assertEqual(
+            [item["object_id"] for item in plan["scene_objects"]],
+            ["arrow_tower", "magic_tower", "projectile"],
+        )
 
     def test_generated_source_accepts_binding_context_environment_root(self) -> None:
         requirement = {"feature_id": "feature_01", "feature_description": "벽을 탄다."}
@@ -871,7 +1213,37 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
         )
 
         self.assertIn(
-            'blockedArea = context.Environment.Find("blocked")?.gameObject;',
+            'blockedArea = context.Environment.Find("blocked")?.gameObject '
+            '?? new GameObject("blockedArea");',
+            validated["source_code"],
+        )
+
+    def test_generated_source_makes_existing_transform_find_game_object_null_safe(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "벽을 탄다."}
+        source = GENERATED_SOURCE.replace(
+            "private GeneratedFeatureBindingContext bindingContext;",
+            "private GeneratedFeatureBindingContext bindingContext;\n"
+            "        private GameObject blockedArea;",
+        ).replace(
+            "bindingContext = context;",
+            "bindingContext = context;\n"
+            '            blockedArea = context.Environment.Find("blocked").gameObject;',
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": source,
+        }
+
+        validated = GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+            module,
+            {"generated_feature_01": requirement},
+        )
+
+        self.assertIn(
+            'blockedArea = context.Environment.Find("blocked")?.gameObject '
+            '?? new GameObject("blockedArea");',
             validated["source_code"],
         )
 
@@ -931,7 +1303,7 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
                 {"generated_feature_01": requirement},
             )
 
-    def test_generated_source_requires_unity_ui_namespace_for_button(self) -> None:
+    def test_generated_source_adds_unity_ui_namespace_for_button(self) -> None:
         requirement = {"feature_id": "feature_01", "feature_description": "벽을 탄다."}
         source = GENERATED_SOURCE.replace(
             "private GeneratedFeatureBindingContext bindingContext;",
@@ -945,11 +1317,33 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
             "source_code": source,
         }
 
-        with self.assertRaisesRegex(ValueError, "UnityEngine.UI"):
-            GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
-                module,
-                {"generated_feature_01": requirement},
-            )
+        validated = GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+            module,
+            {"generated_feature_01": requirement},
+        )
+
+        self.assertIn("using UnityEngine.UI;", validated["source_code"])
+
+    def test_generated_source_does_not_treat_texture2d_as_ui_text(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "벽을 탄다."}
+        source = GENERATED_SOURCE.replace(
+            "private GeneratedFeatureBindingContext bindingContext;",
+            "private GeneratedFeatureBindingContext bindingContext;\n"
+            "        private Texture2D debugTexture;",
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": source,
+        }
+
+        validated = GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+            module,
+            {"generated_feature_01": requirement},
+        )
+
+        self.assertNotIn("using UnityEngine.UI;", validated["source_code"])
 
     def test_generation_attempt_recorder_preserves_complete_failed_candidate(self) -> None:
         features: list[FeatureRequirement] = [
@@ -1022,7 +1416,7 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
             "source_code": invalid_source,
         }
 
-        with self.assertRaisesRegex(ValueError, "invents PlatformerMovementModule APIs"):
+        with self.assertRaisesRegex(ValueError, "PlatformerMovementModule.moveSpeed"):
             GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
                 module,
                 {"generated_feature_01": requirement},
@@ -1068,7 +1462,9 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
 
         self.assertEqual(len(modules), 1)
         self.assertEqual(len(client.prompts), 2)
-        self.assertIn("previous_candidate", client.prompts[1])
+        self.assertIn("previous_source_code", client.prompts[1])
+        self.assertIn("referenced_project_apis", client.prompts[1])
+        self.assertIn("GENERATED_SOURCE_VALIDATION_FAILED", client.prompts[1])
         self.assertIn("method-local context", client.prompts[1])
         self.assertIn("context.Player.transform.localScale.x", client.prompts[1])
         self.assertLess(_estimate_tokens(client.prompts[1]), 5632)
@@ -1138,6 +1534,45 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
         self.assertLess(client.prompts[0].count("error CS0246"), 25)
         self.assertNotIn("unused full log", client.prompts[0])
         self.assertLess(_estimate_tokens(client.prompts[0]), 5632)
+
+    def test_unity_repair_retries_when_cs0103_identifier_remains_undeclared(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "벽을 탄다."}
+        invalid_source = GENERATED_SOURCE.replace(
+            "var direction = Vector2.right * Mathf.Sign(input.Movement.x);",
+            "if (baseHealth <= 0) { return; }\n"
+            "            var direction = Vector2.right * Mathf.Sign(input.Movement.x);",
+        )
+        repaired_source = invalid_source.replace(
+            "if (baseHealth <= 0) { return; }\n            ",
+            "",
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": invalid_source,
+        }
+        design = build_game_logic_design(normalize_game_spec("플랫포머", {"mechanics": []}))
+        design["generated_modules"] = [module]
+        client = SequenceStructuredJsonClient(
+            [
+                {"generated_modules": [module]},
+                {"generated_modules": [{**module, "source_code": repaired_source}]},
+            ]
+        )
+
+        repaired = GeminiFeatureGenerator(client).repair(
+            design,
+            {
+                "diagnostics": (
+                    "GeneratedFeature01Module.cs(12,17): error CS0103: "
+                    "The name 'baseHealth' does not exist in the current context"
+                )
+            },
+        )
+
+        self.assertEqual(len(client.prompts), 2)
+        self.assertNotIn("baseHealth", repaired[0]["source_code"])
 
     def test_generated_source_accepts_computed_binding_state(self) -> None:
         features: list[FeatureRequirement] = [

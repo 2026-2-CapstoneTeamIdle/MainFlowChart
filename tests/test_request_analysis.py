@@ -121,6 +121,33 @@ class RequestAnalysisTest(unittest.TestCase):
             ],
         )
 
+    def test_analysis_keeps_upgrade_lists_as_complete_sentences(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory) / "workspace"
+            with patch.dict(os.environ, {"MAINFLOW_WORKSPACE": str(workspace)}):
+                state = parse_input_node(
+                    {
+                        "image_style": "Pixel Art",
+                        "mood_style": "Fantasy",
+                        "genre": "뱀서류",
+                        "viewpoint": "탑다운",
+                        "condition": (
+                            "특전으로 검의 개수, 크기, 회전속도와 플레이어의 이동속도, "
+                            "최대체력을 강화할 수 있다. 일정 시간이 지나면 보스가 등장한다."
+                        ),
+                    }
+                )
+                state.update(analysis_node(state))  # type: ignore[arg-type]
+                analysis = ArtifactManager().read_json(state["analysis"])
+
+        descriptions = [feature["description"] for feature in analysis["features"]]
+        self.assertNotIn("크기", descriptions)
+        self.assertIn(
+            "특전으로 검의 개수, 크기, 회전속도와 플레이어의 이동속도, 최대체력을 강화할 수 있다",
+            descriptions,
+        )
+        self.assertIn("일정 시간이 지나면 보스가 등장한다", descriptions)
+
 
 if __name__ == "__main__":
     unittest.main()

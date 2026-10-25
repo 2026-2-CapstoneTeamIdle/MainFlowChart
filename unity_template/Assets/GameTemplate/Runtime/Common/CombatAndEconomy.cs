@@ -1,3 +1,4 @@
+#if false // Compatibility shell: MonoBehaviours were moved to filename-matched scripts.
 using System;
 using TeamIdle.GameTemplate.Core;
 using UnityEngine;
@@ -126,3 +127,4 @@ namespace TeamIdle.GameTemplate.Common
         }
     }
 }
+#endif

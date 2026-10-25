@@ -1,3 +1,4 @@
+#if false // Compatibility shell: MonoBehaviours were moved to filename-matched scripts.
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -7,6 +8,7 @@ using UnityEngine.SceneManagement;
 
 namespace TeamIdle.GameTemplate.Common
 {
+#if false // Moved to InputAdapterModule.cs so Unity can persist the component reference.
     public sealed class InputAdapterModule : GameModuleBehaviour
     {
         public override string ModuleId => "input_adapter";
@@ -50,6 +52,8 @@ namespace TeamIdle.GameTemplate.Common
             context.Register(this);
         }
     }
+
+#endif
 
     public sealed class SceneFlowManagerModule : GameModuleBehaviour
     {
@@ -227,3 +231,4 @@ namespace TeamIdle.GameTemplate.Common
         }
     }
 }
+#endif

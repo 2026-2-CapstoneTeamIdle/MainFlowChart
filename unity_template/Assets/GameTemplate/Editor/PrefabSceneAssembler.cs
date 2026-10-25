@@ -675,6 +675,35 @@ namespace TeamIdle.GameTemplate.Editor
                 towerModule.transform.position = towerVisual.transform.position;
             }
 
+            var economy = GetModule<EconomySystemModule>(context);
+            SetInt(economy, "startingCurrency", 120);
+            var buildSlots = new List<PrototypeTowerBuildSlot>();
+            var buildSlotPositions = new[]
+            {
+                new Vector2(-5.5f, 0.5f),
+                new Vector2(-0.5f, 0.3f),
+                new Vector2(4.8f, -0.2f),
+            };
+            for (var index = 0; index < buildSlotPositions.Length; index++)
+            {
+                var slotObject = CreateSpriteObject(
+                    $"TowerBuildSlot_{index + 1}",
+                    context.Entities,
+                    buildSlotPositions[index],
+                    Vector2.one * 0.9f,
+                    new Color(1f, 0.75f, 0.15f),
+                    "tower-build-slot"
+                );
+                slotObject.AddComponent<BoxCollider2D>();
+                buildSlots.Add(slotObject.AddComponent<PrototypeTowerBuildSlot>());
+            }
+
+            var buildControllerObject = new GameObject("TowerBuildController");
+            buildControllerObject.transform.SetParent(context.Entities, false);
+            buildControllerObject
+                .AddComponent<PrototypeTowerBuildController>()
+                .Configure(projectilePrefab, buildSlots);
+
             CreateSpriteObject(
                 "Base",
                 context.Entities,
@@ -971,6 +1000,7 @@ namespace TeamIdle.GameTemplate.Editor
             var health = source.AddComponent<HealthComponent>();
             SetBool(health, "destroyOnDeath", true);
             source.AddComponent<PrototypeTowerEndpoint>();
+            source.AddComponent<PrototypeTowerReward>();
             source.AddComponent<PathFollower2D>();
             var path = $"{GeneratedPrefabRoot}/TowerEnemy.prefab";
             var prefab = SavePrefab<PathFollower2D>(source, path, context);
@@ -996,7 +1026,9 @@ namespace TeamIdle.GameTemplate.Editor
             collider.isTrigger = true;
             var body = source.AddComponent<Rigidbody2D>();
             body.gravityScale = 0f;
-            body.bodyType = RigidbodyType2D.Kinematic;
+            body.freezeRotation = true;
+            body.collisionDetectionMode = CollisionDetectionMode2D.Continuous;
+            body.bodyType = RigidbodyType2D.Dynamic;
             source.AddComponent<Projectile2D>();
             var path = $"{GeneratedPrefabRoot}/{name}.prefab";
             var prefab = SavePrefab<Projectile2D>(source, path, context);

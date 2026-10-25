@@ -84,8 +84,7 @@ class UnityTemplateTest(unittest.TestCase):
             encoding="utf-8"
         )
         camera_follow = (
-            TEMPLATE_ROOT
-            / "Assets/GameTemplate/Runtime/Prototype/PlatformerPrototypeActors.cs"
+            TEMPLATE_ROOT / "Assets/GameTemplate/Runtime/Prototype/PlatformerPrototypeActors.cs"
         ).read_text(encoding="utf-8")
 
         self.assertIn("PrefabSceneAssembler.Assemble", builder)
@@ -196,13 +195,33 @@ class UnityTemplateTest(unittest.TestCase):
 
     def test_prefab_behaviours_use_dedicated_script_files(self) -> None:
         expected = {
+            "Common/AssetRegistryModule.cs": "AssetRegistryModule",
+            "Common/AudioManagerModule.cs": "AudioManagerModule",
+            "Common/EconomySystemModule.cs": "EconomySystemModule",
+            "Common/EventRuleEngineModule.cs": "EventRuleEngineModule",
+            "Common/GameStateStoreModule.cs": "GameStateStoreModule",
+            "Common/HealthComponent.cs": "HealthComponent",
+            "Common/HealthDamageSystemModule.cs": "HealthDamageSystemModule",
+            "Common/InputAdapterModule.cs": "InputAdapterModule",
             "Common/Projectile2D.cs": "Projectile2D",
             "Common/ProjectileSystemModule.cs": "ProjectileSystemModule",
+            "Common/SaveSystemModule.cs": "SaveSystemModule",
+            "Common/SceneFlowManagerModule.cs": "SceneFlowManagerModule",
+            "Common/UiRouterModule.cs": "UiRouterModule",
             "SurvivorLike/ChaseAgent2D.cs": "ChaseAgent2D",
             "SurvivorLike/AutoTargetSystemModule.cs": "AutoTargetSystemModule",
+            "SurvivorLike/EnemySpawnSystemModule.cs": "EnemySpawnSystemModule",
+            "SurvivorLike/ExperienceSystemModule.cs": "ExperienceSystemModule",
+            "SurvivorLike/RaritySystemModule.cs": "RaritySystemModule",
+            "SurvivorLike/TopDownMovementModule.cs": "TopDownMovementModule",
             "SurvivorLike/UpgradeSelectionSystemModule.cs": "UpgradeSelectionSystemModule",
+            "TowerDefense/BaseDefenseSystemModule.cs": "BaseDefenseSystemModule",
+            "TowerDefense/PathFollower2D.cs": "PathFollower2D",
+            "TowerDefense/TowerTargetingSystemModule.cs": "TowerTargetingSystemModule",
+            "TowerDefense/WaveSpawnerModule.cs": "WaveSpawnerModule",
             "Prototype/PrototypeExperienceReward.cs": "PrototypeExperienceReward",
             "Prototype/PrototypeTowerEndpoint.cs": "PrototypeTowerEndpoint",
+            "Prototype/PrototypeWingUpgradeApplier.cs": "PrototypeWingUpgradeApplier",
         }
         runtime_root = TEMPLATE_ROOT / "Assets/GameTemplate/Runtime"
         for relative_path, class_name in expected.items():

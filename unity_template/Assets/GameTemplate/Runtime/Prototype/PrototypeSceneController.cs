@@ -114,12 +114,19 @@ namespace TeamIdle.GameTemplate.Prototype
         {
             var waves = FindFirstObjectByType<WaveSpawnerModule>();
             var defense = FindFirstObjectByType<BaseDefenseSystemModule>();
+            var economy = FindFirstObjectByType<EconomySystemModule>();
+            var build = FindFirstObjectByType<PrototypeTowerBuildController>();
             GUILayout.Label("HOW TO PLAY", GUI.skin.box);
-            GUILayout.Label("The tower attacks enemies automatically.");
-            GUILayout.Label("Stop enemies before they reach the green base.");
+            GUILayout.Label("1. Click a yellow build pad to place an attack tower.");
+            GUILayout.Label("2. Towers fire automatically at enemies on the path.");
+            GUILayout.Label("3. Stop enemies before they reach the green base.");
             GUILayout.Label(
-                "The first wave starts automatically. Press Space/Enter or use the button for the next wave."
+                "The first wave starts automatically. Press Space/Enter for the next wave."
             );
+            GUILayout.Label(
+                $"Gold: {economy?.Currency ?? 0}    Tower cost: {build?.BuildCost ?? 0}"
+            );
+            GUILayout.Label($"Built towers: {build?.BuiltTowerCount ?? 0}");
             GUILayout.Label($"Wave: {waves?.WaveNumber ?? 0}");
             GUILayout.Label(
                 waves?.IsWaveRunning == true ? "Wave in progress" : "Ready for next wave"
@@ -297,6 +304,7 @@ namespace TeamIdle.GameTemplate.Prototype
         }
     }
 
+#if false // Moved to PrototypeWingUpgradeApplier.cs for a stable Unity script reference.
     public sealed class PrototypeWingUpgradeApplier : MonoBehaviour
     {
         private UpgradeSelectionSystemModule upgrades;
@@ -353,4 +361,5 @@ namespace TeamIdle.GameTemplate.Prototype
             }
         }
     }
+#endif
 }
