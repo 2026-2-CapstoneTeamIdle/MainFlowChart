@@ -4,7 +4,13 @@ import io
 import unittest
 from unittest.mock import MagicMock, patch
 
-from mainflow.run_flow import main
+from mainflow.run_flow import configure_console_encoding, main
+
+
+class ReconfigurableTextStream(io.TextIOWrapper):
+    def close_without_closing_buffer(self):
+        self.flush()
+        self.detach()
 
 
 class RunFlowExitTest(unittest.TestCase):
@@ -48,6 +54,19 @@ class RunFlowExitTest(unittest.TestCase):
 
     def test_validator_ai_revision_sets_nonzero_exit(self):
         self.assertEqual(self.run_cli("passed", "needs_revision"), 1)
+
+    def test_console_encoding_is_reconfigured_for_unicode_output(self):
+        buffer = io.BytesIO()
+        stream = ReconfigurableTextStream(buffer, encoding="cp949")
+        try:
+            with patch("sys.stdout", stream), patch("sys.stderr", io.StringIO()):
+                configure_console_encoding()
+                print("한글 — Unicode")
+                stream.flush()
+
+            self.assertEqual(buffer.getvalue().decode("utf-8").splitlines(), ["한글 — Unicode"])
+        finally:
+            stream.close_without_closing_buffer()
 
 
 if __name__ == "__main__":

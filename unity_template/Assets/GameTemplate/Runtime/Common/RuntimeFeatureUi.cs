@@ -86,9 +86,13 @@ namespace TeamIdle.GameTemplate.Common
         {
             var existing = GameObject.Find("FeatureOverlayCanvas");
             if (existing != null && existing.TryGetComponent<Canvas>(out var found))
+            {
+                EnsureEventSystem();
                 return found;
+            }
 
             var canvasObject = new GameObject("FeatureOverlayCanvas", typeof(RectTransform));
+            UnityEngine.Object.DontDestroyOnLoad(canvasObject);
             var canvas = canvasObject.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.ScreenSpaceOverlay;
             canvas.sortingOrder = 100;
@@ -97,14 +101,20 @@ namespace TeamIdle.GameTemplate.Common
             scaler.referenceResolution = new Vector2(1920f, 1080f);
             canvasObject.AddComponent<UnityEngine.UI.GraphicRaycaster>();
 
-            if (UnityEngine.Object.FindFirstObjectByType<EventSystem>() == null)
-            {
-                var eventSystem = new GameObject("FeatureEventSystem");
-                eventSystem.AddComponent<EventSystem>();
-                eventSystem.AddComponent<StandaloneInputModule>();
-            }
+            EnsureEventSystem();
 
             return canvas;
+        }
+
+        private static void EnsureEventSystem()
+        {
+            if (UnityEngine.Object.FindFirstObjectByType<EventSystem>() != null)
+                return;
+
+            var eventSystem = new GameObject("FeatureEventSystem");
+            UnityEngine.Object.DontDestroyOnLoad(eventSystem);
+            eventSystem.AddComponent<EventSystem>();
+            eventSystem.AddComponent<StandaloneInputModule>();
         }
     }
 }

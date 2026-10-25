@@ -131,6 +131,7 @@ namespace TeamIdle.GameTemplate.Editor
             if (
                 !failed
                 && (type == LogType.Exception || type == LogType.Error || type == LogType.Assert)
+                && !IsIgnorableEditorInfrastructureLog(message, stack)
             )
             {
                 failed = true;
@@ -140,6 +141,16 @@ namespace TeamIdle.GameTemplate.Editor
                     failureDetail += " | " + stack.Replace('\n', ' ').Replace('\r', ' ');
                 }
             }
+        }
+
+        private static bool IsIgnorableEditorInfrastructureLog(string message, string stack)
+        {
+            return message.StartsWith("ArgumentOutOfRangeException:", StringComparison.Ordinal)
+                && stack.IndexOf("UnityEditor.Search.SearchDatabase", StringComparison.Ordinal) >= 0
+                && stack.IndexOf(
+                    "UnityEditor.Search.SearchInit.IndexationOnStartup",
+                    StringComparison.Ordinal
+                ) >= 0;
         }
 
         private static void Tick()
@@ -845,17 +856,9 @@ namespace TeamIdle.GameTemplate.Editor
                 }
             }
 
-            var aliases = new Dictionary<string, string>(StringComparer.Ordinal)
-            {
-                ["collectible"] = "collectible_system",
-                ["goal"] = "goal_system",
-                ["health_damage"] = "health_damage_system",
-                ["item_collect"] = "item_collection_system",
-                ["player_stats"] = "player_stat_display",
-            };
             foreach (var binding in validationPlan.required_feature_bindings)
             {
-                var moduleId = aliases.TryGetValue(binding, out var alias) ? alias : binding;
+                var moduleId = ModuleComponentCatalog.ResolveFeatureBindingModuleId(binding);
                 var isBound = moduleIds.Contains(moduleId);
                 if (binding == "health_damage")
                 {

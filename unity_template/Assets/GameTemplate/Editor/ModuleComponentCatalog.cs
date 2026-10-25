@@ -15,6 +15,45 @@ namespace TeamIdle.GameTemplate.Editor
 {
     public static class ModuleComponentCatalog
     {
+        private static readonly IReadOnlyDictionary<string, string> FeatureBindingModuleIds =
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["collectible"] = "collectible_system",
+                ["goal"] = "goal_system",
+                ["wave_spawn"] = "wave_spawner",
+                ["tower_targeting"] = "tower_targeting_system",
+                ["base_defense"] = "base_defense_system",
+                ["deck"] = "deck_system",
+                ["turn"] = "turn_system",
+                ["card_resource"] = "card_resource_system",
+                ["card_effect"] = "card_effect_system",
+                ["dialogue"] = "dialogue_runner",
+                ["choice"] = "choice_branch_system",
+                ["branching"] = "choice_branch_system",
+                ["flags"] = "flag_system",
+                ["multiple_endings"] = "ending_resolver",
+                ["raising_endings"] = "raising_ending_resolver",
+                ["stats"] = "stat_system",
+                ["experience"] = "experience_system",
+                ["upgrade_selection"] = "upgrade_selection_system",
+                ["rarity"] = "rarity_system",
+                ["schedule"] = "schedule_system",
+                ["health_damage"] = "health_damage_system",
+                ["enemy_spawn"] = "enemy_spawn_system",
+                ["chase_ai"] = "enemy_spawn_system",
+                ["auto_target"] = "auto_target_system",
+                ["projectile"] = "projectile_system",
+                ["economy"] = "economy_system",
+                ["time_turn"] = "time_turn_system",
+                ["activity"] = "activity_system",
+                ["options"] = "options_menu",
+                ["item_collect"] = "item_collection_system",
+                ["tower_upgrade"] = "tower_upgrade_system",
+                ["player_stats"] = "player_stat_display",
+                ["score"] = "score_system",
+                ["save_load"] = "save_system",
+            };
+
         private static readonly IReadOnlyDictionary<string, Type> ModuleTypes = new Dictionary<
             string,
             Type
@@ -67,6 +106,13 @@ namespace TeamIdle.GameTemplate.Editor
         };
 
         private static Dictionary<string, Type> generatedModuleTypes;
+
+        public static string ResolveFeatureBindingModuleId(string featureId)
+        {
+            return FeatureBindingModuleIds.TryGetValue(featureId, out var moduleId)
+                ? moduleId
+                : featureId;
+        }
 
         public static bool TryGetType(string moduleId, out Type moduleType)
         {

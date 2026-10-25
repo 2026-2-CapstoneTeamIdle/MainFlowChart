@@ -97,6 +97,9 @@ class UnityTemplateTest(unittest.TestCase):
         self.assertNotIn("AudioMixerController", asset_binder)
         self.assertIn('failureDetail = "runtime.exception: " + message', runtime_smoke)
         self.assertNotIn("runtime.exception: inspect Unity log", runtime_smoke)
+        self.assertIn("IsIgnorableEditorInfrastructureLog(message, stack)", runtime_smoke)
+        self.assertIn("UnityEditor.Search.SearchDatabase", runtime_smoke)
+        self.assertIn("UnityEditor.Search.SearchInit.IndexationOnStartup", runtime_smoke)
         self.assertIn("ValidateCurrentSceneForBatch", builder)
         self.assertIn("ModuleComponentCatalog.ValidateForBatch", builder)
         self.assertIn("AttachGeneratedFeatureBinder", assembler)
@@ -177,21 +180,55 @@ class UnityTemplateTest(unittest.TestCase):
         fixed_update = movement.split("private void FixedUpdate()", maxsplit=1)[1]
         self.assertNotIn("input.ConfirmPressed", fixed_update)
 
-    def test_feature_binding_aliases_match_selected_module_ids(self) -> None:
+    def test_feature_binding_aliases_match_design_catalog(self) -> None:
+        catalog = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Editor/ModuleComponentCatalog.cs"
+        ).read_text(encoding="utf-8")
+        alias_block = re.search(
+            r"FeatureBindingModuleIds\s*=\s*new Dictionary<\s*string\s*,\s*string\s*>"
+            r"\s*\(StringComparer\.Ordinal\)\s*\{(?P<body>.*?)\n\s*\};",
+            catalog,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(alias_block)
+        aliases = dict(
+            re.findall(
+                r'\["([a-z0-9_]+)"\]\s*=\s*"([a-z0-9_]+)"',
+                alias_block.group("body"),
+            )
+        )
+
+        from game_pipeline.design_catalog import MECHANIC_TO_MODULE
+
+        expected_aliases = {
+            feature_id: module_id
+            for feature_id, module_id in MECHANIC_TO_MODULE.items()
+            if feature_id != module_id
+        }
+        self.assertEqual(aliases, expected_aliases)
+
         validators = (
             "Assets/GameTemplate/Editor/PrefabSceneAssembler.cs",
             "Assets/GameTemplate/Editor/RuntimeSmokeValidator.cs",
         )
-        expected_aliases = {
-            "item_collect": "item_collection_system",
-            "player_stats": "player_stat_display",
-        }
 
         for relative_path in validators:
             source = (TEMPLATE_ROOT / relative_path).read_text(encoding="utf-8")
-            for feature_id, module_id in expected_aliases.items():
-                with self.subTest(relative_path=relative_path, feature_id=feature_id):
-                    self.assertIn(f'["{feature_id}"] = "{module_id}"', source)
+            with self.subTest(relative_path=relative_path):
+                self.assertIn(
+                    "ModuleComponentCatalog.ResolveFeatureBindingModuleId(binding)",
+                    source,
+                )
+                self.assertNotIn("aliases.TryGetValue(binding", source)
+
+    def test_runtime_feature_ui_survives_scene_reload_with_bootstrap(self) -> None:
+        runtime_ui = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Runtime/Common/RuntimeFeatureUi.cs"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("DontDestroyOnLoad(canvasObject)", runtime_ui)
+        self.assertIn("EnsureEventSystem();", runtime_ui)
+        self.assertIn("DontDestroyOnLoad(eventSystem)", runtime_ui)
 
     def test_persistent_platformer_behaviours_use_matching_script_filenames(self) -> None:
         platformer_root = TEMPLATE_ROOT / "Assets/GameTemplate/Runtime/Platformer"

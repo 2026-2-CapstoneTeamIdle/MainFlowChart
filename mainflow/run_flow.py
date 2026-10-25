@@ -19,6 +19,14 @@ MOOD_STYLES = cast(tuple[str, ...], get_args(MoodStyle))
 VIEWPOINTS = cast(tuple[str, ...], get_args(Viewpoint))
 
 
+def configure_console_encoding() -> None:
+    """Keep CLI output Unicode-safe on Windows terminals that default to CP949."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run MainFlowChart without a desktop GUI.",
@@ -95,6 +103,7 @@ def load_request(arguments: argparse.Namespace) -> WorkflowState:
 
 
 def main() -> int:
+    configure_console_encoding()
     arguments = build_parser().parse_args()
     if arguments.workspace:
         os.environ["MAINFLOW_WORKSPACE"] = str(arguments.workspace.resolve())
