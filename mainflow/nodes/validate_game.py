@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import cast
 
 from game_pipeline import UnityProjectValidator
+from game_pipeline.feature_checklist_validation import FeatureChecklistWorkflow
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -191,6 +193,83 @@ def validate_game_node(
                 "message": "; ".join(draft["notes"]),
             },
         )
+
+    checklist_setting = os.environ.get("MAINFLOW_FEATURE_CHECKLIST_VALIDATION", "1")
+    if (
+        not generation_failed
+        and outcome.status == "passed"
+        and mode != "static"
+        and checklist_setting == "1"
+    ):
+        required_version = validator._read_project_version(project_root)
+        editor = validator.unity_editor or validator.find_unity_editor(required_version)
+        if editor is None:
+            outcome.checks.append(
+                {
+                    "criterion_id": "unity.feature_checklists",
+                    "passed": False,
+                    "message": "Unity Editor is required for feature checklist tests.",
+                }
+            )
+            outcome.issues.append(
+                {
+                    "code": "FEATURE_CHECKLIST_EDITOR_NOT_FOUND",
+                    "severity": "error",
+                    "message": "Unity Test Framework could not start without a Unity Editor.",
+                }
+            )
+        else:
+            checklist_source = Path(
+                os.environ.get(
+                    "MAINFLOW_FEATURE_CHECKLIST_SOURCE",
+                    str(Path(__file__).resolve().parents[2] / "docs"),
+                )
+            ).resolve()
+            checklist_workflow = FeatureChecklistWorkflow(
+                unity_editor=editor,
+                timeout_seconds=timeout_seconds,
+                max_retries=int(os.environ.get("MAINFLOW_FEATURE_CHECKLIST_RETRIES", "10")),
+            )
+            try:
+                checklist_outcome = checklist_workflow.run(
+                    project_root=project_root,
+                    workspace_root=manager.ensure_project(state["project_id"]),
+                    source_root=checklist_source,
+                    compile_validation=lambda changed_root: validator.validate(
+                        changed_root,
+                        draft,
+                        request,
+                        allow_failed_diagnostic=False,
+                    ),
+                )
+                outcome.unity_log += checklist_outcome.log
+                for result_item in checklist_outcome.results:
+                    outcome.checks.append(
+                        {
+                            "criterion_id": (f"feature_checklist.{result_item.feature_id.lower()}"),
+                            "passed": result_item.status in {"passed", "skipped"},
+                            "message": (
+                                f"{result_item.feature_name}: {result_item.status} — "
+                                f"{result_item.message}"
+                            ),
+                        }
+                    )
+                outcome.issues.extend(checklist_outcome.issues)
+            except Exception as error:  # noqa: BLE001 - independent validation boundary
+                outcome.checks.append(
+                    {
+                        "criterion_id": "unity.feature_checklists",
+                        "passed": False,
+                        "message": f"Feature checklist validation could not complete: {error}",
+                    }
+                )
+                outcome.issues.append(
+                    {
+                        "code": "FEATURE_CHECKLIST_EXECUTION_FAILED",
+                        "severity": "error",
+                        "message": f"{type(error).__name__}: {error}",
+                    }
+                )
 
     if outcome.unity_log:
         log_reference = manager.write_text(
