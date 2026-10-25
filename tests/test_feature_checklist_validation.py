@@ -34,6 +34,7 @@ class FeatureChecklistValidationTest(unittest.TestCase):
     <test-case fullname="Tests.FC09_TowerPlacement" result="Skipped" label="Ignored">
       <reason><message>not requested</message></reason>
     </test-case>
+    <test-case fullname="Tests.FC13_TowerUpgrade" result="Passed" />
   </test-suite>
 </test-run>
 """,
@@ -42,8 +43,10 @@ class FeatureChecklistValidationTest(unittest.TestCase):
 
             results = FeatureChecklistWorkflow._parse_nunit(report)
 
-        self.assertEqual([item.feature_id for item in results], ["FC02", "FC05", "FC09"])
-        self.assertEqual([item.status for item in results], ["passed", "failed", "skipped"])
+        self.assertEqual([item.feature_id for item in results], ["FC02", "FC05", "FC09", "FC13"])
+        self.assertEqual(
+            [item.status for item in results], ["passed", "failed", "skipped", "passed"]
+        )
         self.assertEqual(results[1].message, "jump velocity was zero")
 
     def test_original_docx_is_preserved_and_checked_copy_is_annotated(self) -> None:

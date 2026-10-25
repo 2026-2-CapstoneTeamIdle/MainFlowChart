@@ -565,6 +565,44 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
         self.assertEqual(plan.mechanics, ["health_damage", "collectible", "goal"])
         self.assertFalse(plan.generation_requirements)
 
+    def test_new_common_features_reuse_catalogued_modules(self) -> None:
+        names = [
+            "체력 및 피해",
+            "옵션",
+            "아이템 수집",
+            "타워 업그레이드",
+            "플레이어 스탯",
+            "점수 기록",
+            "게임 타이머",
+            "저장 및 불러오기",
+        ]
+        features: list[FeatureRequirement] = [
+            {
+                "feature_id": f"feature-{index:02d}",
+                "name": name,
+                "description": name,
+                "source_text": name,
+            }
+            for index, name in enumerate(names, start=1)
+        ]
+
+        plan = plan_feature_mechanics(features, "타워 디펜스")
+
+        self.assertEqual(
+            plan.mechanics,
+            [
+                "health_damage",
+                "options",
+                "item_collect",
+                "tower_upgrade",
+                "player_stats",
+                "score",
+                "game_timer",
+                "save_load",
+            ],
+        )
+        self.assertFalse(plan.generation_requirements)
+
     def test_generated_source_accepts_event_driven_runtime_behavior(self) -> None:
         requirement = {"feature_id": "feature_01", "feature_description": "문을 연다."}
         event_source = GENERATED_SOURCE.replace(

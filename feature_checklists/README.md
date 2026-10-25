@@ -1,7 +1,7 @@
 # Feature checklist sources
 
 The repository keeps the extracted checklist originals under `docs/`. If the source DOCX files
-are available, place the nine `[Validator Checklist] *.docx` documents in `originals/` and point
+are available, place the seventeen `[Validator Checklist] *.docx` documents in `originals/` and point
 `MAINFLOW_FEATURE_CHECKLIST_SOURCE` at that directory.
 The validation workflow never modifies these source documents. For every generated game it copies
 the originals into `workspace/<project_id>/validation/feature_checklists/original/` and writes

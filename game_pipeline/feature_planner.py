@@ -17,6 +17,14 @@ FEATURE_MODULE_MECHANICS: dict[str, tuple[str, ...]] = {
     "공중 대시": ("air_dash",),
     "카드 덱 구성": ("deck",),
     "대화 선택": ("choice", "branching"),
+    "체력 및 피해": ("health_damage",),
+    "옵션": ("options",),
+    "아이템 수집": ("item_collect",),
+    "타워 업그레이드": ("tower_upgrade",),
+    "플레이어 스탯": ("player_stats",),
+    "점수 기록": ("score",),
+    "게임 타이머": ("game_timer",),
+    "저장 및 불러오기": ("save_load",),
 }
 
 DYNAMIC_FEATURE_BLUEPRINTS: dict[str, dict[str, str]] = {}

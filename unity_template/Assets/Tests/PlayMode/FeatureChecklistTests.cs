@@ -8,6 +8,7 @@ using TeamIdle.GameTemplate.Platformer;
 using TeamIdle.GameTemplate.Prototype;
 using TeamIdle.GameTemplate.RaisingSimulation;
 using TeamIdle.GameTemplate.SurvivorLike;
+using TeamIdle.GameTemplate.TowerDefense;
 using TeamIdle.GameTemplate.VisualNovel;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -31,6 +32,8 @@ namespace TeamIdle.GameTemplate.FeatureTests
             InputAdapterModule.TestMovement = Vector2.zero;
             InputAdapterModule.TestConfirmPressed = false;
             InputAdapterModule.TestDashPressed = false;
+            Time.timeScale = 1f;
+            AudioListener.volume = 1f;
             yield return SceneManager.LoadSceneAsync(ScenePath, LoadSceneMode.Single);
             for (var frame = 0; frame < 10; frame++)
             {
@@ -47,6 +50,8 @@ namespace TeamIdle.GameTemplate.FeatureTests
             InputAdapterModule.TestMovement = Vector2.zero;
             InputAdapterModule.TestConfirmPressed = false;
             InputAdapterModule.TestDashPressed = false;
+            Time.timeScale = 1f;
+            AudioListener.volume = 1f;
             yield return null;
         }
 
@@ -222,10 +227,148 @@ namespace TeamIdle.GameTemplate.FeatureTests
             Assert.That(builder, Is.Not.Null, "Tower build controller must exist.");
             Assert.That(builder.enabled, Is.True, "Tower build input must be enabled.");
             Assert.That(
+                builder.AvailableTowerTypes.Count,
+                Is.GreaterThanOrEqualTo(2),
+                "At least two selectable tower types must be available."
+            );
+            Assert.That(
                 Object.FindObjectsByType<PrototypeTowerBuildSlot>(FindObjectsSortMode.None).Length,
                 Is.GreaterThan(0),
                 "At least one visible build pad must exist."
             );
+            yield return null;
+        }
+
+        [UnityTest]
+        [Category("FeatureChecklist")]
+        public IEnumerator FC10_HealthDamageAndGameOver()
+        {
+            RequireFeature("체력 및 피해", "health_damage_system");
+            var damage = Object.FindFirstObjectByType<HealthDamageSystemModule>();
+            Assert.That(damage, Is.Not.Null, "HealthDamageSystemModule must exist.");
+            var player = new GameObject("FeatureChecklistPlayerHealth");
+            var health = player.AddComponent<HealthComponent>();
+            health.SetMaximum(10f);
+            damage.BindPlayer(health);
+            damage.ApplyDamage(health, 10f);
+            yield return null;
+            Assert.That(health.Current, Is.Zero, "Lethal damage must consume all health.");
+            Assert.That(damage.IsGameOver, Is.True, "Zero player health must trigger game over.");
+            Object.Destroy(player);
+        }
+
+        [UnityTest]
+        [Category("FeatureChecklist")]
+        public IEnumerator FC11_Options()
+        {
+            RequireFeature("옵션", "options_menu");
+            var options = Object.FindFirstObjectByType<OptionsMenuModule>();
+            Assert.That(options, Is.Not.Null, "OptionsMenuModule must exist.");
+            options.Open();
+            Assert.That(options.IsOpen, Is.True, "Options menu must open.");
+            Assert.That(Time.timeScale, Is.Zero, "Opening options must pause gameplay.");
+            options.SetMasterVolume(0.4f);
+            Assert.That(AudioListener.volume, Is.EqualTo(0.4f).Within(0.01f));
+            options.Close();
+            Assert.That(options.IsOpen, Is.False, "Options menu must close.");
+            yield return null;
+        }
+
+        [UnityTest]
+        [Category("FeatureChecklist")]
+        public IEnumerator FC12_ItemCollection()
+        {
+            RequireFeature("아이템 수집", "item_collection_system");
+            var inventory = Object.FindFirstObjectByType<ItemCollectionSystemModule>();
+            Assert.That(inventory, Is.Not.Null, "ItemCollectionSystemModule must exist.");
+            Assert.That(inventory.Collect("gold", 3), Is.True);
+            Assert.That(inventory.GetAmount("gold"), Is.EqualTo(3));
+            Assert.That(inventory.TotalCount, Is.GreaterThanOrEqualTo(3));
+            yield return null;
+        }
+
+        [UnityTest]
+        [Category("FeatureChecklist")]
+        public IEnumerator FC13_TowerUpgrade()
+        {
+            RequireFeature("타워 업그레이드", "tower_upgrade_system");
+            var upgrades = Object.FindFirstObjectByType<TowerUpgradeSystemModule>();
+            var economy = Object.FindFirstObjectByType<EconomySystemModule>();
+            Assert.That(upgrades, Is.Not.Null, "TowerUpgradeSystemModule must exist.");
+            Assert.That(economy, Is.Not.Null, "EconomySystemModule must exist.");
+            var towerObject = new GameObject("FeatureChecklistTower");
+            var tower = towerObject.AddComponent<PrototypeTowerWeapon>();
+            tower.Configure(null, "basic", 4f, 1f, 10f);
+            var previousDamage = tower.Damage;
+            economy.Add(upgrades.GetUpgradeCost(tower));
+            Assert.That(upgrades.TryUpgrade(tower), Is.True, "Affordable upgrade must succeed.");
+            Assert.That(tower.Level, Is.EqualTo(2));
+            Assert.That(tower.Damage, Is.GreaterThan(previousDamage));
+            Object.Destroy(towerObject);
+            yield return null;
+        }
+
+        [UnityTest]
+        [Category("FeatureChecklist")]
+        public IEnumerator FC14_PlayerStats()
+        {
+            RequireFeature("플레이어 스탯", "player_stat_display");
+            var display = Object.FindFirstObjectByType<PlayerStatDisplayModule>();
+            Assert.That(display, Is.Not.Null, "PlayerStatDisplayModule must exist.");
+            display.SetVisible(true);
+            Assert.That(display.IsVisible, Is.True, "Player stats must become visible.");
+            Assert.That(
+                display.DisplayText,
+                Is.Not.Empty,
+                "Player stats must contain readable data."
+            );
+            display.SetVisible(false);
+            yield return null;
+        }
+
+        [UnityTest]
+        [Category("FeatureChecklist")]
+        public IEnumerator FC15_ScoreTracking()
+        {
+            RequireFeature("점수 기록", "score_system");
+            var score = Object.FindFirstObjectByType<ScoreSystemModule>();
+            Assert.That(score, Is.Not.Null, "ScoreSystemModule must exist.");
+            var before = score.Score;
+            score.Add(25);
+            Assert.That(score.Score, Is.EqualTo(before + 25));
+            yield return null;
+        }
+
+        [UnityTest]
+        [Category("FeatureChecklist")]
+        public IEnumerator FC16_GameTimer()
+        {
+            RequireFeature("게임 타이머", "game_timer");
+            var timer = Object.FindFirstObjectByType<GameTimerModule>();
+            Assert.That(timer, Is.Not.Null, "GameTimerModule must exist.");
+            timer.Configure(1f);
+            timer.Tick(0.4f);
+            Assert.That(timer.ElapsedSeconds, Is.EqualTo(0.4f).Within(0.01f));
+            Assert.That(timer.RemainingSeconds, Is.EqualTo(0.6f).Within(0.01f));
+            yield return null;
+        }
+
+        [UnityTest]
+        [Category("FeatureChecklist")]
+        public IEnumerator FC17_SaveAndLoad()
+        {
+            RequireFeature("저장 및 불러오기", "save_system");
+            var saves = Object.FindFirstObjectByType<SaveSystemModule>();
+            var state = Object.FindFirstObjectByType<GameStateStoreModule>();
+            Assert.That(saves, Is.Not.Null, "SaveSystemModule must exist.");
+            Assert.That(state, Is.Not.Null, "GameStateStoreModule must exist.");
+            saves.DeleteSave();
+            state.SetInt("feature_checklist", 17);
+            saves.Save();
+            state.SetInt("feature_checklist", 0);
+            Assert.That(saves.Load(), Is.True, "An existing save must load.");
+            Assert.That(state.GetInt("feature_checklist"), Is.EqualTo(17));
+            saves.DeleteSave();
             yield return null;
         }
 

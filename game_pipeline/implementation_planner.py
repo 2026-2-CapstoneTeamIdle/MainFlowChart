@@ -54,8 +54,12 @@ BASE_SYSTEMS = [
     ),
     _system(
         "presentation",
-        ["ui_router", "audio_manager", "asset_registry"],
-        ["HUD·메뉴·결과 화면을 표시한다.", "검증된 이미지와 사운드를 런타임 객체에 연결한다."],
+        ["ui_router", "audio_manager", "options_menu", "asset_registry"],
+        [
+            "HUD·옵션·결과 화면을 표시한다.",
+            "ESC 일시정지와 소리 조정을 처리한다.",
+            "검증된 이미지와 사운드를 런타임 객체에 연결한다.",
+        ],
         ["application_flow"],
     ),
     _system(
@@ -159,7 +163,7 @@ GENRE_PLANS: dict[GenreProfile, GameImplementationPlan] = {
             ),
             _system(
                 "defense_economy",
-                ["economy_system", "base_defense_system"],
+                ["economy_system", "base_defense_system", "tower_upgrade_system"],
                 ["처치 보상으로 배치·강화를 구매한다.", "통과한 적이 기지 생명을 감소시킨다."],
                 ["wave_combat"],
             ),
