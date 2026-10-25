@@ -32,6 +32,8 @@ namespace TeamIdle.GameTemplate.Editor
             ["projectile_system"] = typeof(ProjectileSystemModule),
             ["economy_system"] = typeof(EconomySystemModule),
             ["platformer_movement"] = typeof(PlatformerMovementModule),
+            ["wall_climb"] = typeof(WallClimbModule),
+            ["air_dash"] = typeof(AirDashModule),
             ["collectible_system"] = typeof(CollectibleSystemModule),
             ["goal_system"] = typeof(GoalSystemModule),
             ["wave_spawner"] = typeof(WaveSpawnerModule),

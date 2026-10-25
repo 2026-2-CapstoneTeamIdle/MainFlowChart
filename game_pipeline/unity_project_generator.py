@@ -8,11 +8,16 @@ import json
 import re
 import shutil
 import tempfile
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
+from game_pipeline.asset_specs import (
+    build_image_generation_spec,
+    build_sound_generation_spec,
+)
 from mainflow.contracts import (
     CONTRACT_VERSION,
     ArtifactReference,
@@ -32,6 +37,9 @@ class UnityGenerationResult:
     entry_scene: Path
     manifest_path: Path
     build_request_path: Path
+    game_blueprint_path: Path
+    implementation_tasks_path: Path
+    design_document_paths: dict[str, Path]
     image_asset_request_path: Path
     sound_asset_request_path: Path
 
@@ -42,7 +50,20 @@ class UnityProjectGenerator:
     GENERATED_ROOT = Path("Assets/GameTemplate/Generated")
     CONFIG_ASSET = GENERATED_ROOT / "GameTemplateConfig.asset"
     DESIGN_PATH = GENERATED_ROOT / "GameLogicDesign.json"
+    BLUEPRINT_PATH = GENERATED_ROOT / "GameBlueprint.json"
+    DESIGN_DOCUMENT_ROOT = GENERATED_ROOT / "Design"
+    DESIGN_DOCUMENT_NAMES: ClassVar[dict[str, str]] = {
+        "game_design": "game_design.json",
+        "system_design": "system_design.json",
+        "content_plan": "content_plan.json",
+        "level_plan": "level_plan.json",
+        "balance_plan": "balance_plan.json",
+        "presentation_plan": "presentation_plan.json",
+        "validation_plan": "validation_plan.json",
+    }
     IMPLEMENTATION_PLAN_PATH = GENERATED_ROOT / "GameImplementationPlan.json"
+    IMPLEMENTATION_TASKS_PATH = GENERATED_ROOT / "ImplementationTasks.json"
+    QUALITY_REPORT_PATH = GENERATED_ROOT / "Validation/GameQualityReport.json"
     BUILD_REQUEST_PATH = GENERATED_ROOT / "GenerationRequest.json"
     ASSET_REQUEST_ROOT = GENERATED_ROOT / "AssetRequests"
     IMAGE_ASSET_REQUEST_PATH = ASSET_REQUEST_ROOT / "image_asset_request.json"
@@ -101,7 +122,7 @@ class UnityProjectGenerator:
                 viewpoint or design["game_spec"]["viewpoint"],
                 reference_image,
             )
-            staging_path.replace(destination_path)
+            self._commit_staging_directory(staging_path, destination_path)
         except Exception:
             shutil.rmtree(staging_path, ignore_errors=True)
             raise
@@ -111,9 +132,55 @@ class UnityProjectGenerator:
             entry_scene=destination_path / self.ENTRY_SCENE,
             manifest_path=destination_path / self.MANIFEST_PATH,
             build_request_path=destination_path / self.BUILD_REQUEST_PATH,
+            game_blueprint_path=destination_path / self.BLUEPRINT_PATH,
+            implementation_tasks_path=destination_path / self.IMPLEMENTATION_TASKS_PATH,
+            design_document_paths={
+                key: destination_path / self.DESIGN_DOCUMENT_ROOT / filename
+                for key, filename in self.DESIGN_DOCUMENT_NAMES.items()
+            },
             image_asset_request_path=destination_path / self.IMAGE_ASSET_REQUEST_PATH,
             sound_asset_request_path=destination_path / self.SOUND_ASSET_REQUEST_PATH,
         )
+
+    def update_implementation_tasks(
+        self,
+        project_root: str | Path,
+        task_plan: object,
+    ) -> Path:
+        root = Path(project_root).resolve()
+        path = root / self.IMPLEMENTATION_TASKS_PATH
+        if not (root / "ProjectSettings/ProjectVersion.txt").is_file():
+            raise ValueError(f"Not a generated Unity project: {root}")
+        self._write_json(path, task_plan)
+        design_path = root / self.DESIGN_PATH
+        design = json.loads(design_path.read_text(encoding="utf-8"))
+        if not isinstance(design, dict):
+            raise TypeError(f"Generated game design must be a JSON object: {design_path}")
+        design["implementation_tasks"] = task_plan
+        self._write_json(design_path, design)
+        return path
+
+    def update_quality_report(self, project_root: str | Path, report: object) -> Path:
+        """Persist post-Play-Mode quality evidence before packaging the project."""
+
+        root = Path(project_root).resolve()
+        path = root / self.QUALITY_REPORT_PATH
+        if not (root / "ProjectSettings/ProjectVersion.txt").is_file():
+            raise ValueError(f"Not a generated Unity project: {root}")
+        self._write_json(path, report)
+        design_path = root / self.DESIGN_PATH
+        design = json.loads(design_path.read_text(encoding="utf-8"))
+        if not isinstance(design, dict):
+            raise TypeError(f"Generated game design must be a JSON object: {design_path}")
+        design["quality_report"] = report
+        self._write_json(design_path, design)
+        manifest_path = root / self.MANIFEST_PATH
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict):
+            raise TypeError(f"Generation manifest must be a JSON object: {manifest_path}")
+        manifest["quality_report"] = self.QUALITY_REPORT_PATH.as_posix()
+        self._write_json(manifest_path, manifest)
+        return path
 
     def create_archive(self, project_root: str | Path) -> bytes:
         """Return a deterministic ZIP containing the generated Unity project."""
@@ -178,6 +245,25 @@ class UnityProjectGenerator:
             ignore=ignore,
         )
 
+    @staticmethod
+    def _commit_staging_directory(
+        staging_path: Path,
+        destination_path: Path,
+        *,
+        max_attempts: int = 6,
+    ) -> None:
+        """Rename an assembled project, tolerating short-lived Windows file locks."""
+
+        for attempt in range(max_attempts):
+            try:
+                staging_path.replace(destination_path)
+                return
+            except PermissionError:
+                if destination_path.exists() or attempt + 1 >= max_attempts:
+                    raise
+                time.sleep(0.2 * (attempt + 1))
+        raise AssertionError("unreachable")
+
     def _configure_project(
         self,
         project_root: Path,
@@ -222,9 +308,19 @@ class UnityProjectGenerator:
         generated_root.mkdir(parents=True, exist_ok=True)
         self._write_generated_modules(project_root, design)
         self._write_json(generated_root / self.DESIGN_PATH.name, design)
+        self._write_json(generated_root / self.BLUEPRINT_PATH.name, design["game_blueprint"])
+        for key, filename in self.DESIGN_DOCUMENT_NAMES.items():
+            self._write_json(
+                project_root / self.DESIGN_DOCUMENT_ROOT / filename,
+                design["design_v2"][key],  # type: ignore[literal-required]
+            )
         self._write_json(
             project_root / self.IMPLEMENTATION_PLAN_PATH,
             design["implementation_plan"],
+        )
+        self._write_json(
+            project_root / self.IMPLEMENTATION_TASKS_PATH,
+            design["implementation_tasks"],
         )
 
         request = {
@@ -233,6 +329,12 @@ class UnityProjectGenerator:
             "entry_scene": self.ENTRY_SCENE.as_posix(),
             "selected_modules": design["selected_modules"],
             "implementation_plan": self.IMPLEMENTATION_PLAN_PATH.as_posix(),
+            "implementation_tasks": self.IMPLEMENTATION_TASKS_PATH.as_posix(),
+            "game_blueprint": self.BLUEPRINT_PATH.as_posix(),
+            "design_documents": {
+                key: (self.DESIGN_DOCUMENT_ROOT / filename).as_posix()
+                for key, filename in self.DESIGN_DOCUMENT_NAMES.items()
+            },
         }
         self._write_json(project_root / self.BUILD_REQUEST_PATH, request)
 
@@ -266,6 +368,12 @@ class UnityProjectGenerator:
             "entry_scene": self.ENTRY_SCENE.as_posix(),
             "selected_modules": design["selected_modules"],
             "implementation_plan": self.IMPLEMENTATION_PLAN_PATH.as_posix(),
+            "implementation_tasks": self.IMPLEMENTATION_TASKS_PATH.as_posix(),
+            "game_blueprint": self.BLUEPRINT_PATH.as_posix(),
+            "design_documents": {
+                key: (self.DESIGN_DOCUMENT_ROOT / filename).as_posix()
+                for key, filename in self.DESIGN_DOCUMENT_NAMES.items()
+            },
             "generated_modules": [
                 {
                     "module_id": module["module_id"],
@@ -324,11 +432,25 @@ class UnityProjectGenerator:
         for requirement in design["game_spec"]["asset_requirements"]:
             if requirement["asset_type"] != asset_type:
                 continue
+            variation_description = (
+                f"{requirement['description']} Visual variation key: {design['design_id']}. "
+                "Create a distinct silhouette, composition, and palette for this run."
+                if asset_type == "image"
+                else requirement["description"]
+            )
             assets.append(
                 {
                     **requirement,
+                    "description": variation_description,
                     "suggested_filename": f"{requirement['asset_id']}.{extension}",
                     "unity_binding_key": f"asset_registry:{requirement['asset_id']}",
+                    "generation_spec": (
+                        build_image_generation_spec(requirement["purpose"], variation_description)
+                        if asset_type == "image"
+                        else build_sound_generation_spec(
+                            requirement["purpose"], requirement["description"]
+                        )
+                    ),
                 }
             )
 

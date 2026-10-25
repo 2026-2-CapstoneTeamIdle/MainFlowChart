@@ -12,9 +12,7 @@ from unittest import mock
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import ImageStyle, MoodStyle, Viewpoint
 from mainflow.image_generation import (
-    BINDING_NOTE_PREFIX,
     KIND_SIZES,
-    MISSING_REQUIRED_NOTE_PREFIX,
     PNG_SIGNATURE,
     TRANSPARENT_PROMPT,
     ImageRequest,
@@ -139,6 +137,19 @@ class AssetPlanTest(unittest.TestCase):
             self.assertEqual((info.width, info.height), (width, height), kind)
             self.assertEqual(info.has_transparent_pixel, plan.transparent, kind)
 
+    def test_placeholder_variation_follows_prompt_seed_and_is_reproducible(self) -> None:
+        generator = PlaceholderImageGenerator()
+        plan = plan_assets(image_asset_request())[0]
+        first_request = ImageRequest(
+            plan, "Pixel Art", "Fantasy", "사이드뷰", "Platformer", 64, 64, "seed-a"
+        )
+        second_request = ImageRequest(
+            plan, "Pixel Art", "Fantasy", "사이드뷰", "Platformer", 64, 64, "seed-b"
+        )
+
+        self.assertEqual(generator.generate(first_request), generator.generate(first_request))
+        self.assertNotEqual(generator.generate(first_request), generator.generate(second_request))
+
 
 class ImageNodeTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -179,10 +190,12 @@ class ImageNodeTest(unittest.TestCase):
             self.assertEqual(
                 asset["artifact"]["relative_path"], f"generated/images/{asset['asset_id']}.png"
             )
-        self.assertIn(
-            f"{BINDING_NOTE_PREFIX}platformer_player=asset_registry:platformer_player",
-            draft["notes"],
+        self.assertEqual(
+            draft["assets"][0]["unity_binding_key"],
+            "asset_registry:platformer_player",
         )
+        self.assertEqual(draft["assets"][1]["kind"], "tileset")
+        self.assertEqual(draft["missing_required_asset_ids"], [])
 
         result = self._validate(state)
         self.assertEqual(result["status"], "passed", result["issues"])
@@ -192,7 +205,7 @@ class ImageNodeTest(unittest.TestCase):
         state = self._run(generator=FailingPlayerGenerator())
         draft = self.manager.read_json(state["image_draft"])
         self.assertEqual(draft["status"], "failed")
-        self.assertIn(f"{MISSING_REQUIRED_NOTE_PREFIX}platformer_player", draft["notes"])
+        self.assertEqual(draft["missing_required_asset_ids"], ["platformer_player"])
 
         result = self._validate(state)
         self.assertEqual(result["status"], "failed")

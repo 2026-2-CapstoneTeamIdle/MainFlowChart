@@ -57,6 +57,7 @@ def validate_sound_node(
     results: list[AssetQC] = []
     audio_by_id: dict[str, bytes] = {}
     processed: dict[str, str] = {}
+    selected = {}
     for asset in draft["assets"]:
         plan = plans.get(asset["asset_id"])
         if plan is None:
@@ -78,7 +79,21 @@ def validate_sound_node(
             required_by_id,
             placeholder=asset.get("provider") == "procedural",
         )
+        if asset["unity_binding_key"] != next(
+            item["unity_binding_key"]
+            for item in request["assets"]
+            if item["asset_id"] == plan.asset_id
+        ):
+            qc.decision = "REGENERATE"
+            qc.failed.append("sound-binding-key")
         results.append(qc)
+        selected[plan.asset_id] = {
+            "asset_id": plan.asset_id,
+            "asset_type": "sound",
+            "unity_binding_key": asset["unity_binding_key"],
+            "artifact": asset["artifact"],
+            "file_format": asset["file_format"],
+        }
         if qc.processed_wav is not None:
             reference = manager.write_bytes(
                 project_id,
@@ -89,6 +104,8 @@ def validate_sound_node(
                 media_type="audio/wav",
             )
             processed[plan.asset_id] = reference["relative_path"]
+            selected[plan.asset_id]["artifact"] = reference
+            selected[plan.asset_id]["file_format"] = "wav"
     mark_duplicates(results, audio_by_id, required_by_id)
 
     generated_ids = {qc.asset_id for qc in results}
@@ -144,13 +161,17 @@ def validate_sound_node(
                 "message": "실패: " + ", ".join(failing) if failing else "통과",
             }
         )
-
     result: SoundValidationResult = {
         "contract_version": CONTRACT_VERSION,
         "status": status,
         "checks": checks,
         "issues": issues,
         "validated_asset_ids": [qc.asset_id for qc in results if qc.decision in ("PASS", "FIX")],
+    }
+    result["validated_assets"] = {
+        "manifest_version": "1.0.0",
+        "contract_version": CONTRACT_VERSION,
+        "assets": [selected[asset_id] for asset_id in result["validated_asset_ids"]],
     }
     profile = {
         "contract_version": CONTRACT_VERSION,

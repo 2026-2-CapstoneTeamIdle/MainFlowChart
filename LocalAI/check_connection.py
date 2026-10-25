@@ -10,7 +10,7 @@ import urllib.request
 from typing import Any
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8080/v1"
-DEFAULT_MODEL = "gemma4-e2b-q4"
+DEFAULT_MODEL = "qwen2.5-coder-7b-q5-k-m"
 
 
 def _parse_args() -> argparse.Namespace:

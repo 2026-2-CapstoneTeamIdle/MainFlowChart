@@ -1,3 +1,19 @@
-# LocalAI integration v1.1.0 optional profile for GPUs with at least 24 GB VRAM.
-- url: https://raw.githubusercontent.com/mudler/LocalAI/v4.11.0/gallery/sglang-gemma-4-e4b-mtp.yaml
+# LocalAI integration v1.2.0: text-only E4B QAT Q4_0 for 12 GB GPUs.
+- url: https://raw.githubusercontent.com/mudler/LocalAI/v4.11.0/gallery/gemma.yaml
   name: gemma4-e4b
+  files:
+    - filename: gemma-4-E4B_q4_0-it.gguf
+      uri: huggingface://google/gemma-4-E4B-it-qat-q4_0-gguf/gemma-4-E4B_q4_0-it.gguf
+      sha256: 676c35070db6dbe52f93e9c864ee0fba4eddea94b9c875d9cb10daff453fbaee
+  overrides:
+    backend: llama-cpp
+    context_size: 8192
+    gpu_layers: 99
+    low_vram: true
+    function:
+      automatic_tool_parsing_fallback: true
+      grammar:
+        disable: true
+    parameters:
+      model: gemma-4-E4B_q4_0-it.gguf
+      temperature: 0.1

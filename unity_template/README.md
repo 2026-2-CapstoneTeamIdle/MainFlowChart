@@ -34,11 +34,30 @@
 ## 자동 생성 프로젝트
 
 `UnityProjectGenerator`는 이 템플릿을 `workspace/{project_id}/game/unity_project`로 복사하고
-`GameTemplateConfig.asset`, `GameLogicDesign.json`, `GenerationManifest.json`을 생성한다. 생성된
+`GameTemplateConfig.asset`, `GameLogicDesign.json`, `GameBlueprint.json`, `ImplementationTasks.json`,
+`GenerationManifest.json`을 생성한다. `ImplementationTasks.json`에는 설계 검토부터 Unity 검증과
+패키징까지의 의존성, 시도 횟수, 통과 증거가 기록된다. 또한
+`Assets/GameTemplate/Generated/Design`에 `game_design.json`, `system_design.json`, `content_plan.json`,
+`level_plan.json`, `balance_plan.json`, `presentation_plan.json`, `validation_plan.json`을 각각 저장한다. 생성된
 프로젝트에는 `GenerationRequest.json`이 포함되며, Unity에서 처음 열면
 `TemplateProjectBuilder`가 요청을 감지한다. 이어서 `PrefabSceneAssembler`가 선택된 모듈을
 Bootstrap 씬에 배치하고 장르별 Environment, Entities, UI 계층과 테스트용 prefab을 생성한다.
+플랫포머에서는 고정 좌표 배열 대신 `level_plan.json`의 구역·발판·함정·적·보상·체크포인트·목표를
+읽어 씬을 조립한다. 각 구역은 진행에 사용해야 하는 기능 ID도 포함하며, 배치 개수와 이동 가능 범위는
+Unity 배치 검증에서 다시 확인한다.
+`content_plan.json`과 `balance_plan.json`의 플레이어·적·함정·수집물 능력치는 생성된 컴포넌트에
+직접 적용된다. `presentation_plan.json`은 플랫포머 HUD, 피격 화면 플래시와 카메라 흔들림,
+수집·체크포인트·클리어 상태 메시지, 피드백 파티클을 구성하며 Play Mode 검증에서 런타임 바인딩까지
+확인한다.
+`validation_plan.json`의 `feature_binding`, `checkpoint_recovery`, `start_to_goal` 시나리오는 Play Mode에서
+자동 실행된다. 검증기는 필수 씬 오브젝트와 모듈 바인딩을 확인한 뒤 실제 Collider 트리거를 통해
+수집물 획득, 체크포인트 활성화, 함정 피해와 복귀, 목표 도달 및 클리어 상태 전환을 검사한다.
 이미지 Agent의 최종 에셋을 적용하기 전에는 자동 생성된 단색 placeholder sprite가 사용된다.
+검증된 에셋이 적용되면 `GeneratedAssetBinder`가 `AssetBindingManifest.json`을 읽어 Texture/Audio
+Importer 설정, AssetRegistry 등록, 장르별 씬 Sprite 및 AudioSource 연결을 수행한다. 타일셋 분할은
+Sprite Editor data provider가 프레임 생성 capability를 제공할 때만 실행하며, 제공하지 않는 Unity
+버전에서는 단일 Sprite로 안전하게 유지한다. 사운드의 요청 mixer group은 report에 기록하지만
+기존 AudioMixer 구성이 확인되지 않은 상태에서는 자동 생성하거나 임의로 라우팅하지 않는다.
 
 Play 모드의 왼쪽 테스트 HUD에서는 장르에 따라 이동·점프, 웨이브 시작, 카드 사용, 대화 진행,
 육성 행동, 경험치 및 강화 선택을 확인할 수 있다. 생성 결과와 prefab 목록은

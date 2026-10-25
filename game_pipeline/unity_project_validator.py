@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -12,8 +12,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Literal, cast
 
+from game_pipeline.design_v2 import validate_design_v2
 from mainflow.contracts import (
     CONTRACT_VERSION,
+    DesignV2Bundle,
     GameLogicDraft,
     ParsedRequest,
     ValidationCheckResult,
@@ -45,6 +47,15 @@ class UnityProjectValidator:
     REQUIRED_JSON_PATHS: ClassVar[dict[str, Path]] = {
         "design": Path("Assets/GameTemplate/Generated/GameLogicDesign.json"),
         "implementation_plan": Path("Assets/GameTemplate/Generated/GameImplementationPlan.json"),
+        "implementation_tasks": Path("Assets/GameTemplate/Generated/ImplementationTasks.json"),
+        "game_blueprint": Path("Assets/GameTemplate/Generated/GameBlueprint.json"),
+        "game_design": Path("Assets/GameTemplate/Generated/Design/game_design.json"),
+        "system_design": Path("Assets/GameTemplate/Generated/Design/system_design.json"),
+        "content_plan": Path("Assets/GameTemplate/Generated/Design/content_plan.json"),
+        "level_plan": Path("Assets/GameTemplate/Generated/Design/level_plan.json"),
+        "balance_plan": Path("Assets/GameTemplate/Generated/Design/balance_plan.json"),
+        "presentation_plan": Path("Assets/GameTemplate/Generated/Design/presentation_plan.json"),
+        "validation_plan": Path("Assets/GameTemplate/Generated/Design/validation_plan.json"),
         "manifest": Path("GenerationManifest.json"),
         "image_request": Path(
             "Assets/GameTemplate/Generated/AssetRequests/image_asset_request.json"
@@ -60,6 +71,11 @@ class UnityProjectValidator:
         "builder": Path("Assets/GameTemplate/Editor/TemplateProjectBuilder.cs"),
         "module_catalog": Path("Assets/GameTemplate/Editor/ModuleComponentCatalog.cs"),
         "scene_assembler": Path("Assets/GameTemplate/Editor/PrefabSceneAssembler.cs"),
+        "blueprint_loader": Path("Assets/GameTemplate/Editor/GameBlueprint.cs"),
+        "level_plan_loader": Path("Assets/GameTemplate/Editor/LevelPlan.cs"),
+        "gameplay_plan_loaders": Path("Assets/GameTemplate/Editor/GameplayPlans.cs"),
+        "presentation_assembler": Path("Assets/GameTemplate/Editor/PresentationSceneAssembler.cs"),
+        "asset_binder": Path("Assets/GameTemplate/Editor/GeneratedAssetBinder.cs"),
         "generated_feature_contract": Path(
             "Assets/GameTemplate/Runtime/Core/IGeneratedFeatureModule.cs"
         ),
@@ -69,6 +85,11 @@ class UnityProjectValidator:
         "UNITY_GENERATED_FEATURE_BINDINGS_OK",
         "UNITY_IMPLEMENTATION_PLAN_OK",
         "UNITY_SCENE_ASSEMBLY_OK",
+        "UNITY_GAME_BLUEPRINT_OK",
+        "UNITY_LEVEL_PLAN_OK",
+        "UNITY_GAMEPLAY_TUNING_OK",
+        "UNITY_PRESENTATION_PLAN_OK",
+        "UNITY_VALIDATION_PLAN_STATIC_OK",
         "UNITY_TEMPLATE_BUILD_OK",
     )
 
@@ -92,11 +113,17 @@ class UnityProjectValidator:
         project_root: str | Path,
         draft: GameLogicDraft,
         request: ParsedRequest,
+        *,
+        allow_failed_diagnostic: bool = False,
     ) -> UnityValidationOutcome:
         outcome = UnityValidationOutcome()
         root = Path(project_root).resolve()
 
-        self._check_draft(outcome, draft)
+        self._check_draft(
+            outcome,
+            draft,
+            allow_failed_diagnostic=allow_failed_diagnostic,
+        )
         payloads = self._check_project_structure(outcome, root, draft)
         self._check_contract_consistency(outcome, root, payloads, draft, request)
 
@@ -110,19 +137,33 @@ class UnityProjectValidator:
         self,
         outcome: UnityValidationOutcome,
         draft: GameLogicDraft,
+        *,
+        allow_failed_diagnostic: bool = False,
     ) -> None:
+        status_valid = draft.get("status") == "generated" or (
+            allow_failed_diagnostic
+            and draft.get("status") == "failed"
+            and bool(draft.get("entry_scene"))
+        )
         valid = (
             draft.get("contract_version") == CONTRACT_VERSION
-            and draft.get("status") == "generated"
+            and status_valid
             and draft.get("engine") == "Unity"
         )
+        if valid and draft.get("status") == "failed":
+            message = (
+                "Failed game draft has a diagnostic Unity project eligible for compilation and "
+                "Play Mode evidence collection"
+            )
+        elif valid:
+            message = "Game draft is generated for Unity"
+        else:
+            message = "Game draft must use the current contract and generated Unity status"
         self._add_check(
             outcome,
             "game.draft",
             valid,
-            "Game draft is generated for Unity"
-            if valid
-            else "Game draft must use the current contract and generated Unity status",
+            message,
             error_code="INVALID_GAME_DRAFT",
         )
 
@@ -200,6 +241,15 @@ class UnityProjectValidator:
         required_payloads = {
             "design",
             "implementation_plan",
+            "implementation_tasks",
+            "game_blueprint",
+            "game_design",
+            "system_design",
+            "content_plan",
+            "level_plan",
+            "balance_plan",
+            "presentation_plan",
+            "validation_plan",
             "manifest",
             "image_request",
             "sound_request",
@@ -212,6 +262,20 @@ class UnityProjectValidator:
         image_request = payloads["image_request"]
         sound_request = payloads["sound_request"]
         implementation_plan = payloads["implementation_plan"]
+        implementation_tasks = payloads["implementation_tasks"]
+        game_blueprint = payloads["game_blueprint"]
+        design_documents = {
+            key: payloads[key]
+            for key in (
+                "game_design",
+                "system_design",
+                "content_plan",
+                "level_plan",
+                "balance_plan",
+                "presentation_plan",
+                "validation_plan",
+            )
+        }
         game_spec = design.get("game_spec")
         if not isinstance(game_spec, dict):
             self._add_check(
@@ -263,6 +327,24 @@ class UnityProjectValidator:
         plan_valid, plan_message = self._validate_implementation_plan(
             design,
             implementation_plan,
+            manifest,
+        )
+        tasks_valid, tasks_message = self._validate_implementation_tasks(
+            implementation_tasks,
+            manifest,
+        )
+        blueprint_valid = (
+            design.get("game_blueprint") == game_blueprint
+            and manifest.get("game_blueprint") == "Assets/GameTemplate/Generated/GameBlueprint.json"
+            and game_blueprint.get("blueprint_version") == "1.0.0"
+            and isinstance(game_blueprint.get("entities"), list)
+            and len(game_blueprint["entities"]) >= 2
+            and isinstance(game_blueprint.get("content"), list)
+            and len(game_blueprint["content"]) >= 3
+        )
+        v2_valid, v2_message = self._validate_design_v2_documents(
+            design,
+            design_documents,
             manifest,
         )
 
@@ -323,12 +405,93 @@ class UnityProjectValidator:
         )
         self._add_check(
             outcome,
+            "game.implementation_tasks",
+            tasks_valid,
+            tasks_message,
+            error_code="GAME_IMPLEMENTATION_TASKS_INVALID",
+        )
+        self._add_check(
+            outcome,
+            "game.blueprint",
+            blueprint_valid,
+            "Game blueprint is complete and matches the generated design"
+            if blueprint_valid
+            else "Game blueprint is missing, incomplete, or inconsistent",
+            error_code="GAME_BLUEPRINT_INVALID",
+        )
+        self._add_check(
+            outcome,
+            "game.design_v2",
+            v2_valid,
+            v2_message,
+            error_code="GAME_DESIGN_V2_INVALID",
+        )
+        self._add_check(
+            outcome,
             "game.asset_ids",
             assets_valid,
             "Required image and sound asset IDs match generation requests"
             if assets_valid
             else "Game draft and asset-request IDs do not match",
             error_code="GAME_ASSET_ID_MISMATCH",
+        )
+
+    @staticmethod
+    def _validate_design_v2_documents(
+        design: dict[str, Any],
+        documents: dict[str, dict[str, Any]],
+        manifest: dict[str, Any],
+    ) -> tuple[bool, str]:
+        expected_paths = {
+            key: f"Assets/GameTemplate/Generated/Design/{key}.json" for key in documents
+        }
+        design_v2 = design.get("design_v2")
+        level = documents["level_plan"]
+        zones = level.get("zones")
+        route_valid = True
+        if level.get("genre") == "Platformer":
+            route_valid = (
+                isinstance(zones, list)
+                and len(zones) >= 3
+                and {zone.get("purpose") for zone in zones if isinstance(zone, dict)}
+                == {"tutorial", "challenge", "mastery"}
+                and all(
+                    isinstance(platform, dict)
+                    and platform.get("width", 0) >= level.get("minimum_landing_width", 999)
+                    for zone in zones
+                    if isinstance(zone, dict)
+                    for platform in zone.get("platforms", [])
+                )
+            )
+        contract_valid = True
+        try:
+            validate_design_v2(cast(DesignV2Bundle, documents))
+        except (KeyError, TypeError, ValueError):
+            contract_valid = False
+        valid = (
+            isinstance(design_v2, dict)
+            and all(design_v2.get(key) == value for key, value in documents.items())
+            and manifest.get("design_documents") == expected_paths
+            and documents["game_design"].get("design_version") == "2.0.0"
+            and documents["system_design"].get("design_version") == "2.0.0"
+            and all(
+                documents[key].get("plan_version") == "2.0.0"
+                for key in (
+                    "content_plan",
+                    "level_plan",
+                    "balance_plan",
+                    "presentation_plan",
+                    "validation_plan",
+                )
+            )
+            and route_valid
+            and contract_valid
+        )
+        return (
+            valid,
+            "Seven design v2 documents are consistent and the level route is structurally safe"
+            if valid
+            else "Design v2 documents are missing, inconsistent, or contain an unsafe level route",
         )
 
     @staticmethod
@@ -367,6 +530,40 @@ class UnityProjectValidator:
         if valid:
             return True, "Advanced implementation plan has systems, content, UI, and scenarios"
         return False, "Implementation plan is missing complexity or validation detail"
+
+    @staticmethod
+    def _validate_implementation_tasks(
+        plan: dict[str, Any],
+        manifest: dict[str, Any],
+    ) -> tuple[bool, str]:
+        tasks = plan.get("tasks")
+        if (
+            plan.get("plan_version") != "1.0.0"
+            or manifest.get("implementation_tasks")
+            != "Assets/GameTemplate/Generated/ImplementationTasks.json"
+            or not isinstance(plan.get("time_budget_seconds"), int)
+            or not isinstance(tasks, list)
+            or len(tasks) < 5
+        ):
+            return False, "Implementation task plan is missing or incomplete"
+        task_ids = {task.get("task_id") for task in tasks if isinstance(task, dict)}
+        valid_statuses = {"pending", "running", "passed", "failed"}
+        valid = len(task_ids) == len(tasks) and all(
+            isinstance(task, dict)
+            and task.get("status") in valid_statuses
+            and isinstance(task.get("attempts"), int)
+            and isinstance(task.get("max_attempts"), int)
+            and 0 <= task["attempts"] <= task["max_attempts"]
+            and isinstance(task.get("dependencies"), list)
+            and set(task["dependencies"]).issubset(task_ids)
+            and bool(task.get("acceptance_criteria"))
+            for task in tasks
+        )
+        return (
+            (True, "Implementation task DAG is bounded and internally consistent")
+            if valid
+            else (False, "Implementation task DAG contains invalid state or dependencies")
+        )
 
     def _run_unity_validation(self, outcome: UnityValidationOutcome, root: Path) -> None:
         if self.mode == "static":
@@ -479,6 +676,10 @@ class UnityProjectValidator:
         detail = f"exit={completed.returncode}"
         if missing_markers:
             detail += ", missing=" + ",".join(missing_markers)
+        if not passed:
+            diagnostics = self._summarize_unity_failure(outcome.unity_log)
+            if diagnostics:
+                detail += "; diagnostics=" + " | ".join(diagnostics)
         self._add_check(
             outcome,
             "unity.batchmode",
@@ -486,6 +687,97 @@ class UnityProjectValidator:
             "Unity compilation and scene assembly succeeded" if passed else detail,
             error_code="UNITY_BATCH_VALIDATION_FAILED",
         )
+        if passed and os.environ.get("MAINFLOW_UNITY_RUNTIME_TESTS", "1") == "1":
+            self._run_runtime_tests(outcome, root, editor)
+
+    @staticmethod
+    def _summarize_unity_failure(log: str) -> list[str]:
+        """Expose actionable compiler/runtime failures instead of marker noise alone."""
+
+        tokens = (
+            "error CS",
+            "ArgumentException:",
+            "NullReferenceException:",
+            "MissingReferenceException:",
+            "Unhandled Exception",
+            "Scripts have compiler errors",
+        )
+        diagnostics: list[str] = []
+        seen: set[str] = set()
+        for line in log.splitlines():
+            normalized = line.strip()
+            if not normalized or not any(token in normalized for token in tokens):
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            diagnostics.append(normalized[:800])
+            if len(diagnostics) == 3:
+                break
+        return diagnostics
+
+    def _run_runtime_tests(self, outcome: UnityValidationOutcome, root: Path, editor: Path) -> None:
+        """A separate Play Mode process; no -quit until the host-owned test exits."""
+        temporary = Path(tempfile.mkdtemp(prefix="mainflow-playtest-"))
+        log_path = temporary / "playtest.log"
+        try:
+            try:
+                completed = subprocess.run(
+                    [
+                        str(editor),
+                        "-batchmode",
+                        "-nographics",
+                        "-projectPath",
+                        str(root),
+                        "-executeMethod",
+                        "TeamIdle.GameTemplate.Editor.RuntimeSmokeValidator.RunForBatch",
+                        "-logFile",
+                        str(log_path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=self.timeout_seconds,
+                    check=False,
+                )
+                log = (
+                    log_path.read_text(encoding="utf-8", errors="replace")
+                    if log_path.exists()
+                    else ""
+                )
+                log += (completed.stdout or "") + (completed.stderr or "")
+                outcome.unity_log += "\n--- PLAY MODE ---\n" + log
+                passed = (
+                    completed.returncode == 0
+                    and "UNITY_RUNTIME_SMOKE_OK:" in log
+                    and "UNITY_VALIDATION_PLAN_OK:" in log
+                )
+                self._add_check(
+                    outcome,
+                    "unity.runtime_smoke",
+                    passed,
+                    "Play Mode smoke tests passed"
+                    if passed
+                    else "Play Mode smoke tests failed; inspect log",
+                    error_code="UNITY_RUNTIME_TEST_FAILED",
+                )
+            except (subprocess.TimeoutExpired, OSError) as error:
+                if log_path.exists():
+                    outcome.unity_log += "\n" + log_path.read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                self._add_check(
+                    outcome,
+                    "unity.runtime_smoke",
+                    False,
+                    str(error),
+                    error_code="UNITY_RUNTIME_EXECUTION_FAILED",
+                )
+        finally:
+            # Unity may release its Windows log handle shortly after the process exits.
+            # A best-effort cleanup must never overwrite the actual Play Mode result.
+            shutil.rmtree(temporary, ignore_errors=True)
 
     @staticmethod
     def find_unity_editor(required_version: str | None = None) -> Path | None:

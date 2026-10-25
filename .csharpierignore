@@ -5,6 +5,10 @@
 **/UserSettings/**
 **/obj/**
 **/bin/**
+workspace/**
+
+# Vendored Unity skill examples are reference material, not repository source.
+.agents/**
 
 # This repository standardizes C# only; do not rewrite XML project files.
 **/*.xml

@@ -20,7 +20,7 @@
   ],
   "properties": {
     "contract_version": {
-      "const": "3.1.0"
+      "const": "3.4.0"
     },
     "request_id": {
       "type": "string",
@@ -120,7 +120,7 @@
       ],
       "properties": {
         "contract_version": {
-          "const": "3.1.0"
+          "const": "3.4.0"
         },
         "artifact_id": {
           "type": "string",
@@ -169,7 +169,8 @@
         "description",
         "required",
         "suggested_filename",
-        "unity_binding_key"
+        "unity_binding_key",
+        "generation_spec"
       ],
       "properties": {
         "asset_id": {
@@ -200,7 +201,48 @@
         "unity_binding_key": {
           "type": "string",
           "pattern": "^asset_registry:[a-z][a-z0-9_]*$"
+        },
+        "generation_spec": {
+          "oneOf": [
+            { "$ref": "#/$defs/imageGenerationSpec" },
+            { "$ref": "#/$defs/soundGenerationSpec" }
+          ]
         }
+      }
+    },
+    "imageGenerationSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "width", "height", "transparent", "sprite_mode", "pixels_per_unit"],
+      "properties": {
+        "kind": { "enum": ["sprite", "portrait", "ui", "tileset", "illustration", "background"] },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "transparent": { "type": "boolean" },
+        "sprite_mode": { "enum": ["single", "multiple"] },
+        "pixels_per_unit": { "type": "integer", "minimum": 1 },
+        "tile_width": { "type": "integer", "minimum": 1 },
+        "tile_height": { "type": "integer", "minimum": 1 },
+        "columns": { "type": "integer", "minimum": 1 },
+        "rows": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "soundGenerationSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind", "target_duration_seconds", "loop", "channels", "sample_rate_hz",
+        "unity_load_type", "mixer_group", "spatial_blend"
+      ],
+      "properties": {
+        "kind": { "enum": ["bgm", "sfx", "ui", "voice", "ambience"] },
+        "target_duration_seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "loop": { "type": "boolean" },
+        "channels": { "enum": ["mono", "stereo"] },
+        "sample_rate_hz": { "type": "integer", "minimum": 8000 },
+        "unity_load_type": { "enum": ["decompress_on_load", "compressed_in_memory", "streaming"] },
+        "mixer_group": { "type": "string", "minLength": 1 },
+        "spatial_blend": { "type": "number", "minimum": 0, "maximum": 1 }
       }
     }
   }

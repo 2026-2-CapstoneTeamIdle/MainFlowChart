@@ -26,6 +26,7 @@ from tests.mock_nodes import (
     mock_asset_validation_spec_node,
     mock_design_game_logic_node,
     mock_final_validation_node,
+    mock_game_quality_validator_node,
     mock_generate_image_node,
     mock_generate_sound_node,
     mock_logic_analysis_node,
@@ -94,7 +95,13 @@ NODE_IO: dict[str, tuple[set[str], set[str]]] = {
         {"asset_validation_spec"},
     ),
     "validate_image": (
-        {"project_id", "parsed_request", "image_draft", "asset_validation_spec"},
+        {
+            "project_id",
+            "parsed_request",
+            "image_asset_request",
+            "image_draft",
+            "asset_validation_spec",
+        },
         {"image_validation_result"},
     ),
     "validate_sound": (
@@ -111,6 +118,8 @@ NODE_IO: dict[str, tuple[set[str], set[str]]] = {
         {
             "project_id",
             "game_logic_draft",
+            "image_asset_request",
+            "sound_asset_request",
             "image_draft",
             "sound_draft",
             "image_validation_result",
@@ -119,8 +128,31 @@ NODE_IO: dict[str, tuple[set[str], set[str]]] = {
         {"integrated_game"},
     ),
     "final_validation": (
-        {"project_id", "logic_analysis", "integrated_game"},
+        {
+            "project_id",
+            "logic_analysis",
+            "integrated_game",
+            "parsed_request",
+            "game_logic_draft",
+            "game_validation_result",
+            "image_validation_result",
+            "sound_validation_result",
+        },
         {"final_validation_result"},
+    ),
+    "game_quality_validator": (
+        {
+            "project_id",
+            "parsed_request",
+            "logic_analysis",
+            "game_logic_draft",
+            "game_validation_result",
+            "image_validation_result",
+            "sound_validation_result",
+            "integrated_game",
+            "final_validation_result",
+        },
+        {"game_validator_ai_result"},
     ),
 }
 
@@ -277,6 +309,9 @@ def run_mock_graph(runtime: MockRuntime) -> tuple[dict[str, Any], dict[str, Any]
 
     state.update(execute("apply_assets_to_game", mock_apply_assets_node, dict(state)).output)
     state.update(execute("final_validation", mock_final_validation_node, dict(state)).output)
+    state.update(
+        execute("game_quality_validator", mock_game_quality_validator_node, dict(state)).output
+    )
 
     workflow_wall_ms = (perf_counter_ns() - flow_started_ns) / 1_000_000
     sequential_sum_ms = sum(item.elapsed_ms for item in measurements.values())
@@ -351,6 +386,10 @@ def build_mock_langgraph(runtime: MockRuntime):
         "final_validation",
         lambda state: mock_final_validation_node(state, runtime),
     )
+    graph.add_node(
+        "game_quality_validator",
+        lambda state: mock_game_quality_validator_node(state, runtime),
+    )
 
     graph.add_edge(START, "user_input")
     graph.add_edge("user_input", "parse_input")
@@ -374,7 +413,8 @@ def build_mock_langgraph(runtime: MockRuntime):
         "apply_assets_to_game",
     )
     graph.add_edge("apply_assets_to_game", "final_validation")
-    graph.add_edge("final_validation", END)
+    graph.add_edge("final_validation", "game_quality_validator")
+    graph.add_edge("game_quality_validator", END)
     return graph.compile()
 
 
@@ -397,6 +437,8 @@ class MockGraphTest(unittest.TestCase):
             )
             final_result = manager.read_json(final_reference)
             self.assertEqual(final_result["status"], "passed")
+            ai_result = manager.read_json(final_state["game_validator_ai_result"])
+            self.assertEqual(ai_result["status"], "passed")
             self.assertEqual(
                 len(manager.list_artifacts(final_state["project_id"])),
                 request_fixture["expected"]["artifact_count"],

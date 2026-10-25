@@ -7,7 +7,6 @@ from pathlib import Path
 
 from mainflow.contracts import CONTRACT_VERSION
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_ROOT = REPOSITORY_ROOT / "unity_template"
 
@@ -37,9 +36,29 @@ class UnityTemplateTest(unittest.TestCase):
             "Assets/GameTemplate/Editor/TemplateProjectBuilder.cs",
             "Assets/GameTemplate/Editor/ModuleComponentCatalog.cs",
             "Assets/GameTemplate/Editor/PrefabSceneAssembler.cs",
+            "Assets/GameTemplate/Editor/GameBlueprint.cs",
+            "Assets/GameTemplate/Editor/LevelPlan.cs",
+            "Assets/GameTemplate/Editor/GameplayPlans.cs",
+            "Assets/GameTemplate/Editor/PresentationSceneAssembler.cs",
+            "Assets/GameTemplate/Editor/GeneratedAssetBinder.cs",
             "Assets/GameTemplate/Editor/GameImplementationPlan.cs",
             "Assets/GameTemplate/Runtime/Prototype/PrototypeSceneController.cs",
             "Assets/GameTemplate/Runtime/Prototype/PlatformerPrototypeActors.cs",
+            "Assets/GameTemplate/Runtime/Prototype/PrototypePlatformerStageController.cs",
+            "Assets/GameTemplate/Runtime/Prototype/PrototypePresentationController.cs",
+            "Assets/GameTemplate/Runtime/Prototype/PrototypeCheckpoint.cs",
+            "Assets/GameTemplate/Runtime/Prototype/PrototypeCollectible.cs",
+            "Assets/GameTemplate/Runtime/Prototype/PrototypeGoal.cs",
+            "Assets/GameTemplate/Runtime/Prototype/PrototypeHazard.cs",
+            "Assets/GameTemplate/Runtime/Prototype/PrototypeExperienceReward.cs",
+            "Assets/GameTemplate/Runtime/Prototype/PrototypeTowerEndpoint.cs",
+            "Assets/GameTemplate/Runtime/Common/Projectile2D.cs",
+            "Assets/GameTemplate/Runtime/Common/ProjectileSystemModule.cs",
+            "Assets/GameTemplate/Runtime/SurvivorLike/ChaseAgent2D.cs",
+            "Assets/GameTemplate/Runtime/Platformer/CollectibleSystemModule.cs",
+            "Assets/GameTemplate/Runtime/Platformer/GoalSystemModule.cs",
+            "Assets/GameTemplate/Runtime/Platformer/WallClimbModule.cs",
+            "Assets/GameTemplate/Runtime/Platformer/AirDashModule.cs",
             "Assets/GameTemplate/Generated/GameTemplateConfig.asset",
             "Assets/Scenes/Bootstrap.unity",
         ]
@@ -55,14 +74,85 @@ class UnityTemplateTest(unittest.TestCase):
         assembler = (
             TEMPLATE_ROOT / "Assets/GameTemplate/Editor/PrefabSceneAssembler.cs"
         ).read_text(encoding="utf-8")
+        asset_binder = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Editor/GeneratedAssetBinder.cs"
+        ).read_text(encoding="utf-8")
+        runtime_smoke = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Editor/RuntimeSmokeValidator.cs"
+        ).read_text(encoding="utf-8")
+        level_plan = (TEMPLATE_ROOT / "Assets/GameTemplate/Editor/LevelPlan.cs").read_text(
+            encoding="utf-8"
+        )
+        camera_follow = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Runtime/Prototype/PlatformerPrototypeActors.cs"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("PrefabSceneAssembler.Assemble", builder)
+        self.assertIn("GeneratedAssetBinder.ImportAndConfigureAssets", builder)
+        self.assertIn("GeneratedAssetBinder.BindSceneAssets", builder)
+        self.assertIn("ISpriteEditorDataProvider", asset_binder)
+        self.assertIn("ISpriteNameFileIdDataProvider", asset_binder)
+        self.assertIn("CreateAndDeleteSprite", asset_binder)
+        self.assertNotIn(".meta", asset_binder)
+        self.assertNotIn("AudioMixerController", asset_binder)
+        self.assertIn('failureDetail = "runtime.exception: " + message', runtime_smoke)
+        self.assertNotIn("runtime.exception: inspect Unity log", runtime_smoke)
         self.assertIn("ValidateCurrentSceneForBatch", builder)
         self.assertIn("ModuleComponentCatalog.ValidateForBatch", builder)
         self.assertIn("AttachGeneratedFeatureBinder", assembler)
         self.assertIn("IGeneratedFeatureModule", assembler)
         self.assertIn("GameImplementationPlan.Load()", assembler)
+        self.assertIn("GameBlueprint.Load()", assembler)
+        self.assertIn("LevelPlan.Load()", assembler)
+        self.assertIn("ContentPlan.Load()", assembler)
+        self.assertIn("BalancePlan.Load()", assembler)
+        self.assertIn("PresentationPlan.Load()", assembler)
+        self.assertIn("context.Level", assembler)
+        self.assertIn("Zone_", assembler)
+        self.assertIn("UNITY_LEVEL_PLAN_OK", assembler)
+        self.assertIn("UNITY_GAMEPLAY_TUNING_OK", assembler)
+        self.assertIn("UNITY_PRESENTATION_PLAN_OK", assembler)
+        self.assertIn("UNITY_VALIDATION_PLAN_STATIC_OK", assembler)
+        self.assertIn("ValidationPlan.Load()", assembler)
+        self.assertIn("UNITY_VALIDATION_PLAN_OK", runtime_smoke)
+        self.assertIn("UNITY_VALIDATION_SCENARIO_OK", runtime_smoke)
+        self.assertIn("TickTowerDefenseScenario", runtime_smoke)
+        self.assertIn("runtime.tower_spawn", runtime_smoke)
+        self.assertIn("TickSurvivorLikeScenario", runtime_smoke)
+        self.assertIn("runtime.survivor_chase", runtime_smoke)
+        self.assertIn("routeTimeoutSeconds", runtime_smoke)
+        self.assertIn("routeDistance / 3f + 10f", runtime_smoke)
+        self.assertIn("runtime.route_no_progress", runtime_smoke)
+        self.assertIn("enemy.transform.position.x - enemy.Range", runtime_smoke)
+        self.assertIn("collectibles[collectibleIndex] == null", runtime_smoke)
+        self.assertIn("PresentationSceneAssembler.AssemblePlatformer", assembler)
+        self.assertIn("ApplyBlueprintEntities", assembler)
+        self.assertIn("PlatformerRoutePosition", assembler)
+        self.assertIn("PlatformerLandingWidth", assembler)
+        self.assertIn("ResolvePlatformerSpawn", assembler)
+        self.assertIn("ResolvePlatformerGoal", assembler)
+        self.assertIn("requiredCollectibleScore += rewardAmount", assembler)
+        self.assertIn("StageGoal overlaps collectible", assembler)
+        self.assertIn("Collectible item target mismatch", assembler)
+        self.assertIn("Collectible score target mismatch", assembler)
+        self.assertIn("cameraFollow.ConfigureBounds", assembler)
+        self.assertIn("Platformer camera bounds do not cover the route", assembler)
+        self.assertIn("public void ConfigureBounds", camera_follow)
+        self.assertIn("public Transform Target => target", camera_follow)
+        self.assertIn("ValidatePlatformerTraversal", assembler)
+        self.assertIn("UNITY_PLATFORMER_TRAVERSAL_OK", assembler)
+        self.assertIn("PlatformerMinimumLandingWidth", assembler)
+        self.assertIn("levelPlan.player_spawn", assembler)
+        self.assertIn("string.IsNullOrWhiteSpace(zone.checkpoint.placement_id)", level_plan)
+        self.assertIn("foreach (var zone in levelPlan.zones)", assembler)
+        self.assertIn("platformPlan.width", assembler)
+        self.assertIn("BlueprintNoise", assembler)
+        self.assertIn("ConfigureUpgradePool(", assembler)
+        self.assertIn("cameraFollow.Bind(player.transform)", assembler)
+        self.assertIn("Generated prefab did not preserve", assembler)
+        self.assertIn("context.Blueprint", assembler)
         self.assertIn("UNITY_IMPLEMENTATION_PLAN_OK", assembler)
+        self.assertIn("UNITY_GAME_BLUEPRINT_OK", assembler)
         for genre in (
             "Platformer",
             "TowerDefense",
@@ -87,6 +177,74 @@ class UnityTemplateTest(unittest.TestCase):
         fixed_update = movement.split("private void FixedUpdate()", maxsplit=1)[1]
         self.assertNotIn("input.ConfirmPressed", fixed_update)
 
+    def test_persistent_platformer_behaviours_use_matching_script_filenames(self) -> None:
+        platformer_root = TEMPLATE_ROOT / "Assets/GameTemplate/Runtime/Platformer"
+        for class_name in (
+            "CollectibleSystemModule",
+            "GoalSystemModule",
+            "WallClimbModule",
+            "AirDashModule",
+        ):
+            with self.subTest(class_name=class_name):
+                source_path = platformer_root / f"{class_name}.cs"
+                self.assertTrue(source_path.is_file())
+                self.assertIn(
+                    f"public sealed class {class_name}",
+                    source_path.read_text(encoding="utf-8"),
+                )
+
+    def test_prefab_behaviours_use_dedicated_script_files(self) -> None:
+        expected = {
+            "Common/AssetRegistryModule.cs": "AssetRegistryModule",
+            "Common/AudioManagerModule.cs": "AudioManagerModule",
+            "Common/EconomySystemModule.cs": "EconomySystemModule",
+            "Common/EventRuleEngineModule.cs": "EventRuleEngineModule",
+            "Common/GameStateStoreModule.cs": "GameStateStoreModule",
+            "Common/HealthComponent.cs": "HealthComponent",
+            "Common/HealthDamageSystemModule.cs": "HealthDamageSystemModule",
+            "Common/InputAdapterModule.cs": "InputAdapterModule",
+            "Common/Projectile2D.cs": "Projectile2D",
+            "Common/ProjectileSystemModule.cs": "ProjectileSystemModule",
+            "Common/SaveSystemModule.cs": "SaveSystemModule",
+            "Common/SceneFlowManagerModule.cs": "SceneFlowManagerModule",
+            "Common/UiRouterModule.cs": "UiRouterModule",
+            "SurvivorLike/ChaseAgent2D.cs": "ChaseAgent2D",
+            "SurvivorLike/AutoTargetSystemModule.cs": "AutoTargetSystemModule",
+            "SurvivorLike/EnemySpawnSystemModule.cs": "EnemySpawnSystemModule",
+            "SurvivorLike/ExperienceSystemModule.cs": "ExperienceSystemModule",
+            "SurvivorLike/RaritySystemModule.cs": "RaritySystemModule",
+            "SurvivorLike/TopDownMovementModule.cs": "TopDownMovementModule",
+            "SurvivorLike/UpgradeSelectionSystemModule.cs": "UpgradeSelectionSystemModule",
+            "TowerDefense/BaseDefenseSystemModule.cs": "BaseDefenseSystemModule",
+            "TowerDefense/PathFollower2D.cs": "PathFollower2D",
+            "TowerDefense/TowerTargetingSystemModule.cs": "TowerTargetingSystemModule",
+            "TowerDefense/WaveSpawnerModule.cs": "WaveSpawnerModule",
+            "Prototype/PrototypeExperienceReward.cs": "PrototypeExperienceReward",
+            "Prototype/PrototypeTowerEndpoint.cs": "PrototypeTowerEndpoint",
+            "Prototype/PrototypeWingUpgradeApplier.cs": "PrototypeWingUpgradeApplier",
+        }
+        runtime_root = TEMPLATE_ROOT / "Assets/GameTemplate/Runtime"
+        for relative_path, class_name in expected.items():
+            with self.subTest(class_name=class_name):
+                source_path = runtime_root / relative_path
+                self.assertTrue(source_path.is_file())
+                self.assertIn(
+                    f"public sealed class {class_name}",
+                    source_path.read_text(encoding="utf-8"),
+                )
+
+    def test_template_meta_guids_are_unique(self) -> None:
+        owners: dict[str, Path] = {}
+        for meta_path in (TEMPLATE_ROOT / "Assets").rglob("*.meta"):
+            match = re.search(
+                r"(?m)^guid: ([0-9a-f]{32})$",
+                meta_path.read_text(encoding="utf-8"),
+            )
+            self.assertIsNotNone(match, str(meta_path))
+            guid = match.group(1)
+            self.assertNotIn(guid, owners, f"{meta_path} duplicates {owners.get(guid)}")
+            owners[guid] = meta_path
+
     def test_manifest_contains_required_2d_dependencies(self) -> None:
         manifest = json.loads(
             (TEMPLATE_ROOT / "Packages" / "manifest.json").read_text(encoding="utf-8")
@@ -96,6 +254,8 @@ class UnityTemplateTest(unittest.TestCase):
         self.assertIn("com.unity.2d.sprite", dependencies)
         self.assertIn("com.unity.2d.tilemap", dependencies)
         self.assertIn("com.unity.modules.physics2d", dependencies)
+        self.assertIn("com.unity.modules.particlesystem", dependencies)
+        self.assertIn("com.unity.ugui", dependencies)
 
     def test_bootstrap_scene_references_config_and_runtime_scripts(self) -> None:
         scene = (TEMPLATE_ROOT / "Assets" / "Scenes" / "Bootstrap.unity").read_text(

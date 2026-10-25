@@ -17,6 +17,12 @@ namespace TeamIdle.GameTemplate.Editor
 {
     public static class PrefabSceneAssembler
     {
+        private const float PlatformerPlayerWidth = 0.8f;
+        private const float PlatformerPlayerHeight = 1.2f;
+        private const float PlatformerMinimumLandingWidth = 2.4f;
+        private const float PlatformerMaximumHorizontalGap = 1.35f;
+        private const float PlatformerMaximumStepUp = 1.15f;
+
         public const string GeneratedPrefabRoot = "Assets/GameTemplate/Generated/Prefabs";
         public const string GeneratedVisualRoot =
             "Assets/GameTemplate/Generated/PlaceholderVisuals";
@@ -36,6 +42,11 @@ namespace TeamIdle.GameTemplate.Editor
         {
             public GameTemplateConfig Config;
             public GameImplementationPlan Plan;
+            public GameBlueprint Blueprint;
+            public LevelPlan Level;
+            public ContentPlan Content;
+            public BalancePlan Balance;
+            public PresentationPlan Presentation;
             public Transform Modules;
             public Transform Environment;
             public Transform Entities;
@@ -84,6 +95,11 @@ namespace TeamIdle.GameTemplate.Editor
             {
                 Config = config,
                 Plan = GameImplementationPlan.Load(),
+                Blueprint = GameBlueprint.Load(),
+                Level = LevelPlan.Load(),
+                Content = ContentPlan.Load(),
+                Balance = BalancePlan.Load(),
+                Presentation = PresentationPlan.Load(),
                 Modules = moduleRoot,
                 Environment = environment,
                 Entities = entities,
@@ -92,7 +108,12 @@ namespace TeamIdle.GameTemplate.Editor
                 Report = report,
             };
 
-            CreateBackground(context, new Color(0.055f, 0.065f, 0.09f, 1f));
+            context.Blueprint.ApplyContentTo(context.Plan);
+
+            CreateBackground(
+                context,
+                context.Blueprint.BackgroundColor(new Color(0.055f, 0.065f, 0.09f, 1f))
+            );
             switch (config.Genre)
             {
                 case "Platformer":
@@ -118,6 +139,7 @@ namespace TeamIdle.GameTemplate.Editor
                     break;
             }
 
+            ApplyBlueprintEntities(context);
             AttachGeneratedFeatureBinder(context, generatedRoot.gameObject);
             report.sceneObjectCount = generatedRoot.GetComponentsInChildren<Transform>(true).Length;
             File.WriteAllText(ReportPath, JsonUtility.ToJson(report, true));
@@ -142,6 +164,13 @@ namespace TeamIdle.GameTemplate.Editor
             var featureBinder = generatedRoot.GetComponent<GeneratedFeatureBinder>();
             RequireObject(featureBinder, "GeneratedFeatureBinder");
             var implementationPlan = GameImplementationPlan.Load();
+            var blueprint = GameBlueprint.Load();
+            var levelPlan = LevelPlan.Load();
+            var contentPlan = ContentPlan.Load();
+            var balancePlan = BalancePlan.Load();
+            var presentationPlan = PresentationPlan.Load();
+            var validationPlan = ValidationPlan.Load();
+            blueprint.ApplyContentTo(implementationPlan);
             if (implementationPlan.playtest_scenarios.Count < 3)
             {
                 throw new InvalidOperationException(
@@ -201,6 +230,34 @@ namespace TeamIdle.GameTemplate.Editor
                 RequireObject(FindChildByName(generatedRoot.transform, name), name);
             }
 
+            if (config.Genre == "Platformer")
+            {
+                foreach (var name in validationPlan.required_scene_objects)
+                {
+                    RequireObject(FindChildByName(generatedRoot.transform, name), name);
+                }
+                ValidateRequiredFeatureBindings(config, validationPlan);
+                ValidatePlatformerTraversal(
+                    generatedRoot.transform,
+                    levelPlan,
+                    contentPlan,
+                    balancePlan
+                );
+                var presentation =
+                    generatedRoot.GetComponentInChildren<PrototypePresentationController>(true);
+                RequireObject(presentation, "PrototypePresentationController");
+                if (!presentation.IsBound)
+                {
+                    throw new InvalidOperationException(
+                        "Platformer presentation controller is not fully bound."
+                    );
+                }
+                RequireObject(
+                    FindChildByName(generatedRoot.transform, "PresentationCanvas"),
+                    "HUD"
+                );
+            }
+
             if (!File.Exists(ReportPath))
             {
                 throw new InvalidOperationException(
@@ -214,6 +271,123 @@ namespace TeamIdle.GameTemplate.Editor
                     + implementationPlan.playtest_scenarios.Count
             );
             Debug.Log($"UNITY_SCENE_ASSEMBLY_OK:{config.Genre}:{names.Length}");
+            Debug.Log(
+                $"UNITY_GAME_BLUEPRINT_OK:{blueprint.blueprint_id}:{blueprint.entities.Count}"
+            );
+            Debug.Log($"UNITY_LEVEL_PLAN_OK:{levelPlan.genre}:{levelPlan.zones.Count}");
+            Debug.Log(
+                $"UNITY_GAMEPLAY_TUNING_OK:{contentPlan.plan_version}:{balancePlan.plan_version}"
+            );
+            Debug.Log(
+                $"UNITY_PRESENTATION_PLAN_OK:{presentationPlan.plan_version}:"
+                    + presentationPlan.feedback_cues.Count
+            );
+            Debug.Log(
+                $"UNITY_VALIDATION_PLAN_STATIC_OK:{validationPlan.plan_version}:"
+                    + validationPlan.scenarios.Count
+            );
+        }
+
+        private static void ValidateRequiredFeatureBindings(
+            GameTemplateConfig config,
+            ValidationPlan validationPlan
+        )
+        {
+            var aliases = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["collectible"] = "collectible_system",
+                ["goal"] = "goal_system",
+                ["health_damage"] = "health_damage_system",
+                ["wave_spawn"] = "wave_spawner",
+                ["tower_targeting"] = "tower_targeting_system",
+                ["base_defense"] = "base_defense_system",
+                ["deck"] = "deck_system",
+                ["turn"] = "turn_system",
+                ["card_resource"] = "card_resource_system",
+                ["card_effect"] = "card_effect_system",
+                ["dialogue"] = "dialogue_runner",
+                ["choice"] = "choice_branch_system",
+                ["branching"] = "choice_branch_system",
+                ["flags"] = "flag_system",
+                ["multiple_endings"] = "ending_resolver",
+                ["raising_endings"] = "raising_ending_resolver",
+                ["stats"] = "stat_system",
+                ["experience"] = "experience_system",
+                ["upgrade_selection"] = "upgrade_selection_system",
+                ["rarity"] = "rarity_system",
+                ["schedule"] = "schedule_system",
+                ["enemy_spawn"] = "enemy_spawn_system",
+                ["chase_ai"] = "enemy_spawn_system",
+                ["auto_target"] = "auto_target_system",
+                ["projectile"] = "projectile_system",
+                ["economy"] = "economy_system",
+                ["time_turn"] = "time_turn_system",
+                ["activity"] = "activity_system",
+            };
+            var selected = new HashSet<string>(config.SelectedModules, StringComparer.Ordinal);
+            foreach (var binding in validationPlan.required_feature_bindings)
+            {
+                var moduleId = aliases.TryGetValue(binding, out var alias) ? alias : binding;
+                if (!selected.Contains(moduleId))
+                {
+                    throw new InvalidOperationException(
+                        $"Validation feature binding is not selected: {binding} -> {moduleId}"
+                    );
+                }
+            }
+        }
+
+        private static void ApplyBlueprintEntities(AssemblyContext context)
+        {
+            foreach (var entity in context.Blueprint.entities)
+            {
+                if (string.IsNullOrWhiteSpace(entity.entity_id))
+                {
+                    continue;
+                }
+
+                if (entity.archetype == "player_anchor")
+                {
+                    var player = FindChildByName(context.Entities, "Player");
+                    if (player != null && context.Config.Genre != "Platformer")
+                    {
+                        player.position = new Vector2(entity.position_x, entity.position_y);
+                    }
+                    continue;
+                }
+
+                // Platformer gameplay geometry is authored by LevelPlan. Rendering blueprint
+                // feature/objective markers on top of it produced unrelated colored blocks and
+                // made different requests look like the same sample scene with extra noise.
+                if (
+                    context.Config.Genre == "Platformer"
+                    && (entity.archetype == "feature_marker" || entity.archetype == "objective")
+                )
+                {
+                    continue;
+                }
+
+                var color = ColorUtility.TryParseHtmlString(entity.color_hex, out var parsedColor)
+                    ? parsedColor
+                    : Color.white;
+                var parent =
+                    entity.archetype == "landmark" ? context.Environment : context.Entities;
+                var marker = CreateSpriteObject(
+                    $"Blueprint_{entity.entity_id}",
+                    parent,
+                    new Vector2(entity.position_x, entity.position_y),
+                    new Vector2(Mathf.Max(0.1f, entity.scale_x), Mathf.Max(0.1f, entity.scale_y)),
+                    color,
+                    $"blueprint-{entity.entity_id}",
+                    entity.archetype == "landmark" ? -5 : 1
+                );
+                marker.name = $"Blueprint_{entity.display_name}";
+            }
+
+            context.Camera.orthographicSize = Mathf.Max(
+                context.Camera.orthographicSize,
+                context.Blueprint.scene_height * 0.34f
+            );
         }
 
         private static void AttachGeneratedFeatureBinder(
@@ -234,13 +408,15 @@ namespace TeamIdle.GameTemplate.Editor
 
         private static void AssemblePlatformer(AssemblyContext context)
         {
-            context.Camera.orthographicSize = 5.5f;
+            var levelPlan = context.Level;
+            context.Camera.orthographicSize = Mathf.Max(4f, levelPlan.camera_orthographic_size);
             context.Camera.transform.position = new Vector3(0f, 0f, -10f);
+            var playerSpawn = ResolvePlatformerSpawn(levelPlan);
             var player = CreateSpriteObject(
                 "Player",
                 context.Entities,
-                new Vector2(-6f, -2.5f),
-                new Vector2(0.9f, 1.4f),
+                playerSpawn,
+                new Vector2(PlatformerPlayerWidth, PlatformerPlayerHeight),
                 new Color(0.25f, 0.75f, 1f),
                 "platformer-player"
             );
@@ -249,99 +425,166 @@ namespace TeamIdle.GameTemplate.Editor
             playerBody.freezeRotation = true;
             playerBody.gravityScale = 3f;
             player.AddComponent<BoxCollider2D>();
-            player.AddComponent<HealthComponent>();
+            var playerHealth = player.AddComponent<HealthComponent>();
+            playerHealth.SetMaximum(context.Balance.Initial("player_health", 3f));
             var stageController =
                 context.Ui.gameObject.AddComponent<PrototypePlatformerStageController>();
             stageController.Bind(player.transform);
-            context.Camera.gameObject.AddComponent<PrototypeCameraFollow>().Bind(player.transform);
+            var cameraFollow = context.Camera.gameObject.AddComponent<PrototypeCameraFollow>();
+            cameraFollow.Bind(player.transform);
             var groundCheck = new GameObject("GroundCheck").transform;
             groundCheck.SetParent(player.transform, false);
-            groundCheck.localPosition = new Vector3(0f, -0.75f, 0f);
+            groundCheck.localPosition = new Vector3(0f, -PlatformerPlayerHeight * 0.55f, 0f);
 
-            CreatePlatform(context, "Ground", new Vector2(4f, -4f), new Vector2(28f, 1f));
-            var platformCount = context.Plan.Count("platform", 10);
-            for (var index = 0; index < platformCount; index++)
+            var stageStart = levelPlan.zones[0].start_x;
+            var stageEnd = levelPlan.zones[^1].end_x;
+            var cameraYBounds = ResolvePlatformerCameraYBounds(levelPlan);
+            cameraFollow.ConfigureBounds(
+                Mathf.Min(stageStart, playerSpawn.x),
+                Mathf.Max(stageEnd, levelPlan.goal.x),
+                cameraYBounds.x,
+                cameraYBounds.y
+            );
+            CreatePlatform(
+                context,
+                "Ground",
+                new Vector2((stageStart + stageEnd) * 0.5f, -4f),
+                new Vector2(stageEnd - stageStart + 4f, 1f)
+            );
+            var platformIndex = 0;
+            var collectibleIndex = 0;
+            var requiredCollectibleScore = 0;
+            var hazardIndex = 0;
+            var enemyIndex = 0;
+            var checkpointIndex = 0;
+            foreach (var zone in levelPlan.zones)
             {
-                var column = index % 5;
-                var tier = index / 5;
-                CreatePlatform(
-                    context,
-                    $"Platform_{index + 1}",
-                    new Vector2(-4f + column * 3.2f, -1.6f + tier * 2.2f),
-                    new Vector2(2.2f + (index % 2) * 0.8f, 0.45f)
-                );
+                var zoneRoot = CreateRoot($"Zone_{zone.zone_id}", context.Environment);
+                foreach (var platformPlan in zone.platforms)
+                {
+                    platformIndex++;
+                    CreatePlatform(
+                        context,
+                        $"Platform_{platformIndex}",
+                        new Vector2(platformPlan.x, platformPlan.y),
+                        new Vector2(platformPlan.width, platformPlan.height),
+                        zoneRoot
+                    );
+                }
+
+                foreach (var collectiblePlan in zone.collectibles)
+                {
+                    collectibleIndex++;
+                    var collectible = CreateSpriteObject(
+                        $"Collectible_{collectibleIndex}",
+                        context.Entities,
+                        new Vector2(collectiblePlan.x, collectiblePlan.y),
+                        Vector2.one * 0.45f,
+                        new Color(1f, 0.82f, 0.2f),
+                        "collectible"
+                    );
+                    var collider = collectible.AddComponent<CircleCollider2D>();
+                    collider.isTrigger = true;
+                    var collectibleDefinition = context.Content.Find(collectiblePlan.archetype);
+                    var rewardAmount = Mathf.RoundToInt(collectibleDefinition.Stat("score", 1f));
+                    collectible
+                        .AddComponent<PrototypeCollectible>()
+                        .Configure(collectiblePlan.archetype, rewardAmount);
+                    requiredCollectibleScore += rewardAmount;
+                }
+
+                foreach (var hazardPlan in zone.hazards)
+                {
+                    hazardIndex++;
+                    var hazard = CreateSpriteObject(
+                        $"Hazard_{hazardIndex}",
+                        context.Entities,
+                        new Vector2(hazardPlan.x, hazardPlan.y),
+                        new Vector2(0.9f, 0.35f),
+                        new Color(1f, 0.2f, 0.25f),
+                        "hazard"
+                    );
+                    var collider = hazard.AddComponent<BoxCollider2D>();
+                    collider.isTrigger = true;
+                    var hazardDefinition = context.Content.Find(hazardPlan.archetype);
+                    hazard
+                        .AddComponent<PrototypeHazard>()
+                        .Configure(hazardPlan.archetype, hazardDefinition.Stat("damage", 1f));
+                }
+
+                foreach (var enemyPlan in zone.enemies)
+                {
+                    enemyIndex++;
+                    var enemy = CreateSpriteObject(
+                        $"PatrolEnemy_{enemyIndex}",
+                        context.Entities,
+                        new Vector2(enemyPlan.x, enemyPlan.y),
+                        new Vector2(0.8f, 0.8f),
+                        new Color(0.95f, 0.35f, 0.4f),
+                        "platformer-enemy"
+                    );
+                    enemy.AddComponent<BoxCollider2D>();
+                    var body = enemy.AddComponent<Rigidbody2D>();
+                    body.bodyType = RigidbodyType2D.Kinematic;
+                    var enemyDefinition = context.Content.Find(enemyPlan.archetype);
+                    enemy
+                        .AddComponent<HealthComponent>()
+                        .SetMaximum(enemyDefinition.Stat("health", 1f));
+                    enemy
+                        .AddComponent<PrototypePatrolEnemy>()
+                        .Configure(
+                            enemyPlan.archetype,
+                            enemyDefinition.Stat("patrol_range", 1.5f),
+                            enemyDefinition.Stat("speed", 1.5f),
+                            enemyDefinition.Stat(
+                                "contact_damage",
+                                context.Balance.Initial("enemy_damage", 1f)
+                            )
+                        );
+                }
+
+                if (zone.checkpoint != null)
+                {
+                    checkpointIndex++;
+                    var checkpoint = CreateSpriteObject(
+                        $"Checkpoint_{checkpointIndex}",
+                        context.Entities,
+                        new Vector2(zone.checkpoint.x, zone.checkpoint.y),
+                        new Vector2(0.45f, 1.8f),
+                        new Color(0.25f, 0.9f, 0.95f),
+                        "checkpoint"
+                    );
+                    var collider = checkpoint.AddComponent<BoxCollider2D>();
+                    collider.isTrigger = true;
+                    checkpoint.AddComponent<PrototypeCheckpoint>().Configure(checkpointIndex);
+                }
             }
 
             var movement = GetModule<PlatformerMovementModule>(context);
-            movement?.Bind(playerBody, groundCheck);
-            var collectibleCount = context.Plan.Count("collectible", 8);
-            SetInt(GetModule<CollectibleSystemModule>(context), "requiredCount", collectibleCount);
-
-            for (var index = 0; index < collectibleCount; index++)
+            if (movement != null)
             {
-                var collectible = CreateSpriteObject(
-                    $"Collectible_{index + 1}",
-                    context.Entities,
-                    new Vector2(-4f + (index % 5) * 3.2f, -0.8f + (index / 5) * 2.2f),
-                    Vector2.one * 0.45f,
-                    new Color(1f, 0.82f, 0.2f),
-                    "collectible"
+                var jumpHeight = context.Balance.Initial("jump_height", 2.4f);
+                var gravity = Mathf.Abs(Physics2D.gravity.y) * playerBody.gravityScale;
+                movement.Configure(
+                    context.Balance.Initial("move_speed", 7f),
+                    Mathf.Sqrt(2f * gravity * jumpHeight)
                 );
-                var collider = collectible.AddComponent<CircleCollider2D>();
-                collider.isTrigger = true;
-                collectible.AddComponent<PrototypeCollectible>();
+                movement.Bind(playerBody, groundCheck);
             }
+            GetModule<WallClimbModule>(context)?.Bind(playerBody);
+            GetModule<AirDashModule>(context)?.Bind(playerBody, groundCheck);
+            SetInt(GetModule<CollectibleSystemModule>(context), "requiredCount", collectibleIndex);
+            SetInt(
+                GetModule<CollectibleSystemModule>(context),
+                "requiredScore",
+                requiredCollectibleScore
+            );
 
-            for (var index = 0; index < context.Plan.Count("hazard", 5); index++)
-            {
-                var hazard = CreateSpriteObject(
-                    $"Hazard_{index + 1}",
-                    context.Entities,
-                    new Vector2(-2.5f + index * 3.1f, -3.3f),
-                    new Vector2(1.2f, 0.35f),
-                    new Color(1f, 0.2f, 0.25f),
-                    "hazard"
-                );
-                var collider = hazard.AddComponent<BoxCollider2D>();
-                collider.isTrigger = true;
-                hazard.AddComponent<PrototypeHazard>();
-            }
-
-            for (var index = 0; index < context.Plan.Count("checkpoint", 2); index++)
-            {
-                var checkpoint = CreateSpriteObject(
-                    $"Checkpoint_{index + 1}",
-                    context.Entities,
-                    new Vector2(index == 0 ? 0f : 7f, -2.8f),
-                    new Vector2(0.45f, 1.8f),
-                    new Color(0.25f, 0.9f, 0.95f),
-                    "checkpoint"
-                );
-                var collider = checkpoint.AddComponent<BoxCollider2D>();
-                collider.isTrigger = true;
-                checkpoint.AddComponent<PrototypeCheckpoint>().Configure(index + 1);
-            }
-
-            for (var index = 0; index < context.Plan.Count("enemy", 3); index++)
-            {
-                var enemy = CreateSpriteObject(
-                    $"PatrolEnemy_{index + 1}",
-                    context.Entities,
-                    new Vector2(1f + index * 3.5f, -2.9f),
-                    new Vector2(0.8f, 0.8f),
-                    new Color(0.95f, 0.35f, 0.4f),
-                    "platformer-enemy"
-                );
-                enemy.AddComponent<BoxCollider2D>();
-                var body = enemy.AddComponent<Rigidbody2D>();
-                body.bodyType = RigidbodyType2D.Kinematic;
-                enemy.AddComponent<PrototypePatrolEnemy>();
-            }
-
+            var goalPosition = ResolvePlatformerGoal(levelPlan);
             var goal = CreateSpriteObject(
                 "StageGoal",
                 context.Entities,
-                new Vector2(12f, -2.5f),
+                goalPosition,
                 new Vector2(0.8f, 2f),
                 new Color(0.2f, 1f, 0.45f),
                 "goal"
@@ -349,6 +592,26 @@ namespace TeamIdle.GameTemplate.Editor
             var goalCollider = goal.AddComponent<BoxCollider2D>();
             goalCollider.isTrigger = true;
             goal.AddComponent<PrototypeGoal>();
+
+            var collectibleSystem = GetModule<CollectibleSystemModule>(context);
+            var goalSystem = GetModule<GoalSystemModule>(context);
+            if (collectibleSystem == null || goalSystem == null)
+            {
+                throw new InvalidOperationException(
+                    "Platformer presentation requires collectible and goal modules."
+                );
+            }
+
+            PresentationSceneAssembler.AssemblePlatformer(
+                context.Ui,
+                context.Entities,
+                player,
+                context.Camera,
+                stageController,
+                context.Presentation,
+                collectibleSystem,
+                goalSystem
+            );
         }
 
         private static void AssembleTowerDefense(AssemblyContext context)
@@ -364,6 +627,13 @@ namespace TeamIdle.GameTemplate.Editor
                 new Vector2(2.5f, 2f),
                 new Vector2(8f, 2f),
             };
+            for (var index = 1; index < waypointPositions.Length - 1; index++)
+            {
+                waypointPositions[index] += new Vector2(
+                    BlueprintNoise(context, index + 100, 0.8f),
+                    BlueprintNoise(context, index + 120, 0.65f)
+                );
+            }
             var waypoints = new List<Transform>();
             for (var index = 0; index < waypointPositions.Length; index++)
             {
@@ -395,7 +665,7 @@ namespace TeamIdle.GameTemplate.Editor
             var towerVisual = CreateSpriteObject(
                 "Tower",
                 context.Entities,
-                new Vector2(0f, 0f),
+                new Vector2(BlueprintNoise(context, 140, 1.2f), BlueprintNoise(context, 141, 0.8f)),
                 new Vector2(1.2f, 1.6f),
                 new Color(0.3f, 0.8f, 1f),
                 "tower"
@@ -404,6 +674,35 @@ namespace TeamIdle.GameTemplate.Editor
             {
                 towerModule.transform.position = towerVisual.transform.position;
             }
+
+            var economy = GetModule<EconomySystemModule>(context);
+            SetInt(economy, "startingCurrency", 120);
+            var buildSlots = new List<PrototypeTowerBuildSlot>();
+            var buildSlotPositions = new[]
+            {
+                new Vector2(-5.5f, 0.5f),
+                new Vector2(-0.5f, 0.3f),
+                new Vector2(4.8f, -0.2f),
+            };
+            for (var index = 0; index < buildSlotPositions.Length; index++)
+            {
+                var slotObject = CreateSpriteObject(
+                    $"TowerBuildSlot_{index + 1}",
+                    context.Entities,
+                    buildSlotPositions[index],
+                    Vector2.one * 0.9f,
+                    new Color(1f, 0.75f, 0.15f),
+                    "tower-build-slot"
+                );
+                slotObject.AddComponent<BoxCollider2D>();
+                buildSlots.Add(slotObject.AddComponent<PrototypeTowerBuildSlot>());
+            }
+
+            var buildControllerObject = new GameObject("TowerBuildController");
+            buildControllerObject.transform.SetParent(context.Entities, false);
+            buildControllerObject
+                .AddComponent<PrototypeTowerBuildController>()
+                .Configure(projectilePrefab, buildSlots);
 
             CreateSpriteObject(
                 "Base",
@@ -500,19 +799,19 @@ namespace TeamIdle.GameTemplate.Editor
                 lines.GetArrayElementAtIndex(0),
                 "intro-1",
                 "Guide",
-                "Welcome to the generated visual novel prototype."
+                context.Blueprint.summary
             );
             SetDialogueLine(
                 lines.GetArrayElementAtIndex(1),
                 "intro-2",
                 "Hero",
-                "The final artwork and script can replace these placeholders."
+                context.Blueprint.core_loop[0]
             );
             SetDialogueLine(
                 lines.GetArrayElementAtIndex(2),
                 "intro-3",
                 "Guide",
-                "Choose an option to test the branching flag system."
+                context.Blueprint.core_loop[1]
             );
             for (var index = 3; index < lines.arraySize; index++)
             {
@@ -520,7 +819,8 @@ namespace TeamIdle.GameTemplate.Editor
                     lines.GetArrayElementAtIndex(index),
                     $"generated-{index + 1}",
                     index % 2 == 0 ? "Hero" : "Guide",
-                    $"Generated story beat {index + 1}: choices and flags continue the scene."
+                    $"{context.Blueprint.core_loop[index % context.Blueprint.core_loop.Count]}: "
+                        + $"generated story beat {index + 1}."
                 );
             }
             serialized.ApplyModifiedPropertiesWithoutUndo();
@@ -593,6 +893,13 @@ namespace TeamIdle.GameTemplate.Editor
             player.AddComponent<HealthComponent>();
             player.AddComponent<PrototypeWingUpgradeApplier>();
             GetModule<TopDownMovementModule>(context)?.Bind(body);
+            var cameraFollow =
+                context.Camera.GetComponent<PrototypeCameraFollow>()
+                ?? context.Camera.gameObject.AddComponent<PrototypeCameraFollow>();
+            var halfWidth = Mathf.Max(10f, context.Blueprint.scene_width * 0.5f);
+            var halfHeight = Mathf.Max(7f, context.Blueprint.scene_height * 0.5f);
+            cameraFollow.Bind(player.transform);
+            cameraFollow.ConfigureBounds(-halfWidth, halfWidth, -halfHeight, halfHeight);
 
             CreateSpriteObject(
                 "LeftWing",
@@ -627,7 +934,10 @@ namespace TeamIdle.GameTemplate.Editor
             SetObject(autoTarget, "origin", player.transform);
             SetObject(autoTarget, "projectilePrefab", projectilePrefab);
             SetInt(autoTarget, "enemyMask", 1 << 8);
-            ConfigureUpgradePool(GetModule<UpgradeSelectionSystemModule>(context));
+            ConfigureUpgradePool(
+                GetModule<UpgradeSelectionSystemModule>(context),
+                context.Blueprint
+            );
 
             var arenaMarkerCount = context.Plan.Count("arena_marker", 20);
             for (var index = 0; index < arenaMarkerCount; index++)
@@ -636,7 +946,12 @@ namespace TeamIdle.GameTemplate.Editor
                 CreateSpriteObject(
                     $"ArenaMarker_{index + 1}",
                     context.Environment,
-                    new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * 8f,
+                    new Vector2(Mathf.Cos(angle), Mathf.Sin(angle))
+                        * (
+                            Mathf.Min(context.Blueprint.scene_width, context.Blueprint.scene_height)
+                                * 0.42f
+                            + BlueprintNoise(context, index + 180, 0.8f)
+                        ),
                     Vector2.one * 0.2f,
                     new Color(0.3f, 0.35f, 0.45f),
                     "arena-marker"
@@ -656,6 +971,10 @@ namespace TeamIdle.GameTemplate.Editor
             );
             source.layer = 8;
             source.AddComponent<CircleCollider2D>();
+            var body = source.AddComponent<Rigidbody2D>();
+            body.gravityScale = 0f;
+            body.freezeRotation = true;
+            body.bodyType = RigidbodyType2D.Kinematic;
             var health = source.AddComponent<HealthComponent>();
             SetBool(health, "destroyOnDeath", true);
             source.AddComponent<PrototypeExperienceReward>();
@@ -681,6 +1000,7 @@ namespace TeamIdle.GameTemplate.Editor
             var health = source.AddComponent<HealthComponent>();
             SetBool(health, "destroyOnDeath", true);
             source.AddComponent<PrototypeTowerEndpoint>();
+            source.AddComponent<PrototypeTowerReward>();
             source.AddComponent<PathFollower2D>();
             var path = $"{GeneratedPrefabRoot}/TowerEnemy.prefab";
             var prefab = SavePrefab<PathFollower2D>(source, path, context);
@@ -706,7 +1026,9 @@ namespace TeamIdle.GameTemplate.Editor
             collider.isTrigger = true;
             var body = source.AddComponent<Rigidbody2D>();
             body.gravityScale = 0f;
-            body.bodyType = RigidbodyType2D.Kinematic;
+            body.freezeRotation = true;
+            body.collisionDetectionMode = CollisionDetectionMode2D.Continuous;
+            body.bodyType = RigidbodyType2D.Dynamic;
             source.AddComponent<Projectile2D>();
             var path = $"{GeneratedPrefabRoot}/{name}.prefab";
             var prefab = SavePrefab<Projectile2D>(source, path, context);
@@ -723,28 +1045,58 @@ namespace TeamIdle.GameTemplate.Editor
                 throw new InvalidOperationException($"Failed to save generated prefab: {path}");
             }
 
+            AssetDatabase.SaveAssets();
+            AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+            var reloaded = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            var component = reloaded != null ? reloaded.GetComponent<T>() : null;
+            if (component == null)
+            {
+                throw new InvalidOperationException(
+                    $"Generated prefab did not preserve {typeof(T).Name}: {path}. "
+                        + "Attachable MonoBehaviours must be declared in a matching .cs file."
+                );
+            }
+
+            if (
+                component is MonoBehaviour behaviour
+                && MonoScript.FromMonoBehaviour(behaviour) == null
+            )
+            {
+                throw new InvalidOperationException(
+                    $"Generated prefab contains an unresolved script for {typeof(T).Name}: {path}"
+                );
+            }
+
             context.Report.generatedPrefabs.Add(path);
-            return saved.GetComponent<T>();
+            return component;
         }
 
-        private static void ConfigureUpgradePool(UpgradeSelectionSystemModule upgrades)
+        private static void ConfigureUpgradePool(
+            UpgradeSelectionSystemModule upgrades,
+            GameBlueprint blueprint
+        )
         {
             if (upgrades == null)
             {
                 return;
             }
 
-            var entries = new[]
+            var entries = new List<(string Id, string Name, string Description)>();
+            foreach (var option in blueprint.progression_options)
             {
-                ("wing-power", "Stronger Wings", "Increase feather attack power."),
-                ("wing-speed", "Swift Wings", "Increase movement speed."),
-                ("attack-speed", "Rapid Feathers", "Increase attack speed."),
-                ("feather-count", "Many Feathers", "Fire one additional feather."),
-            };
+                entries.Add((option.option_id, option.display_name, option.description));
+            }
+            if (entries.Count == 0)
+            {
+                entries.Add(("wing-power", "Stronger Wings", "Increase feather attack power."));
+                entries.Add(("wing-speed", "Swift Wings", "Increase movement speed."));
+                entries.Add(("attack-speed", "Rapid Feathers", "Increase attack speed."));
+                entries.Add(("feather-count", "Many Feathers", "Fire one additional feather."));
+            }
             var serialized = new SerializedObject(upgrades);
             var pool = serialized.FindProperty("upgradePool");
-            pool.arraySize = entries.Length;
-            for (var index = 0; index < entries.Length; index++)
+            pool.arraySize = entries.Count;
+            for (var index = 0; index < entries.Count; index++)
             {
                 var entry = pool.GetArrayElementAtIndex(index);
                 entry.FindPropertyRelative("upgradeId").stringValue = entries[index].Item1;
@@ -753,6 +1105,426 @@ namespace TeamIdle.GameTemplate.Editor
             }
 
             serialized.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static Vector2 PlatformerRoutePosition(
+            AssemblyContext context,
+            int index,
+            int platformCount
+        )
+        {
+            var stageWidth = Mathf.Max(30f, context.Blueprint.scene_width);
+            var spacing = (stageWidth - 9.5f) / Mathf.Max(1, platformCount - 1);
+            var routeLevels = new[] { -2.15f, -1.05f, 0.05f, -1.05f, -2.15f };
+            return new Vector2(
+                -stageWidth * 0.5f + 5f + spacing * index,
+                routeLevels[index % routeLevels.Length] + BlueprintNoise(context, index + 20, 0.04f)
+            );
+        }
+
+        private static float PlatformerLandingWidth(
+            AssemblyContext context,
+            int platformCount,
+            int index
+        )
+        {
+            var stageWidth = Mathf.Max(30f, context.Blueprint.scene_width);
+            var spacing = (stageWidth - 9.5f) / Mathf.Max(1, platformCount - 1);
+            var variation = BlueprintNoise(context, index, 0.16f);
+            return Mathf.Max(
+                PlatformerMinimumLandingWidth,
+                spacing - PlatformerMaximumHorizontalGap + variation
+            );
+        }
+
+        private static Vector2 ResolvePlatformerSpawn(LevelPlan levelPlan)
+        {
+            var spawn = new Vector2(levelPlan.player_spawn.x, levelPlan.player_spawn.y);
+            var safeY = spawn.y;
+            foreach (var zone in levelPlan.zones)
+            {
+                foreach (var platform in zone.platforms)
+                {
+                    var halfWidth = platform.width * 0.5f;
+                    if (spawn.x < platform.x - halfWidth || spawn.x > platform.x + halfWidth)
+                    {
+                        continue;
+                    }
+
+                    var platformTop = platform.y + platform.height * 0.5f;
+                    safeY = Mathf.Max(safeY, platformTop + PlatformerPlayerHeight * 0.5f + 0.05f);
+                }
+            }
+
+            return new Vector2(spawn.x, safeY);
+        }
+
+        private static Vector2 ResolvePlatformerGoal(LevelPlan levelPlan)
+        {
+            var finalZone = levelPlan.zones[^1];
+            var platform = finalZone.platforms.Find(item => item.role == "goal");
+            platform ??= finalZone.platforms[^1];
+            var halfWidth = platform.width * 0.5f;
+            var goalX = Mathf.Clamp(
+                levelPlan.goal.x,
+                platform.x - halfWidth + 0.5f,
+                platform.x + halfWidth - 0.5f
+            );
+            foreach (var collectible in finalZone.collectibles)
+            {
+                if (Mathf.Abs(goalX - collectible.x) >= 1f)
+                {
+                    continue;
+                }
+
+                goalX = platform.x + halfWidth - 0.5f;
+                if (Mathf.Abs(goalX - collectible.x) < 1f)
+                {
+                    goalX = platform.x - halfWidth + 0.5f;
+                }
+            }
+
+            var platformTop = platform.y + platform.height * 0.5f;
+            return new Vector2(goalX, Mathf.Max(levelPlan.goal.y, platformTop + 1f));
+        }
+
+        private static Vector2 ResolvePlatformerCameraYBounds(LevelPlan levelPlan)
+        {
+            var minimumY = levelPlan.player_spawn.y;
+            var maximumY = levelPlan.player_spawn.y;
+            foreach (var zone in levelPlan.zones)
+            {
+                foreach (var platform in zone.platforms)
+                {
+                    minimumY = Mathf.Min(minimumY, platform.y);
+                    maximumY = Mathf.Max(
+                        maximumY,
+                        platform.y + platform.height * 0.5f + PlatformerPlayerHeight
+                    );
+                }
+
+                foreach (var collectible in zone.collectibles)
+                {
+                    minimumY = Mathf.Min(minimumY, collectible.y);
+                    maximumY = Mathf.Max(maximumY, collectible.y);
+                }
+
+                foreach (var hazard in zone.hazards)
+                {
+                    minimumY = Mathf.Min(minimumY, hazard.y);
+                    maximumY = Mathf.Max(maximumY, hazard.y);
+                }
+
+                foreach (var enemy in zone.enemies)
+                {
+                    minimumY = Mathf.Min(minimumY, enemy.y);
+                    maximumY = Mathf.Max(maximumY, enemy.y);
+                }
+
+                if (zone.checkpoint != null)
+                {
+                    minimumY = Mathf.Min(minimumY, zone.checkpoint.y);
+                    maximumY = Mathf.Max(maximumY, zone.checkpoint.y);
+                }
+            }
+
+            minimumY = Mathf.Min(minimumY, levelPlan.goal.y) - 1f;
+            maximumY = Mathf.Max(maximumY, levelPlan.goal.y) + 1f;
+            return new Vector2(minimumY, maximumY);
+        }
+
+        private static void ValidatePlatformerTraversal(
+            Transform generatedRoot,
+            LevelPlan levelPlan,
+            ContentPlan contentPlan,
+            BalancePlan balancePlan
+        )
+        {
+            Physics2D.SyncTransforms();
+            var player = FindChildByName(generatedRoot, "Player");
+            var playerCollider = player == null ? null : player.GetComponent<BoxCollider2D>();
+            RequireObject(playerCollider, "Player BoxCollider2D");
+
+            foreach (var hazard in generatedRoot.GetComponentsInChildren<PrototypeHazard>(true))
+            {
+                var hazardCollider = hazard.GetComponent<Collider2D>();
+                if (
+                    hazardCollider != null
+                    && hazardCollider.bounds.Intersects(playerCollider.bounds)
+                )
+                {
+                    throw new InvalidOperationException(
+                        $"Platformer spawn overlaps hazard: {hazard.name}"
+                    );
+                }
+            }
+
+            foreach (var collider in generatedRoot.GetComponentsInChildren<Collider2D>(true))
+            {
+                if (
+                    collider == playerCollider
+                    || collider.isTrigger
+                    || !collider.bounds.Intersects(playerCollider.bounds)
+                )
+                {
+                    continue;
+                }
+
+                throw new InvalidOperationException(
+                    $"Platformer spawn overlaps solid collider: {collider.name}"
+                );
+            }
+
+            var platforms = new List<BoxCollider2D>();
+            foreach (var collider in generatedRoot.GetComponentsInChildren<BoxCollider2D>(true))
+            {
+                if (collider.name.StartsWith("Platform_", StringComparison.Ordinal))
+                {
+                    platforms.Add(collider);
+                }
+            }
+
+            platforms.Sort((left, right) => left.bounds.center.x.CompareTo(right.bounds.center.x));
+            if (platforms.Count < 2)
+            {
+                throw new InvalidOperationException(
+                    "Platformer route needs at least two platforms."
+                );
+            }
+
+            foreach (var zone in levelPlan.zones)
+            {
+                RequireObject(FindChildByName(generatedRoot, $"Zone_{zone.zone_id}"), zone.zone_id);
+                if (zone.required_mechanics.Count == 0)
+                {
+                    throw new InvalidOperationException(
+                        $"Platformer zone {zone.zone_id} does not require any gameplay mechanic."
+                    );
+                }
+            }
+
+            var expectedCollectibles = 0;
+            var expectedHazards = 0;
+            var expectedEnemies = 0;
+            var expectedCheckpoints = 0;
+            foreach (var zone in levelPlan.zones)
+            {
+                expectedCollectibles += zone.collectibles.Count;
+                expectedHazards += zone.hazards.Count;
+                expectedEnemies += zone.enemies.Count;
+                expectedCheckpoints += zone.checkpoint == null ? 0 : 1;
+            }
+
+            RequireCount<PrototypeCollectible>(generatedRoot, expectedCollectibles, "collectibles");
+            RequireCount<PrototypeHazard>(generatedRoot, expectedHazards, "hazards");
+            RequireCount<PrototypePatrolEnemy>(generatedRoot, expectedEnemies, "enemies");
+            RequireCount<PrototypeCheckpoint>(generatedRoot, expectedCheckpoints, "checkpoints");
+            var stageGoal = FindChildByName(generatedRoot, "StageGoal");
+            RequireObject(stageGoal, "StageGoal");
+            var goalCollider = stageGoal.GetComponent<Collider2D>();
+            RequireObject(goalCollider, "StageGoal Collider2D");
+            var cameraFollow = UnityEngine.Object.FindFirstObjectByType<PrototypeCameraFollow>();
+            RequireObject(cameraFollow, "PrototypeCameraFollow");
+            if (cameraFollow.Target != player)
+            {
+                throw new InvalidOperationException(
+                    "Platformer camera follow target is not the generated player."
+                );
+            }
+            var requiredCameraMinimumX = Mathf.Min(levelPlan.zones[0].start_x, player.position.x);
+            var requiredCameraMaximumX = Mathf.Max(levelPlan.zones[^1].end_x, stageGoal.position.x);
+            if (
+                cameraFollow.Minimum.x > requiredCameraMinimumX + 0.01f
+                || cameraFollow.Maximum.x < requiredCameraMaximumX - 0.01f
+            )
+            {
+                throw new InvalidOperationException(
+                    $"Platformer camera bounds do not cover the route: "
+                        + $"camera={cameraFollow.Minimum.x:F2}..{cameraFollow.Maximum.x:F2}, "
+                        + $"route={requiredCameraMinimumX:F2}..{requiredCameraMaximumX:F2}."
+                );
+            }
+            var expectedScore = 0;
+            foreach (
+                var collectible in generatedRoot.GetComponentsInChildren<PrototypeCollectible>(true)
+            )
+            {
+                expectedScore += collectible.Amount;
+                var collectibleCollider = collectible.GetComponent<Collider2D>();
+                if (
+                    collectibleCollider != null
+                    && goalCollider.bounds.Intersects(collectibleCollider.bounds)
+                )
+                {
+                    throw new InvalidOperationException(
+                        $"StageGoal overlaps collectible: {collectible.name}"
+                    );
+                }
+            }
+            var collectibleSystem =
+                UnityEngine.Object.FindFirstObjectByType<CollectibleSystemModule>();
+            RequireObject(collectibleSystem, "CollectibleSystemModule");
+            if (collectibleSystem.RequiredCount != expectedCollectibles)
+            {
+                throw new InvalidOperationException(
+                    $"Collectible item target mismatch: expected {expectedCollectibles}, "
+                        + $"found {collectibleSystem.RequiredCount}."
+                );
+            }
+            if (collectibleSystem.RequiredScore != expectedScore)
+            {
+                throw new InvalidOperationException(
+                    $"Collectible score target mismatch: expected {expectedScore}, "
+                        + $"found {collectibleSystem.RequiredScore}."
+                );
+            }
+            ValidatePlatformerTuning(generatedRoot, contentPlan, balancePlan);
+
+            var minimumLandingWidth = Mathf.Max(
+                levelPlan.minimum_landing_width,
+                playerCollider.bounds.size.x * 2.5f
+            );
+            for (var index = 0; index < platforms.Count; index++)
+            {
+                var current = platforms[index].bounds;
+                if (current.size.x < minimumLandingWidth)
+                {
+                    throw new InvalidOperationException(
+                        $"Platform_{index + 1} is narrower than the player-safe landing width."
+                    );
+                }
+
+                if (index == 0)
+                {
+                    continue;
+                }
+
+                var previous = platforms[index - 1].bounds;
+                var horizontalGap = current.min.x - previous.max.x;
+                var stepUp = current.max.y - previous.max.y;
+                if (horizontalGap > levelPlan.max_horizontal_gap)
+                {
+                    throw new InvalidOperationException(
+                        $"Platformer route gap {index} is too wide: {horizontalGap:F2}."
+                    );
+                }
+
+                if (stepUp > levelPlan.max_step_up)
+                {
+                    throw new InvalidOperationException(
+                        $"Platformer route step {index} is too high: {stepUp:F2}."
+                    );
+                }
+            }
+
+            Debug.Log(
+                $"UNITY_PLATFORMER_TRAVERSAL_OK:{platforms.Count}:"
+                    + $"{playerCollider.bounds.size.x:F2}x{playerCollider.bounds.size.y:F2}"
+            );
+        }
+
+        private static void ValidatePlatformerTuning(
+            Transform generatedRoot,
+            ContentPlan contentPlan,
+            BalancePlan balancePlan
+        )
+        {
+            var player = FindChildByName(generatedRoot, "Player");
+            var playerHealth = player.GetComponent<HealthComponent>();
+            RequireApproximately(
+                playerHealth.Maximum,
+                balancePlan.Initial("player_health", 3f),
+                "player health"
+            );
+
+            var movement = UnityEngine.Object.FindFirstObjectByType<PlatformerMovementModule>();
+            RequireObject(movement, "PlatformerMovementModule");
+            RequireApproximately(
+                movement.MoveSpeed,
+                balancePlan.Initial("move_speed", 7f),
+                "move speed"
+            );
+
+            foreach (var enemy in generatedRoot.GetComponentsInChildren<PrototypePatrolEnemy>(true))
+            {
+                var enemyDefinition = contentPlan.Find(enemy.Archetype);
+                RequireApproximately(
+                    enemy.Speed,
+                    enemyDefinition.Stat("speed", 1.5f),
+                    "enemy speed"
+                );
+                RequireApproximately(
+                    enemy.ContactDamage,
+                    enemyDefinition.Stat("contact_damage", 1f),
+                    "enemy contact damage"
+                );
+                RequireApproximately(
+                    enemy.GetComponent<HealthComponent>().Maximum,
+                    enemyDefinition.Stat("health", 1f),
+                    "enemy health"
+                );
+            }
+
+            foreach (var hazard in generatedRoot.GetComponentsInChildren<PrototypeHazard>(true))
+            {
+                var hazardDefinition = contentPlan.Find(hazard.Archetype);
+                RequireApproximately(
+                    hazard.Damage,
+                    hazardDefinition.Stat("damage", 1f),
+                    "hazard damage"
+                );
+            }
+
+            foreach (
+                var collectible in generatedRoot.GetComponentsInChildren<PrototypeCollectible>(true)
+            )
+            {
+                var rewardDefinition = contentPlan.Find(collectible.Archetype);
+                var rewardAmount = Mathf.RoundToInt(rewardDefinition.Stat("score", 1f));
+                if (collectible.Amount != rewardAmount)
+                {
+                    throw new InvalidOperationException(
+                        $"Collectible reward mismatch: expected {rewardAmount}, found {collectible.Amount}."
+                    );
+                }
+            }
+        }
+
+        private static void RequireApproximately(float actual, float expected, string label)
+        {
+            if (!Mathf.Approximately(actual, expected))
+            {
+                throw new InvalidOperationException(
+                    $"Platformer {label} mismatch: expected {expected:F2}, found {actual:F2}."
+                );
+            }
+        }
+
+        private static void RequireCount<T>(Transform root, int expected, string label)
+            where T : Component
+        {
+            var actual = root.GetComponentsInChildren<T>(true).Length;
+            if (actual != expected)
+            {
+                throw new InvalidOperationException(
+                    $"Platformer {label} placement mismatch: expected {expected}, found {actual}."
+                );
+            }
+        }
+
+        private static float BlueprintNoise(AssemblyContext context, int sample, float amplitude)
+        {
+            unchecked
+            {
+                uint hash = 2166136261;
+                foreach (var character in context.Blueprint.blueprint_id)
+                {
+                    hash = (hash ^ character) * 16777619;
+                }
+                hash = (hash ^ (uint)sample) * 16777619;
+                var normalized = (hash & 0xFFFF) / 65535f;
+                return (normalized * 2f - 1f) * amplitude;
+            }
         }
 
         private static void SetDialogueLine(
@@ -773,7 +1545,10 @@ namespace TeamIdle.GameTemplate.Editor
                 "Background",
                 context.Environment,
                 Vector2.zero,
-                new Vector2(30f, 20f),
+                new Vector2(
+                    Mathf.Max(30f, context.Blueprint.scene_width),
+                    Mathf.Max(20f, context.Blueprint.scene_height)
+                ),
                 color,
                 "background",
                 -100
@@ -784,12 +1559,13 @@ namespace TeamIdle.GameTemplate.Editor
             AssemblyContext context,
             string name,
             Vector2 position,
-            Vector2 size
+            Vector2 size,
+            Transform parent = null
         )
         {
             var platform = CreateSpriteObject(
                 name,
-                context.Environment,
+                parent == null ? context.Environment : parent,
                 position,
                 size,
                 new Color(0.28f, 0.34f, 0.42f),

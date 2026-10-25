@@ -14,19 +14,22 @@ from __future__ import annotations
 import struct
 import zlib
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Protocol, cast
 
+from game_pipeline.asset_specs import IMAGE_SIZES, classify_image_kind
 from mainflow.contracts import (
     AssetGenerationItem,
     AssetGenerationRequest,
     GenreProfile,
+    ImageAssetKind,
+    ImageGenerationSpec,
     ImageStyle,
     MoodStyle,
     ValidationCriterion,
     Viewpoint,
 )
 
-ImageKind = Literal["sprite", "portrait", "ui", "tileset", "illustration", "background"]
+ImageKind = ImageAssetKind
 RGBA = tuple[int, int, int, int]
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -34,27 +37,8 @@ PNG_MEDIA_TYPE = "image/png"
 # Kinds drawn over a game scene must keep a transparent background.
 TRANSPARENT_KINDS: frozenset[ImageKind] = frozenset({"sprite", "portrait", "ui"})
 
-# The contract forbids inferring an asset's kind from its opaque asset_id, so
-# the kind is read from the human-written purpose/description.  Checked in
-# order; the first match wins and "sprite" is the fallback.
-# TODO: replace with an explicit field once the team adds one to the contract.
-KIND_KEYWORDS: tuple[tuple[ImageKind, tuple[str, ...]], ...] = (
-    ("tileset", ("타일", "tile")),
-    ("ui", ("ui", "테두리", "프레임", "frame", "아이콘", "icon", "버튼", "button")),
-    ("illustration", ("일러스트", "illustration")),
-    ("portrait", ("초상화", "portrait")),
-    ("background", ("배경", "background", "맵", "map", "스테이지", "stage")),
-)
-
-# Output size in pixels per kind.
-KIND_SIZES: dict[ImageKind, tuple[int, int]] = {
-    "sprite": (64, 64),
-    "portrait": (256, 384),
-    "ui": (128, 128),
-    "tileset": (128, 128),
-    "illustration": (256, 256),
-    "background": (512, 384),
-}
+# Backwards-compatible exports for image backends and focused tests.
+KIND_SIZES = IMAGE_SIZES
 
 KIND_PROMPTS: dict[ImageKind, str] = {
     "sprite": "A 2D game sprite",
@@ -129,6 +113,7 @@ class ImageAssetPlan:
     filename: str
     unity_binding_key: str
     kind: ImageKind
+    generation_spec: ImageGenerationSpec
 
     @property
     def transparent(self) -> bool:
@@ -136,21 +121,18 @@ class ImageAssetPlan:
 
     @property
     def size(self) -> tuple[int, int]:
-        return KIND_SIZES[self.kind]
+        return self.generation_spec["width"], self.generation_spec["height"]
 
 
 def classify_kind(purpose: str, description: str) -> ImageKind:
-    text = f"{purpose} {description}".lower()
-    for kind, keywords in KIND_KEYWORDS:
-        if any(keyword in text for keyword in keywords):
-            return kind
-    return "sprite"
+    return classify_image_kind(purpose, description)
 
 
 def plan_from_item(item: AssetGenerationItem) -> ImageAssetPlan:
     filename = item["suggested_filename"]
     if not filename.lower().endswith(".png"):
         filename = f"{item['asset_id']}.png"
+    spec = cast(ImageGenerationSpec, item["generation_spec"])
     return ImageAssetPlan(
         asset_id=item["asset_id"],
         purpose=item["purpose"],
@@ -158,7 +140,8 @@ def plan_from_item(item: AssetGenerationItem) -> ImageAssetPlan:
         required=item["required"],
         filename=filename,
         unity_binding_key=item["unity_binding_key"],
-        kind=classify_kind(item["purpose"], item["description"]),
+        kind=spec["kind"],
+        generation_spec=spec,
     )
 
 
@@ -236,9 +219,13 @@ class PlaceholderImageGenerator:
 
     def generate(self, request: ImageRequest) -> bytes:
         primary, secondary, backdrop = STYLE_PALETTES[request.style]
-        # Alternate colors per asset so different assets are easy to tell apart.
-        if zlib.crc32(request.plan.asset_id.encode("utf-8")) % 2:
+        variant = zlib.crc32(request.prompt.encode("utf-8"))
+        # The workflow embeds its variation seed in the prompt. This keeps an
+        # offline run reproducible without drawing the same placeholder forever.
+        if variant % 2:
             primary, secondary = secondary, primary
+        primary = _vary_color(primary, variant, 0)
+        secondary = _vary_color(secondary, variant, 13)
         width, height = request.width, request.height
         # Pixel Art is drawn on a coarse grid so the result looks blocky.
         block = max(1, width // 16) if request.style == "Pixel Art" else 1
@@ -250,7 +237,15 @@ class PlaceholderImageGenerator:
                 sx, sy = (x // block) * block, (y // block) * block
                 row.append(
                     self._pixel(
-                        request.plan.kind, sx, sy, width, height, primary, secondary, backdrop
+                        request.plan.kind,
+                        sx,
+                        sy,
+                        width,
+                        height,
+                        primary,
+                        secondary,
+                        backdrop,
+                        variant,
                     )
                 )
             rows.append(row)
@@ -266,6 +261,7 @@ class PlaceholderImageGenerator:
         primary: RGBA,
         secondary: RGBA,
         backdrop: RGBA,
+        variant: int = 0,
     ) -> RGBA:
         transparent: RGBA = (0, 0, 0, 0)
         u = (x + 0.5) / width - 0.5
@@ -282,7 +278,14 @@ class PlaceholderImageGenerator:
             tile_width, tile_height = max(1, width // 4), max(1, height // 4)
             tx, ty = x % tile_width, y % tile_height
             edge = min(tx, ty, tile_width - 1 - tx, tile_height - 1 - ty)
-            return secondary if edge < max(1, tile_width // 8) else primary
+            border = max(1, tile_width // (6 + variant % 4))
+            if variant % 3 == 0:
+                accent = edge < border
+            elif variant % 3 == 1:
+                accent = edge < border or (x // tile_width + y // tile_height) % 2 == 0
+            else:
+                accent = edge < border or (tx + ty + variant) % max(2, tile_width // 3) == 0
+            return secondary if accent else primary
         if kind == "illustration":
             # Diamond emblem on a filled card.
             return primary if abs(u) + abs(v) < 0.35 else backdrop
@@ -291,16 +294,28 @@ class PlaceholderImageGenerator:
             outer = max(abs(u), abs(v)) < 0.45
             inner = max(abs(u), abs(v)) < 0.35
             return primary if outer and not inner else transparent
-        # sprite / portrait: head circle over body ellipse.
-        if u * u + (v + 0.22) ** 2 < 0.15**2:
+        # sprite / portrait: a small family of readable debug silhouettes.
+        head_x = (-0.06, 0.0, 0.06)[variant % 3]
+        body_width = (0.24, 0.28, 0.32)[(variant // 3) % 3]
+        if (u - head_x) ** 2 + (v + 0.22) ** 2 < 0.15**2:
             return secondary
-        if (u / 0.3) ** 2 + ((v - 0.15) / 0.3) ** 2 < 1.0:
+        if (u / body_width) ** 2 + ((v - 0.15) / 0.3) ** 2 < 1.0:
             return primary
         return transparent
 
 
 def _mix(a: RGBA, b: RGBA, t: float) -> RGBA:
     return tuple(round(a[i] + (b[i] - a[i]) * t) for i in range(4))  # type: ignore[return-value]
+
+
+def _vary_color(color: RGBA, variant: int, shift: int) -> RGBA:
+    """Apply a small deterministic tint without changing transparency."""
+
+    channels = []
+    for index, value in enumerate(color[:3]):
+        delta = ((variant >> (shift + index * 5)) & 0x1F) - 16
+        channels.append(max(0, min(255, value + delta)))
+    return channels[0], channels[1], channels[2], color[3]
 
 
 # ---------------------------------------------------------------------------

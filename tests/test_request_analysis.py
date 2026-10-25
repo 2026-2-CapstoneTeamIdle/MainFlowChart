@@ -88,11 +88,11 @@ class RequestAnalysisTest(unittest.TestCase):
 
                 self.assertEqual(
                     [feature["name"] for feature in analysis["features"]],
-                    ["점프", "사용자 지정 조건"],
+                    ["점프", "벽 타기"],
                 )
                 self.assertEqual(
                     analysis["features"][1]["description"],
-                    "벽을 타고 올라간다",
+                    "플레이어가 벽을 감지하고 벽면을 따라 오르내릴 수 있다.",
                 )
 
     def test_analysis_splits_connective_into_separate_dynamic_features(self) -> None:
@@ -116,10 +116,37 @@ class RequestAnalysisTest(unittest.TestCase):
             descriptions,
             [
                 "플레이어가 점프할 수 있다.",
-                "벽을 타",
-                "공중 대시를 사용할 수 있는 게임",
+                "플레이어가 벽을 감지하고 벽면을 따라 오르내릴 수 있다.",
+                "플레이어가 공중에서 입력 방향으로 제한된 횟수만큼 대시할 수 있다.",
             ],
         )
+
+    def test_analysis_keeps_upgrade_lists_as_complete_sentences(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory) / "workspace"
+            with patch.dict(os.environ, {"MAINFLOW_WORKSPACE": str(workspace)}):
+                state = parse_input_node(
+                    {
+                        "image_style": "Pixel Art",
+                        "mood_style": "Fantasy",
+                        "genre": "뱀서류",
+                        "viewpoint": "탑다운",
+                        "condition": (
+                            "특전으로 검의 개수, 크기, 회전속도와 플레이어의 이동속도, "
+                            "최대체력을 강화할 수 있다. 일정 시간이 지나면 보스가 등장한다."
+                        ),
+                    }
+                )
+                state.update(analysis_node(state))  # type: ignore[arg-type]
+                analysis = ArtifactManager().read_json(state["analysis"])
+
+        descriptions = [feature["description"] for feature in analysis["features"]]
+        self.assertNotIn("크기", descriptions)
+        self.assertIn(
+            "특전으로 검의 개수, 크기, 회전속도와 플레이어의 이동속도, 최대체력을 강화할 수 있다",
+            descriptions,
+        )
+        self.assertIn("일정 시간이 지나면 보스가 등장한다", descriptions)
 
 
 if __name__ == "__main__":

@@ -464,7 +464,11 @@ class ArtifactManager:
                     os.O_CREAT | os.O_EXCL | os.O_WRONLY,
                 )
                 os.write(file_descriptor, str(os.getpid()).encode("ascii"))
-            except FileExistsError:
+            except (FileExistsError, PermissionError):
+                # Windows can report a sharing violation as PermissionError while another graph
+                # branch owns the lock file. The owner can remove it before our exists() check,
+                # so every sharing violation must be retried as contention. Persistent access
+                # failures still surface as the timeout below.
                 if time.monotonic() >= deadline:
                     raise TimeoutError(f"Timed out waiting for artifact manifest: {project_id}")
                 time.sleep(0.05)

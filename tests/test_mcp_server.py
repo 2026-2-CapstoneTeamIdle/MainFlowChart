@@ -51,12 +51,46 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
                     )
                     self.assertEqual(read.structured_content["content"], "second")
 
+                    ArtifactManager().write_project_text(
+                        project_id,
+                        "game/working/lines.txt",
+                        "one\ntwo\nthree\nfour\n",
+                    )
+                    ranged = await client.call_tool(
+                        "read_project_text",
+                        {
+                            "project_id": project_id,
+                            "relative_path": "game/working/lines.txt",
+                            "start_line": 2,
+                            "end_line": 3,
+                        },
+                    )
+                    self.assertEqual(ranged.structured_content["content"], "two\nthree\n")
+                    self.assertEqual(ranged.structured_content["start_line"], 2)
+                    self.assertEqual(ranged.structured_content["end_line"], 3)
+                    self.assertEqual(ranged.structured_content["total_lines"], 4)
+
                     listed = await client.call_tool(
                         "list_project_files",
                         {"project_id": project_id, "relative_directory": "game"},
                     )
                     paths = [item["relative_path"] for item in listed.structured_content["files"]]
                     self.assertIn("game/working/design.txt", paths)
+
+                    searched = await client.call_tool(
+                        "search_project_text",
+                        {
+                            "project_id": project_id,
+                            "relative_directory": "game",
+                            "glob_pattern": "*.txt",
+                            "query": "second",
+                        },
+                    )
+                    self.assertFalse(searched.is_error)
+                    self.assertEqual(
+                        searched.structured_content["matches"][0]["relative_path"],
+                        "game/working/design.txt",
+                    )
 
                     stale = await client.call_tool(
                         "write_project_text",
@@ -80,6 +114,21 @@ class MCPServerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(openai_names, names)
         with self.assertRaises(PermissionError):
             await manager.call_tool("write_project_text", {})
+
+        reviewer = MCPManager("project_context_review", server_target=mcp)
+        reviewer_names = {tool["name"] for tool in await reviewer.tool_definitions()}
+        self.assertEqual(
+            reviewer_names,
+            {"list_project_files", "read_project_text", "search_project_text"},
+        )
+        with self.assertRaises(PermissionError):
+            await reviewer.call_tool("write_project_text", {})
+
+        validator = MCPManager("game_quality_validator", server_target=mcp)
+        validator_names = {tool["name"] for tool in await validator.tool_definitions()}
+        self.assertEqual(validator_names, reviewer_names)
+        with self.assertRaises(PermissionError):
+            await validator.call_tool("write_project_text", {})
 
     async def test_node_manager_rejects_a_different_project_id(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

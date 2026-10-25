@@ -75,6 +75,7 @@ docker compose down
 |---|---|
 | `list_project_files` | `{project_id}` 내부 파일 목록 조회 |
 | `read_project_text` | UTF-8 작업 파일 내용과 SHA-256 조회 |
+| `search_project_text` | 지정 디렉터리의 UTF-8 파일에서 문자열을 검색하고 경로·행·발췌 반환 |
 | `write_project_text` | UTF-8 작업 파일 생성 또는 SHA-256 기반 수정 |
 
 도구가 접근하는 범위는 `MAINFLOW_WORKSPACE/{project_id}` 내부로 제한된다. 절대 경로와 `..` 경로
@@ -93,6 +94,38 @@ docker compose down
 
 다른 Agent가 먼저 파일을 변경하면 해시가 일치하지 않아 수정이 거부된다. 다시 읽은 뒤 변경 내용을
 병합해야 한다.
+
+### Unity 실행 전 프로젝트 문맥 검수
+
+AI가 생성한 Unity 모듈이 있을 때 `design_game_logic`은 프로젝트 조립 직후
+`project-context-review` 작업을 실행한다.
+
+```text
+Unity 프로젝트 조립
+  → C# 클래스/API/이벤트와 요구사항 ID의 구조화 인덱스 생성
+  → MCP 파일 목록 조회
+  → 생성 C# 전체 읽기
+  → 참조 타입·메서드 검색 및 관련 정의 읽기
+  → SceneAssembler/바인딩 계약 교차 검수
+  → 오류가 있으면 기존 feature generator의 검증된 repair 경로로 재생성
+  → Unity 컴파일·Play Mode 검증
+```
+
+구조화 인덱스는 정규식 기반의 결정적 스캐너가 만들며 LLM이 요약하지 않는다. 따라서
+`HealthComponent.Current`처럼 실제 존재하는 API와 `CurrentHealth`처럼 존재하지 않는 API를
+프롬프트 전에 구분할 수 있다. 기능 코드 생성에는 선택 모듈과 의존 타입만 압축한 API 계약을
+전달한다. 기능 생성 호출은 요구사항과 관련된 모듈을 최대 6개까지 검색하고, 공개 API를 중복
+메타데이터가 없는 시그니처 배열로 직렬화한다. 전체 모듈 ID→타입 대응은 작은 조회 목록으로
+유지한다. 7단계 설계 호출도 동일한 압축 API 인덱스를 입력으로 받고, 문맥 검수에는 완성 프로젝트의
+API 계약과 요구사항·이벤트 연결을 함께 전달한다. 로컬 호출은 `LOCAL_LLM_CONTEXT_TOKENS`에서
+출력 토큰과 안전 여유분을 제외한 입력 예산을 넘으면 HTTP 요청 전에 명확한 오류로 중단한다.
+
+검수 모델에는 `list_project_files`, `read_project_text`, `search_project_text`만 공개하며 쓰기 도구는
+허용하지 않는다. 모델이 오류를 보고하면 호스트가 `GeminiFeatureGenerator.repair()`를 호출하고,
+수정 전 프로젝트를 `unity_project_before_context_repair*`로 보존한 뒤 manifest와 source hash를 포함한
+프로젝트 전체를 다시 생성한다. 검수 증거는
+`validation/project_context_review.json`에 저장한다. AI 생성 모듈이 없는 경우에는 API 호출 없이
+해당 작업을 통과 처리한다.
 
 ## 4. Artifact와 작업 파일
 
@@ -198,8 +231,20 @@ runner = MCPToolLLMRunner(manager, provider)
 
 `MCP/policies.py`의 `NODE_TOOL_ALLOWLIST`가 LLM에 공개할 도구를 결정한다.
 
+`project_context_review`는 생성 모듈을 호스트가 먼저 MCP로 강제 읽은 뒤, 모델이 실제
+프로젝트 API 정의를 검색·열람하도록 한다. JSON 형식 오류나 도구 사용 누락은
+`MAINFLOW_PROJECT_REVIEW_ATTEMPTS` 범위에서만 재시도한다. 오류 수정 후에는
+`MAINFLOW_PROJECT_REVIEW_REPAIRS` 횟수만큼 재검수하고, 검수가 끝나지 않더라도 Unity
+컴파일 검증은 진단을 위해 계속 실행한다.
+
+`game_quality_validator`는 모든 에셋 적용과 최종 Unity 검증 뒤에 실행되는 독립 읽기 전용
+Validator AI다. 생성 Agent와 다른 시스템 프롬프트 및 MCP 정책을 사용하며 요구사항 충족,
+진행 가능성, 콘텐츠, 밸런스, UI·피드백, 통합 증거를 `validation/game_validator_ai_result.json`에
+기록한다. 하드 검증 실패를 AI가 통과로 뒤집을 수 없다.
+
 - `user_input`: 파일 목록과 읽기만 허용
 - 나머지 현재 Workflow Node: 목록, 읽기, 작업 파일 쓰기 허용
+- `project_context_review`: 목록, 읽기, 검색만 허용하며 쓰기는 금지
 
 서버에 새 도구를 추가해도 정책에 등록하지 않으면 해당 Node의 LLM에는 보이지 않는다. 모델이 도구
 이름을 임의로 호출해도 `MCPManager`가 실행 전에 다시 거부한다.
@@ -226,6 +271,9 @@ runner = MCPToolLLMRunner(manager, provider)
 | `LLM_{NODE}_PROVIDER` | 없음 | 특정 Node 공급자 재정의, 예: `LLM_ANALYSIS_PROVIDER` |
 | `LLM_{NODE}_MODEL` | 없음 | 특정 Node 모델 재정의, 예: `LLM_ANALYSIS_MODEL` |
 | `LLM_TIMEOUT_SECONDS` | `120` | OpenAI 호환 HTTP 요청 제한 시간 |
+| `LLM_PROJECT_CONTEXT_REVIEW_PROVIDER` | 기능 생성 제공자 | 문맥 검수 전용 공급자 재정의 |
+| `LLM_PROJECT_CONTEXT_REVIEW_MODEL` | 공급자 기본값 | 문맥 검수 전용 모델 재정의 |
+| `MAINFLOW_PROJECT_REVIEW_TOOL_ROUNDS` | `8` | 문맥 검수 MCP 호출 라운드 수(2~16) |
 | `GEMINI_API_KEY` | 없음 | Gemini API 인증 키 |
 | `GEMINI_MODEL` | `gemini-3-flash-preview` | Gemini 기본 모델 |
 | `OPENAI_API_KEY` | 없음 | OpenAI API 인증 키 |

@@ -2,7 +2,9 @@
   "name": "TeamIdle.GameTemplate.Editor",
   "rootNamespace": "TeamIdle.GameTemplate.Editor",
   "references": [
-    "TeamIdle.GameTemplate.Runtime"
+    "TeamIdle.GameTemplate.Runtime",
+    "Unity.2D.Sprite.Editor",
+    "UnityEngine.UI"
   ],
   "includePlatforms": [
     "Editor"

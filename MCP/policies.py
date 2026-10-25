@@ -4,10 +4,12 @@ from __future__ import annotations
 
 LIST_PROJECT_FILES = "list_project_files"
 READ_PROJECT_TEXT = "read_project_text"
+SEARCH_PROJECT_TEXT = "search_project_text"
 WRITE_PROJECT_TEXT = "write_project_text"
 
 READ_TOOLS = frozenset({LIST_PROJECT_FILES, READ_PROJECT_TEXT})
-WORKING_FILE_TOOLS = frozenset({*READ_TOOLS, WRITE_PROJECT_TEXT})
+CONTEXT_REVIEW_TOOLS = frozenset({*READ_TOOLS, SEARCH_PROJECT_TEXT})
+WORKING_FILE_TOOLS = frozenset({*CONTEXT_REVIEW_TOOLS, WRITE_PROJECT_TEXT})
 PROJECT_SCOPED_TOOLS = WORKING_FILE_TOOLS
 
 # The server may grow new tools without exposing them to every LLM. A node only
@@ -19,6 +21,8 @@ NODE_TOOL_ALLOWLIST: dict[str, frozenset[str]] = {
     "analysis": WORKING_FILE_TOOLS,
     "logic_analysis": WORKING_FILE_TOOLS,
     "design_game_logic": WORKING_FILE_TOOLS,
+    "project_context_review": CONTEXT_REVIEW_TOOLS,
+    "game_quality_validator": CONTEXT_REVIEW_TOOLS,
     "generate_image": WORKING_FILE_TOOLS,
     "generate_sound": WORKING_FILE_TOOLS,
     "validate_game": WORKING_FILE_TOOLS,

@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import Literal, NotRequired, TypedDict
 
-ContractVersion = Literal["3.1.0"]
-CONTRACT_VERSION: ContractVersion = "3.1.0"
+ContractVersion = Literal["3.4.0"]
+CONTRACT_VERSION: ContractVersion = "3.4.0"
 
 ImageStyle = Literal["Pixel Art", "Anime", "Cartoon", "Realistic", "Low Poly", "Custom"]
 MoodStyle = Literal["Cyberpunk", "Medieval", "Modern", "Fantasy", "Horror", "Cozy"]
@@ -31,6 +31,11 @@ GenreProfile = Literal[
     "RaisingSimulation",
 ]
 AssetType = Literal["image", "sound"]
+ImageAssetKind = Literal["sprite", "portrait", "ui", "tileset", "illustration", "background"]
+SoundAssetKind = Literal["bgm", "sfx", "ui", "voice", "ambience"]
+UnitySpriteMode = Literal["single", "multiple"]
+UnityAudioLoadType = Literal["decompress_on_load", "compressed_in_memory", "streaming"]
+AudioChannelMode = Literal["mono", "stereo"]
 DraftStatus = Literal["pending", "generated", "failed"]
 ValidationStatus = Literal["pending", "passed", "failed", "needs_revision"]
 Severity = Literal["info", "warning", "error"]
@@ -69,9 +74,34 @@ class AssetRequirement(TypedDict):
     required: bool
 
 
+class ImageGenerationSpec(TypedDict):
+    kind: ImageAssetKind
+    width: int
+    height: int
+    transparent: bool
+    sprite_mode: UnitySpriteMode
+    pixels_per_unit: int
+    tile_width: NotRequired[int]
+    tile_height: NotRequired[int]
+    columns: NotRequired[int]
+    rows: NotRequired[int]
+
+
+class SoundGenerationSpec(TypedDict):
+    kind: SoundAssetKind
+    target_duration_seconds: float
+    loop: bool
+    channels: AudioChannelMode
+    sample_rate_hz: int
+    unity_load_type: UnityAudioLoadType
+    mixer_group: str
+    spatial_blend: float
+
+
 class AssetGenerationItem(AssetRequirement):
     suggested_filename: str
     unity_binding_key: str
+    generation_spec: ImageGenerationSpec | SoundGenerationSpec
 
 
 class AssetGenerationRequest(TypedDict):
@@ -109,6 +139,7 @@ class GeneratedGameModule(TypedDict):
     class_name: str
     source_code: str
     source_sha256: str
+    implementation_plan: NotRequired[dict[str, object]]
 
 
 class ImplementationSystem(TypedDict):
@@ -142,6 +173,272 @@ class GameImplementationPlan(TypedDict):
     playtest_scenarios: list[PlaytestScenario]
 
 
+class BlueprintContentDirective(TypedDict):
+    archetype: str
+    count: int
+    purpose: str
+
+
+class BlueprintEntity(TypedDict):
+    entity_id: str
+    display_name: str
+    archetype: str
+    position_x: float
+    position_y: float
+    scale_x: float
+    scale_y: float
+    color_hex: str
+    behavior_tags: list[str]
+
+
+class BlueprintProgressionOption(TypedDict):
+    option_id: str
+    display_name: str
+    description: str
+    rarity: Literal["common", "rare", "epic", "legendary"]
+
+
+class GameBlueprint(TypedDict):
+    blueprint_version: Literal["1.0.0"]
+    blueprint_id: str
+    source: Literal["deterministic", "local", "gemini"]
+    title: str
+    summary: str
+    scene_width: float
+    scene_height: float
+    background_color_hex: str
+    core_loop: list[str]
+    content: list[BlueprintContentDirective]
+    entities: list[BlueprintEntity]
+    progression_options: list[BlueprintProgressionOption]
+    ui_labels: list[str]
+
+
+class ExperienceCurve(TypedDict):
+    opening: str
+    midgame: str
+    endgame: str
+
+
+class GameDirectorDesign(TypedDict):
+    design_version: Literal["2.0.0"]
+    title: str
+    player_experience: str
+    target_play_minutes: int
+    differentiators: list[str]
+    experience_curve: ExperienceCurve
+    win_conditions: list[str]
+    lose_conditions: list[str]
+
+
+class StatTuning(TypedDict):
+    stat_id: str
+    initial: float
+    minimum: float
+    maximum: float
+    unit: str
+
+
+class EventConnection(TypedDict):
+    event_id: str
+    producer: str
+    consumers: list[str]
+    payload: list[str]
+
+
+class SystemDesign(TypedDict):
+    design_version: Literal["2.0.0"]
+    player_states: list[str]
+    player_abilities: list[str]
+    enemy_states: list[str]
+    combat_formulas: list[str]
+    resources: list[str]
+    progression: list[str]
+    save_data: list[str]
+    event_connections: list[EventConnection]
+    stats: list[StatTuning]
+
+
+class ContentDefinition(TypedDict):
+    content_id: str
+    role: str
+    count: int
+    stats: list[ContentStat]
+    behaviors: list[str]
+
+
+class ContentStat(TypedDict):
+    stat_id: str
+    value: float
+
+
+class ContentPlan(TypedDict):
+    plan_version: Literal["2.0.0"]
+    enemies: list[ContentDefinition]
+    obstacles: list[ContentDefinition]
+    rewards: list[ContentDefinition]
+    stages: list[str]
+    final_goal: str
+
+
+class LevelPlatform(TypedDict):
+    platform_id: str
+    role: Literal["ground", "landing", "moving", "wall", "goal"]
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+class LevelPlacement(TypedDict):
+    placement_id: str
+    archetype: str
+    x: float
+    y: float
+
+
+class LevelZone(TypedDict):
+    zone_id: str
+    title: str
+    purpose: Literal["tutorial", "challenge", "mastery"]
+    challenge: str
+    reward: str
+    difficulty: int
+    required_mechanics: list[str]
+    start_x: float
+    end_x: float
+    checkpoint: LevelPlacement | None
+    platforms: list[LevelPlatform]
+    hazards: list[LevelPlacement]
+    enemies: list[LevelPlacement]
+    collectibles: list[LevelPlacement]
+
+
+class LevelPlan(TypedDict):
+    plan_version: Literal["2.0.0"]
+    genre: GenreProfile
+    player_spawn: LevelPlacement
+    goal: LevelPlacement
+    zones: list[LevelZone]
+    safe_start_seconds: float
+    camera_orthographic_size: float
+    max_horizontal_gap: float
+    max_step_up: float
+    minimum_landing_width: float
+
+
+class BalancePlan(TypedDict):
+    plan_version: Literal["2.0.0"]
+    stats: list[StatTuning]
+    formulas: list[str]
+    difficulty_curve: list[str]
+    reward_costs: list[str]
+
+
+class PresentationCue(TypedDict):
+    cue_id: str
+    trigger: str
+    visual_feedback: str
+    audio_asset_id: str
+
+
+class PresentationPlan(TypedDict):
+    plan_version: Literal["2.0.0"]
+    ui_screens: list[str]
+    state_transitions: list[str]
+    feedback_cues: list[PresentationCue]
+    camera_effects: list[str]
+    particle_requests: list[str]
+    animation_requests: list[str]
+    required_image_asset_ids: list[str]
+    required_sound_asset_ids: list[str]
+
+
+class ValidationRule(TypedDict):
+    rule_id: str
+    description: str
+    required: bool
+
+
+class ValidationPlan(TypedDict):
+    plan_version: Literal["2.0.0"]
+    scenarios: list[PlaytestScenario]
+    rules: list[ValidationRule]
+    required_scene_objects: list[str]
+    required_feature_bindings: list[str]
+
+
+class ImplementationTask(TypedDict):
+    task_id: str
+    category: Literal[
+        "design_review",
+        "module_reuse",
+        "code_generation",
+        "content_configuration",
+        "level_assembly",
+        "ui_binding",
+        "project_generation",
+        "project_context_review",
+        "unity_validation",
+        "quality_evaluation",
+        "packaging",
+    ]
+    description: str
+    dependencies: list[str]
+    acceptance_criteria: list[str]
+    max_attempts: int
+    attempts: int
+    status: Literal["pending", "running", "passed", "failed"]
+    evidence: list[str]
+    last_error: str | None
+
+
+class ImplementationTaskPlan(TypedDict):
+    plan_version: Literal["1.0.0"]
+    genre: GenreProfile
+    time_budget_seconds: int
+    tasks: list[ImplementationTask]
+
+
+class DesignV2Bundle(TypedDict):
+    game_design: GameDirectorDesign
+    system_design: SystemDesign
+    content_plan: ContentPlan
+    level_plan: LevelPlan
+    balance_plan: BalancePlan
+    presentation_plan: PresentationPlan
+    validation_plan: ValidationPlan
+
+
+class PlaytestMetrics(TypedDict):
+    completed: bool
+    elapsed_seconds: float
+    deaths: int
+    stuck_seconds: float
+    last_reached_zone: str
+    failed_transition: str
+    unused_requested_features: list[str]
+    passed_scenarios: list[str]
+
+
+class QualityMetric(TypedDict):
+    metric_id: str
+    score: float
+    maximum: float
+    passed: bool
+    evidence: str
+
+
+class GameQualityReport(TypedDict):
+    report_version: Literal["1.0.0"]
+    score: float
+    threshold: float
+    passed: bool
+    metrics: list[QualityMetric]
+    problems: list[str]
+    telemetry: PlaytestMetrics
+
+
 class GameLogicDesign(TypedDict):
     contract_version: ContractVersion
     design_id: str
@@ -152,6 +449,10 @@ class GameLogicDesign(TypedDict):
     unsupported_mechanics: list[str]
     generated_modules: list[GeneratedGameModule]
     implementation_plan: GameImplementationPlan
+    implementation_tasks: ImplementationTaskPlan
+    game_blueprint: GameBlueprint
+    design_v2: DesignV2Bundle
+    quality_report: NotRequired[GameQualityReport]
 
 
 class ParsedRequest(TypedDict):
@@ -215,6 +516,8 @@ class ValidationIssue(ValidationIssueRequired, total=False):
 class ImageAsset(TypedDict):
     asset_id: str
     name: str
+    kind: ImageAssetKind
+    unity_binding_key: str
     artifact: ArtifactReference
     file_format: str
     width: int
@@ -227,15 +530,20 @@ class ImageDraft(TypedDict):
     draft_id: str
     status: DraftStatus
     assets: list[ImageAsset]
+    missing_required_asset_ids: list[str]
     notes: list[str]
 
 
 class SoundAssetRequired(TypedDict):
     asset_id: str
     name: str
+    kind: SoundAssetKind
+    unity_binding_key: str
     artifact: ArtifactReference
     file_format: str
     duration_seconds: float
+    loop: bool
+    mixer_group: str
     prompt: str
 
 
@@ -248,6 +556,7 @@ class SoundDraft(TypedDict):
     draft_id: str
     status: DraftStatus
     assets: list[SoundAsset]
+    missing_required_asset_ids: list[str]
     notes: list[str]
 
 
@@ -277,12 +586,27 @@ class AssetValidationSpec(TypedDict):
     sound_criteria: list[ValidationCriterion]
 
 
+class ValidatedAsset(TypedDict):
+    asset_id: str
+    asset_type: AssetType
+    unity_binding_key: str
+    artifact: ArtifactReference
+    file_format: str
+
+
+class ValidatedAssetManifest(TypedDict):
+    manifest_version: Literal["1.0.0"]
+    contract_version: ContractVersion
+    assets: list[ValidatedAsset]
+
+
 class ImageValidationResult(TypedDict):
     contract_version: ContractVersion
     status: ValidationStatus
     checks: list[ValidationCheckResult]
     issues: list[ValidationIssue]
     validated_asset_ids: list[str]
+    validated_assets: NotRequired[ValidatedAssetManifest]
 
 
 class SoundValidationResult(TypedDict):
@@ -291,6 +615,36 @@ class SoundValidationResult(TypedDict):
     checks: list[ValidationCheckResult]
     issues: list[ValidationIssue]
     validated_asset_ids: list[str]
+    validated_assets: NotRequired[ValidatedAssetManifest]
+
+
+class AssetBindingEntry(TypedDict):
+    asset_id: str
+    asset_type: AssetType
+    kind: str
+    unity_binding_key: str
+    unity_path: str
+    required: bool
+    sprite_mode: str
+    pixels_per_unit: int
+    transparent: bool
+    tile_width: int
+    tile_height: int
+    columns: int
+    rows: int
+    loop: bool
+    unity_load_type: str
+    mixer_group: str
+    spatial_blend: float
+
+
+class AssetBindingManifest(TypedDict):
+    binding_version: Literal["1.0.0"]
+    contract_version: ContractVersion
+    image_style: ImageStyle
+    entries: list[AssetBindingEntry]
+    missing_required_asset_ids: list[str]
+    warnings: list[str]
 
 
 class IntegratedGame(TypedDict):
@@ -301,13 +655,57 @@ class IntegratedGame(TypedDict):
     applied_image_asset_ids: list[str]
     applied_sound_asset_ids: list[str]
     notes: list[str]
+    asset_binding_manifest: NotRequired[ArtifactReference]
 
 
 class FinalValidationResult(TypedDict):
+    evidence: NotRequired[list[ArtifactReference]]
+    entry_artifact: NotRequired[ArtifactReference | None]
     contract_version: ContractVersion
     status: ValidationStatus
     checks: list[ValidationCheckResult]
     issues: list[ValidationIssue]
+
+
+class GameValidatorAIRequirement(TypedDict):
+    requirement: str
+    status: Literal["satisfied", "partial", "missing", "unverifiable"]
+    evidence: list[str]
+
+
+class GameValidatorAIFinding(TypedDict):
+    severity: Severity
+    category: Literal[
+        "requirement",
+        "gameplay",
+        "progression",
+        "balance",
+        "content",
+        "presentation",
+        "integration",
+        "evidence",
+    ]
+    message: str
+    evidence: list[str]
+    recommendation: str
+
+
+class GameValidatorAIResult(TypedDict):
+    report_version: Literal["1.0.0"]
+    contract_version: ContractVersion
+    status: Literal["passed", "needs_revision", "failed"]
+    score: float
+    summary: str
+    requirement_coverage: list[GameValidatorAIRequirement]
+    findings: list[GameValidatorAIFinding]
+    strengths: list[str]
+    limitations: list[str]
+    inspected_files: list[str]
+    provider: str
+    model: str
+    attempts: int
+    turns: int
+    tool_calls: list[str]
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +734,7 @@ class WorkflowState(TypedDict, total=False):
     sound_validation_result: ArtifactReference
     integrated_game: ArtifactReference
     final_validation_result: ArtifactReference
+    game_validator_ai_result: ArtifactReference
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +854,7 @@ class AssetValidationSpecAgentOutput(TypedDict):
 class ValidateImageAgentInput(TypedDict):
     project_id: str
     parsed_request: ArtifactReference
+    image_asset_request: ArtifactReference
     image_draft: ArtifactReference
     asset_validation_spec: ArtifactReference
 
@@ -478,6 +878,8 @@ class ValidateSoundAgentOutput(TypedDict):
 class ApplyAssetsAgentInput(TypedDict):
     project_id: str
     game_logic_draft: ArtifactReference
+    image_asset_request: ArtifactReference
+    sound_asset_request: ArtifactReference
     image_draft: ArtifactReference
     sound_draft: ArtifactReference
     image_validation_result: ArtifactReference
@@ -489,6 +891,11 @@ class ApplyAssetsAgentOutput(TypedDict):
 
 
 class FinalValidationAgentInput(TypedDict):
+    parsed_request: ArtifactReference
+    game_logic_draft: ArtifactReference
+    game_validation_result: ArtifactReference
+    image_validation_result: ArtifactReference
+    sound_validation_result: ArtifactReference
     project_id: str
     logic_analysis: ArtifactReference
     integrated_game: ArtifactReference
@@ -496,3 +903,19 @@ class FinalValidationAgentInput(TypedDict):
 
 class FinalValidationAgentOutput(TypedDict):
     final_validation_result: ArtifactReference
+
+
+class GameValidatorAIAgentInput(TypedDict):
+    project_id: str
+    parsed_request: ArtifactReference
+    logic_analysis: ArtifactReference
+    game_logic_draft: ArtifactReference
+    game_validation_result: ArtifactReference
+    image_validation_result: ArtifactReference
+    sound_validation_result: ArtifactReference
+    integrated_game: ArtifactReference
+    final_validation_result: ArtifactReference
+
+
+class GameValidatorAIAgentOutput(TypedDict):
+    game_validator_ai_result: ArtifactReference

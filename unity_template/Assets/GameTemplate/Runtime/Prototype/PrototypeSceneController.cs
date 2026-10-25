@@ -20,6 +20,7 @@ namespace TeamIdle.GameTemplate.Prototype
 
         private GUIStyle titleStyle;
         private Vector2 scrollPosition;
+        private bool suppressLegacyHud;
 
         public void Configure(string nextTitle, string nextGenre)
         {
@@ -29,6 +30,9 @@ namespace TeamIdle.GameTemplate.Prototype
 
         private void Start()
         {
+            suppressLegacyHud =
+                genre == "Platformer"
+                && FindFirstObjectByType<PrototypePresentationController>() != null;
             if (genre == "VisualNovel")
             {
                 FindFirstObjectByType<DialogueRunnerModule>()?.Next();
@@ -37,6 +41,11 @@ namespace TeamIdle.GameTemplate.Prototype
 
         private void OnGUI()
         {
+            if (suppressLegacyHud)
+            {
+                return;
+            }
+
             titleStyle ??= new GUIStyle(GUI.skin.label)
             {
                 fontSize = 20,
@@ -89,6 +98,8 @@ namespace TeamIdle.GameTemplate.Prototype
             {
                 GUILayout.Label(
                     $"Collectibles: {collectibles.CollectedCount} / "
+                        + $"{collectibles.RequiredCount}, score: {collectibles.Score} / "
+                        + $"{collectibles.RequiredScore} "
                         + (collectibles.RequirementMet ? "ready" : "required")
                 );
             }
@@ -103,11 +114,37 @@ namespace TeamIdle.GameTemplate.Prototype
         {
             var waves = FindFirstObjectByType<WaveSpawnerModule>();
             var defense = FindFirstObjectByType<BaseDefenseSystemModule>();
+            var economy = FindFirstObjectByType<EconomySystemModule>();
+            var build = FindFirstObjectByType<PrototypeTowerBuildController>();
+            GUILayout.Label("HOW TO PLAY", GUI.skin.box);
+            GUILayout.Label("1. Click a yellow build pad to place an attack tower.");
+            GUILayout.Label("2. Towers fire automatically at enemies on the path.");
+            GUILayout.Label("3. Stop enemies before they reach the green base.");
+            GUILayout.Label(
+                "The first wave starts automatically. Press Space/Enter for the next wave."
+            );
+            GUILayout.Label(
+                $"Gold: {economy?.Currency ?? 0}    Tower cost: {build?.BuildCost ?? 0}"
+            );
+            GUILayout.Label($"Built towers: {build?.BuiltTowerCount ?? 0}");
             GUILayout.Label($"Wave: {waves?.WaveNumber ?? 0}");
+            GUILayout.Label(
+                waves?.IsWaveRunning == true ? "Wave in progress" : "Ready for next wave"
+            );
             GUILayout.Label($"Base lives: {defense?.Lives ?? 0}");
-            if (waves != null && GUILayout.Button("Start next wave"))
+            var keyboardStart =
+                Event.current.type == EventType.KeyDown
+                && (
+                    Event.current.keyCode == KeyCode.Space
+                    || Event.current.keyCode == KeyCode.Return
+                );
+            if (waves != null && (GUILayout.Button("Start next wave") || keyboardStart))
             {
                 waves.StartNextWave();
+                if (keyboardStart)
+                {
+                    Event.current.Use();
+                }
             }
         }
 
@@ -233,6 +270,8 @@ namespace TeamIdle.GameTemplate.Prototype
         private static void DrawSurvivorLike()
         {
             GUILayout.Label("Move: WASD or arrow keys");
+            GUILayout.Label("Enemies spawn around you and chase automatically.");
+            GUILayout.Label("Your wing projectiles automatically attack the nearest enemy.");
             var experience = FindFirstObjectByType<ExperienceSystemModule>();
             var upgrades = FindFirstObjectByType<UpgradeSelectionSystemModule>();
             GUILayout.Label(
@@ -265,61 +304,7 @@ namespace TeamIdle.GameTemplate.Prototype
         }
     }
 
-    public sealed class PrototypeCollectible : MonoBehaviour
-    {
-        private void OnTriggerEnter2D(Collider2D other)
-        {
-            if (!other.CompareTag("Player"))
-            {
-                return;
-            }
-
-            FindFirstObjectByType<CollectibleSystemModule>()?.Collect();
-            Destroy(gameObject);
-        }
-    }
-
-    public sealed class PrototypeGoal : MonoBehaviour
-    {
-        private void OnTriggerEnter2D(Collider2D other)
-        {
-            if (other.CompareTag("Player"))
-            {
-                FindFirstObjectByType<GoalSystemModule>()?.TryComplete();
-            }
-        }
-    }
-
-    public sealed class PrototypeExperienceReward : MonoBehaviour
-    {
-        [SerializeField]
-        private int amount = 2;
-
-        private HealthComponent health;
-
-        private void Awake()
-        {
-            health = GetComponent<HealthComponent>();
-            if (health != null)
-            {
-                health.Died += Grant;
-            }
-        }
-
-        private void OnDestroy()
-        {
-            if (health != null)
-            {
-                health.Died -= Grant;
-            }
-        }
-
-        private void Grant()
-        {
-            FindFirstObjectByType<ExperienceSystemModule>()?.Add(amount);
-        }
-    }
-
+#if false // Moved to PrototypeWingUpgradeApplier.cs for a stable Unity script reference.
     public sealed class PrototypeWingUpgradeApplier : MonoBehaviour
     {
         private UpgradeSelectionSystemModule upgrades;
@@ -376,32 +361,5 @@ namespace TeamIdle.GameTemplate.Prototype
             }
         }
     }
-
-    public sealed class PrototypeTowerEndpoint : MonoBehaviour
-    {
-        private PathFollower2D follower;
-
-        private void Awake()
-        {
-            follower = GetComponent<PathFollower2D>();
-            if (follower != null)
-            {
-                follower.ReachedEnd += ReachEnd;
-            }
-        }
-
-        private void OnDestroy()
-        {
-            if (follower != null)
-            {
-                follower.ReachedEnd -= ReachEnd;
-            }
-        }
-
-        private void ReachEnd()
-        {
-            FindFirstObjectByType<BaseDefenseSystemModule>()?.LoseLives();
-            Destroy(gameObject);
-        }
-    }
+#endif
 }

@@ -88,9 +88,13 @@ def generate_sound_node(
             {
                 "asset_id": plan.asset_id,
                 "name": plan.name,
+                "kind": plan.kind,
+                "unity_binding_key": plan.unity_binding_key,
                 "artifact": reference,
                 "file_format": result.file_format,
                 "duration_seconds": duration,
+                "loop": plan.loop,
+                "mixer_group": plan.mixer_group,
                 "prompt": plan.prompt,
                 "provider": used.name,
             }
@@ -108,6 +112,7 @@ def generate_sound_node(
         "draft_id": f"{asset_request['request_id']}-draft",
         "status": "failed" if missing_required else "generated",
         "assets": assets,
+        "missing_required_asset_ids": missing_required,
         "notes": notes,
     }
     return {

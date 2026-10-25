@@ -1,273 +1,105 @@
 # LocalAI 사용 가이드
 
-- 통합 버전: `1.1.0`
-- 기준일: `2026-10-15`
-- Docker 서비스/컨테이너: `Local-AIModel`
-- 기본 모델: `Gemma 4 E2B QAT Q4_0`
-- 기본 API 모델명: `gemma4-e2b-q4`
-- 선택 가능한 고성능 모델: `Gemma 4 E4B` (`gemma4-e4b`)
-- LocalAI 이미지: `localai/localai:v4.11.0-gpu-nvidia-cuda-12`
+통합 버전: 1.3.0. 기본 모델은 Qwen2.5-Coder-7B-Instruct Q5_K_M(API 이름: qwen2.5-coder-7b-q5-k-m)이다.
+LocalAI v4.11.0 llama.cpp를 사용한다. 공식 텍스트 전용 GGUF는 약 5.44GB이며
+멀티모달 파일은 설치하지 않는다. context 8192, gpu_layers 99, 동시 추론 슬롯 1개,
+호스트 프롬프트 캐시 상한 1024MiB와
+동시 활성 backend 1개로 설정한다. 12GB GPU에서 모델 전체를 GPU에 올리되 Windows와
+Unity가 사용할 여유를 남기는 구성이다.
+자동 컨텍스트 축소는 끄므로 LocalAI 시작 로그의 effective runtime tuning에서
+context=8192인지 확인한다.
 
-## 1. 구성 목적
+MainFlow에도 같은 값을 `LOCAL_LLM_CONTEXT_TOKENS=8192`로 설정한다. 이 값은 서버의
+`context_size`를 변경하지 않고 호출 전 입력 예산을 검사하는 용도이므로 두 값을 항상 같게 유지한다.
+기능 생성은 전체 API 인덱스 대신 요구사항 관련 모듈의 시그니처만 검색해 전달한다.
 
-LocalAI를 Docker Desktop에서 실행하고 Workflow Node가 기존 MCP 권한 체계를 유지한 채 로컬
-LLM을 사용할 수 있게 한다.
+## 실행
 
-```text
-Workflow Node
-  └─ run_llm(ai="gemma4_e2b_q4")
-      └─ Local-AIModel:8080/v1/chat/completions
-          ├─ Gemma 4 E2B Q4 추론
-          └─ MCPToolLLMRunner
-              └─ node_name과 project_id 범위 안에서 MCP Tool 실행
-```
-
-LocalAI는 모델 추론을 담당하고, 파일 Tool 권한과 프로젝트 격리는 기존
-`MCPToolLLMRunner`와 `MCPManager`가 담당한다.
-
-## 2. 버전 1.1.0 변경 사항
-
-- 전용 VRAM 6GB 환경을 위한 `Gemma 4 E2B QAT Q4_0` 프로필 추가
-- E2B Q4를 기본 시작 모델로 변경
-- 공식 GGUF 본체만 다운로드하고 약 987MB의 이미지·오디오용 `mmproj`는 제외
-- E2B 컨텍스트를 4,096 tokens로 제한
-- llama.cpp의 GPU offload와 저 VRAM 모드 사용
-- 기존 E4B 모델은 별도 preload 설정으로 보존
-- `run_llm(ai="gemma4_e2b_q4")` 선택 지원
-
-## 3. 파일 구성
-
-```text
-LocalAI/
-├─ compose.yaml                  # Local-AIModel Docker 서비스
-├─ preload-models.yaml           # 기본 E2B Q4 설치 정의
-├─ preload-gemma4-e4b.yaml       # 선택형 E4B 설치 정의
-├─ profiles.py                   # run_llm의 ai 이름과 API 모델명 연결
-├─ check_connection.py           # API와 모델 등록 상태 검사
-├─ .env.example                  # 환경 변수 예시
-├─ VERSION                       # 통합 버전
-└─ LocalAI_UseGuide.md           # 이 문서
-```
-
-모델 가중치는 Git 저장소가 아니라 Docker named volume
-`idle-capstone-local-ai-models`에 저장된다.
-
-## 4. 모델별 하드웨어 기준
-
-### Gemma 4 E2B Q4 — 기본값
-
-- 공식 GGUF 본체 크기: `3,349,516,256 bytes`(약 3.35GB)
-- Google의 Q4_0 기본 추론 메모리 추정치: 약 2.9GB
-- 프로젝트 기본 context: 4,096 tokens
-- 전용 VRAM 6GB 환경에서 사용하는 프로필
-- MTP 보조 모델과 멀티모달 projector를 사용하지 않음
-
-모델 외에도 KV Cache와 llama.cpp 실행 메모리가 필요하므로 다른 GPU 프로그램을 종료하는 것이
-좋다. 그래도 OOM이 발생하면 `gpu_layers`나 `context_size`를 낮춰야 한다.
-
-### Gemma 4 E4B — 선택형
-
-- 현재 정의는 SGLang MTP 방식
-- 전용 VRAM 24GB 이상 권장
-- 6GB GPU에서는 사용하지 않는 것을 권장
-
-## 5. 사전 준비
-
-1. Docker Desktop과 WSL2를 실행한다.
-2. NVIDIA 드라이버와 Docker GPU 지원을 준비한다.
-3. Docker Desktop의 WSL 자원 제한에 충분한 시스템 RAM을 배정한다.
-4. 모델 저장을 위한 디스크 여유 공간을 확보한다.
-
-E2B Q4 공식 저장소는 공개되어 있으므로 일반적으로 `HF_TOKEN` 없이도 받을 수 있다. 다운로드
-제한이나 인증 정책이 바뀌는 상황을 대비해 토큰 환경 변수는 계속 지원한다.
+Docker Desktop과 NVIDIA GPU 지원을 준비한 뒤 저장소 루트에서 실행한다.
 
 ```powershell
-$env:HF_TOKEN = "본인의 Hugging Face 토큰"
-```
-
-토큰을 사용하더라도 Git, YAML, workspace에는 저장하지 않는다.
-
-## 6. E2B Q4 실행
-
-저장소 루트에서 실행한다.
-
-```powershell
-docker compose -f compose.yaml -f LocalAI/compose.yaml up -d Local-AIModel
-```
-
-최초 실행 시 다음 파일이 Docker named volume으로 다운로드된다.
-
-```text
-google/gemma-4-E2B-it-qat-q4_0-gguf
-└─ gemma-4-E2B_q4_0-it.gguf
-```
-
-텍스트 기반 Workflow와 MCP Tool 호출만 대상으로 하므로
-`gemma-4-E2B-it-mmproj.gguf`는 다운로드하지 않는다.
-
-로그 확인:
-
-```powershell
+uv sync --locked
+docker compose -f compose.yaml -f LocalAI/compose.yaml up -d --force-recreate Local-AIModel
 docker compose -f compose.yaml -f LocalAI/compose.yaml logs -f Local-AIModel
 ```
 
-접속 주소:
-
-```text
-Web UI: http://127.0.0.1:8080
-API:    http://127.0.0.1:8080/v1
-```
-
-## 7. 모델 등록 확인
+최초 다운로드가 끝난 후 등록 상태를 확인한다.
 
 ```powershell
-.\.venv\Scripts\python.exe -m LocalAI.check_connection
+uv run --locked python -m LocalAI.check_connection --model qwen2.5-coder-7b-q5-k-m
 ```
 
-정상 상태에서는 `available_models`에 `gemma4-e2b-q4`가 표시된다.
+Web UI: http://127.0.0.1:8080 / 호스트 API: http://127.0.0.1:8080/v1.
+연결 검사는 등록 여부만 확인하며 코드 생성 성공을 보장하지 않는다.
+모델은 idle-capstone-local-ai-models named volume에 저장되며 기존 모델은 삭제하지 않는다.
 
-E4B를 확인하려면 모델명을 명시한다.
+## 게임 코드 생성
+
+기존 모듈은 재사용하고 없는 기능만 LocalAI에 개별 요청한다.
+응답 JSON과 C# 계약을 검사하고 Unity 프로젝트에 추가한다.
+검증 실패 시 제한된 횟수로 재요청하며 최종 실패는 게임 생성 오류로 기록한다.
+이 경우 이미지/사운드 단계는 계속되지만 정상 게임 생성으로 간주하지 않는다.
 
 ```powershell
-.\.venv\Scripts\python.exe -m LocalAI.check_connection --model gemma4-e4b
+$env:MAINFLOW_FEATURE_PROVIDER = "local"
+$env:LOCAL_LLM_BASE_URL = "http://127.0.0.1:8080/v1"
+$env:LOCAL_LLM_MODEL = "qwen2.5-coder-7b-q5-k-m"
+$env:LLM_TIMEOUT_SECONDS = "300"
+$env:MAINFLOW_LOCAL_MAX_OUTPUT_TOKENS = "2048"
+uv run --locked python -m mainflow.run_flow --image-style "Pixel Art" --mood-style "Fantasy" --genre "플랫포머" --viewpoint "사이드뷰" --condition "벽을 타고 올라갈 수 있는 게임"
 ```
 
-## 8. Node에서 E2B Q4 호출
+게임 생성 provider 기본값은 local이다. Gemini를 사용하려면
+MAINFLOW_FEATURE_PROVIDER=gemini와 GEMINI_API_KEY를 설정한다.
+.env.example 복사만으로 PowerShell 환경 변수가 설정되지는 않는다.
 
-`run_llm`은 MCP가 바인딩된 비동기 Node 안에서 호출한다. `project_id`는 Workflow state를 통해
-MCPManager에 바인딩된다.
-
-```python
-from MCP import run_llm
-
-
-async def analysis_node(state):
-    result = await run_llm(
-        prompt=(
-            f"project_id={state['project_id']}의 입력 파일을 읽고 "
-            "필요한 게임 기능을 분석하세요."
-        ),
-        system_prompt="게임 기능 분석가로 작업하세요.",
-        ai="gemma4_e2b_q4",
-    )
-    return {"analysis_text": result.text}
-```
-
-대소문자와 하이픈은 정규화되므로 `ai="Gemma4-E2B-Q4"`도 같은 프로필을 선택한다.
-
-`ai`를 지정한 호출에는 `provider` 또는 `model`을 동시에 지정할 수 없다.
-
-```python
-# 잘못된 호출
-await run_llm(prompt=prompt, ai="gemma4_e2b_q4", provider="local")
-```
-
-## 9. MainFlow와 함께 실행
+Docker 전체 실행은 최신 코드를 빌드한다.
 
 ```powershell
-docker compose -f compose.yaml -f LocalAI/compose.yaml run --rm mainflow
+docker compose -f compose.yaml -f LocalAI/compose.yaml run --build --rm mainflow
 ```
 
-Docker 내부에서는 다음 주소를 자동 사용한다.
+Docker 내부 주소는 http://Local-AIModel:8080/v1 이다.
+Unity 없는 환경의 정적 검사는 컴파일과 플레이 검사를 대체하지 않는다.
+생성 프로젝트를 Unity에서 열어 실제 동작을 확인해야 한다.
 
-```text
-LOCAL_LLM_BASE_URL=http://Local-AIModel:8080/v1
-LOCAL_LLM_MODEL=gemma4-e2b-q4
-```
+## MCP 경로와 구분
 
-호스트 Python에서 직접 호출할 때는 기본 주소 `http://127.0.0.1:8080/v1`을 사용한다.
+게임 기능 생성기는 제한된 JSON 응답을 받고 호스트가 검증/저장하는 방식이다.
+현재 이 경로는 MCP tool calling을 사용하지 않고 모델에 쉘/파일 도구를 제공하지 않는다.
+다른 MCP 기반 비동기 노드에서는 기존 run_llm(prompt=prompt, ai="gemma4_e4b")를 사용한다.
 
-## 10. E4B로 전환
+## 이전 모델 사용 및 보존
 
-E4B를 사용하려면 기존 컨테이너를 내리고 preload 파일과 기본 모델을 바꿔 실행한다.
+E2B 사용 시 LOCALAI_PRELOAD_MODELS_CONFIG=/configuration/preload-models.yaml,
+LOCALAI_DEFAULT_MODEL=gemma4-e2b-q4, LOCAL_LLM_MODEL=gemma4-e2b-q4로 설정하고
+컨테이너를 재생성한다. 기본 Qwen으로 돌아갈 때는 preload-qwen-coder.yaml과 qwen2.5-coder-7b-q5-k-m로 바꾼다.
+컨테이너 종료만으로 모델은 삭제되지 않는다. down -v는 볼륨 데이터까지 삭제할 수 있다.
 
-```powershell
-docker compose -f compose.yaml -f LocalAI/compose.yaml down
-$env:LOCALAI_PRELOAD_MODELS_CONFIG = "/configuration/preload-gemma4-e4b.yaml"
-$env:LOCALAI_DEFAULT_MODEL = "gemma4-e4b"
-docker compose -f compose.yaml -f LocalAI/compose.yaml up -d Local-AIModel
-```
+## Unity 피드백 수정 반복
 
-Node 호출:
+새 기능 생성 후 Unity 컴파일/씬 조립, Play Mode 검사를 실행한다.
+실패하면 기존 생성 코드와 오류/실패 검사 JSON을 모델에 전달하고 최대 2회 수정한다.
+각 회차는 validation/repair/attempt_N.json에 로그와 결과를 남기며,
+실패 프로젝트는 game/unity_project_failed_attempt_N에 보존한다.
+최종 성공한 코드로 설계 JSON, manifest, ZIP을 다시 만든다.
+환경 오류(에디터 없음, 타임아웃 등)는 코드 수정으로 해결하지 않는다.
 
-```python
-result = await run_llm(prompt=prompt, ai="gemma4_e4b")
-```
+- MAINFLOW_GAME_MAX_REPAIRS: 0~3, 기본 2
+- MAINFLOW_UNITY_VALIDATION_MODE: 새 기능 반복 검증 기본 required
+- MAINFLOW_UNITY_RUNTIME_TESTS: 기본 1, 0이면 Play Mode 검사 생략
+- UNITY_EDITOR_PATH: 자동 탐색 실패 시 실행 파일 지정
+- MAINFLOW_UNITY_VALIDATION_TIMEOUT_SECONDS: Unity 프로세스별 제한, 기본 300
 
-E2B로 돌아갈 때는 현재 PowerShell 세션의 변수를 제거하고 다시 실행한다.
+현재 Play Mode 검사는 예외, 모듈 초기화/바인딩, 좌표 유효성, 플랫포머 좌우 이동을 검사한다.
+벽 타기/대시 등 개별 기능의 모든 의미적 조건을 검증하지는 않는다.
+static 모드는 구조 검사만 수행한다. 성공해도 컴파일/플레이 성공으로 해석하면 안 된다.
+Docker Linux 컨테이너에는 Windows Unity가 없으므로 실제 반복 검증은 호스트 Python에서 실행한다.
+.env.example은 자동 로드하지 않는다. PowerShell 환경 변수로 설정하거나 실행 환경에 주입한다.
 
-```powershell
-Remove-Item Env:LOCALAI_PRELOAD_MODELS_CONFIG -ErrorAction SilentlyContinue
-Remove-Item Env:LOCALAI_DEFAULT_MODEL -ErrorAction SilentlyContinue
-```
+요청 계약은 game_pipeline/feature_contract.py에서 실제 템플릿 API 소스로 구성하고
+game/feature_code_contract.json에 기록한다. 테스트 파일/공통 모듈은 모델 수정 대상이 아니다.
+입력 테스트 전용 필드와 성공 로그 마커를 생성 코드가 사용하는 것도 차단한다.
 
-## 11. Docker 모델 저장소 관리
-
-저장 위치 확인:
-
-```powershell
-docker volume inspect idle-capstone-local-ai-models
-```
-
-컨테이너만 종료하면 모델은 유지된다.
-
-```powershell
-docker compose -f compose.yaml -f LocalAI/compose.yaml down
-```
-
-다음 명령은 Docker volume과 다운로드한 모델까지 제거한다.
-
-```powershell
-docker compose -f compose.yaml -f LocalAI/compose.yaml down -v
-```
-
-## 12. 다른 모델 추가
-
-### 12.1 설치 정의 추가
-
-`LocalAI/` 아래에 새 preload YAML을 만들고 LocalAI gallery 설정이나 직접 다운로드할 GGUF 파일을
-등록한다.
-
-```yaml
-- url: https://example.com/localai-model-config.yaml
-  name: new-model-api-name
-```
-
-GGUF를 직접 등록할 때는 파일명, URI, SHA-256, backend, context 크기와 GPU layer 수를 함께
-검토한다. 모델 파일은 Git에 넣지 않고 `/models` Docker volume으로 다운로드한다.
-
-### 12.2 호출 프로필 추가
-
-`LocalAI/profiles.py`의 `AI_MODEL_PROFILES`에 별칭을 추가한다.
-
-```python
-"new_model": LocalAIModelProfile(
-    provider="local",
-    model="new-model-api-name",
-    base_url_environment="LOCAL_LLM_BASE_URL",
-    default_base_url="http://127.0.0.1:8080/v1",
-    api_key_environment="LOCAL_LLM_API_KEY",
-),
-```
-
-호출 시 등록한 별칭을 사용한다.
-
-```python
-result = await run_llm(prompt=prompt, ai="new_model")
-```
-
-### 12.3 확인 사항
-
-- LocalAI/llama.cpp가 모델 architecture를 지원하는지
-- 모델의 OpenAI Chat Completions 및 Tool Calling 출력이 호환되는지
-- 모델 가중치와 KV Cache가 전용 VRAM 안에 들어오는지
-- API 모델명과 `profiles.py`의 `model` 값이 일치하는지
-- 모델 라이선스와 인증 토큰이 필요한지
-
-## 13. 버전 변경 규칙
-
-- 문서나 기존 프로필 수정: patch 버전 증가
-- 새 모델 또는 backend 추가: minor 버전 증가
-- 호출 API나 Docker 저장 구조의 비호환 변경: major 버전 증가
-
-버전 변경 시 `LocalAI/VERSION`, 이 문서의 통합 버전, preload 주석을 함께 갱신한다.
+모델은 코드 특화 후보로 교체한 것이며, Gemma 대비 모든 작업에서 우수함을 보장하지 않는다.
+실제 요구사항별 성공률/수정 횟수/시간을 비교해야 한다.

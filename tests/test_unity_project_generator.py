@@ -7,13 +7,14 @@ import zipfile
 from io import BytesIO
 from pathlib import Path
 from typing import cast
+from unittest.mock import MagicMock
 
 from game_pipeline import (
     UnityProjectGenerator,
     build_game_logic_design,
     normalize_game_spec,
 )
-from mainflow.contracts import ArtifactReference, CONTRACT_VERSION
+from mainflow.contracts import CONTRACT_VERSION, ArtifactReference
 
 
 class UnityProjectGeneratorTest(unittest.TestCase):
@@ -37,6 +38,21 @@ class UnityProjectGeneratorTest(unittest.TestCase):
         self.assertTrue(result.entry_scene.is_file())
         self.assertTrue(result.manifest_path.is_file())
         self.assertTrue(result.build_request_path.is_file())
+        self.assertTrue(result.game_blueprint_path.is_file())
+        self.assertTrue(result.implementation_tasks_path.is_file())
+        self.assertEqual(
+            set(result.design_document_paths),
+            {
+                "game_design",
+                "system_design",
+                "content_plan",
+                "level_plan",
+                "balance_plan",
+                "presentation_plan",
+                "validation_plan",
+            },
+        )
+        self.assertTrue(all(path.is_file() for path in result.design_document_paths.values()))
         self.assertTrue(result.image_asset_request_path.is_file())
         self.assertTrue(result.sound_asset_request_path.is_file())
         implementation_plan_path = (
@@ -59,8 +75,28 @@ class UnityProjectGeneratorTest(unittest.TestCase):
             manifest["implementation_plan"],
             "Assets/GameTemplate/Generated/GameImplementationPlan.json",
         )
+        self.assertEqual(
+            manifest["game_blueprint"],
+            "Assets/GameTemplate/Generated/GameBlueprint.json",
+        )
+        self.assertEqual(
+            manifest["implementation_tasks"],
+            "Assets/GameTemplate/Generated/ImplementationTasks.json",
+        )
+        self.assertEqual(
+            json.loads(result.game_blueprint_path.read_text(encoding="utf-8")),
+            design["game_blueprint"],
+        )
+        self.assertEqual(
+            json.loads(result.design_document_paths["level_plan"].read_text(encoding="utf-8")),
+            design["design_v2"]["level_plan"],
+        )
         implementation_plan = json.loads(implementation_plan_path.read_text(encoding="utf-8"))
         self.assertEqual(implementation_plan, design["implementation_plan"])
+        implementation_tasks = json.loads(
+            result.implementation_tasks_path.read_text(encoding="utf-8")
+        )
+        self.assertEqual(implementation_tasks, design["implementation_tasks"])
         image_request = json.loads(result.image_asset_request_path.read_text(encoding="utf-8"))
         sound_request = json.loads(result.sound_asset_request_path.read_text(encoding="utf-8"))
         self.assertEqual(image_request["asset_type"], "image")
@@ -79,6 +115,57 @@ class UnityProjectGeneratorTest(unittest.TestCase):
                 for item in image_request["assets"]
             )
         )
+        platformer_design = build_game_logic_design(normalize_game_spec("플랫포머"))
+        platformer_image_request = generator.build_asset_request(
+            platformer_design,
+            "image",
+            image_style="Pixel Art",
+            mood_style="Fantasy",
+            viewpoint="사이드뷰",
+            reference_image=None,
+        )
+        platformer_sound_request = generator.build_asset_request(
+            platformer_design,
+            "sound",
+            image_style="Pixel Art",
+            mood_style="Fantasy",
+            viewpoint="사이드뷰",
+            reference_image=None,
+        )
+        tileset = next(
+            item
+            for item in platformer_image_request["assets"]
+            if item["asset_id"] == "platformer_tileset"
+        )
+        self.assertEqual(
+            tileset["generation_spec"],
+            {
+                "kind": "tileset",
+                "width": 128,
+                "height": 128,
+                "transparent": False,
+                "sprite_mode": "multiple",
+                "pixels_per_unit": 32,
+                "tile_width": 32,
+                "tile_height": 32,
+                "columns": 4,
+                "rows": 4,
+            },
+        )
+        bgm = next(
+            item
+            for item in platformer_sound_request["assets"]
+            if item["asset_id"] == "platformer_bgm"
+        )
+        self.assertEqual(bgm["generation_spec"]["target_duration_seconds"], 90.0)
+        self.assertTrue(bgm["generation_spec"]["loop"])
+        self.assertEqual(bgm["generation_spec"]["unity_load_type"], "streaming")
+        jump = next(
+            item for item in platformer_sound_request["assets"] if item["asset_id"] == "jump_sfx"
+        )
+        self.assertEqual(jump["generation_spec"]["target_duration_seconds"], 1.0)
+        self.assertFalse(jump["generation_spec"]["loop"])
+        self.assertEqual(jump["generation_spec"]["mixer_group"], "SFX")
 
     def test_archive_is_deterministic_and_contains_unity_project(self) -> None:
         design = build_game_logic_design(normalize_game_spec("카드"))
@@ -101,6 +188,27 @@ class UnityProjectGeneratorTest(unittest.TestCase):
             "UnityProject/Assets/GameTemplate/Generated/GameImplementationPlan.json",
             names,
         )
+        self.assertIn(
+            "UnityProject/Assets/GameTemplate/Generated/GameBlueprint.json",
+            names,
+        )
+        self.assertIn(
+            "UnityProject/Assets/GameTemplate/Generated/ImplementationTasks.json",
+            names,
+        )
+        for filename in (
+            "game_design.json",
+            "system_design.json",
+            "content_plan.json",
+            "level_plan.json",
+            "balance_plan.json",
+            "presentation_plan.json",
+            "validation_plan.json",
+        ):
+            self.assertIn(
+                f"UnityProject/Assets/GameTemplate/Generated/Design/{filename}",
+                names,
+            )
         self.assertIn(
             "UnityProject/Assets/GameTemplate/Generated/AssetRequests/image_asset_request.json",
             names,
@@ -140,6 +248,49 @@ class UnityProjectGeneratorTest(unittest.TestCase):
         self.assertEqual(image_request["reference_image"], reference)
         self.assertIsNone(sound_request["reference_image"])
 
+    def test_updates_final_task_state_in_report_and_embedded_design(self) -> None:
+        design = build_game_logic_design(normalize_game_spec("플랫포머"))
+        generator = UnityProjectGenerator()
+        result = generator.generate(design, self.output_root / "TaskState")
+        final_plan = json.loads(json.dumps(design["implementation_tasks"]))
+        for task in final_plan["tasks"]:
+            task["attempts"] = 1
+            task["status"] = "passed"
+            task["evidence"] = ["verified"]
+
+        generator.update_implementation_tasks(result.project_root, final_plan)
+
+        task_report = json.loads(result.implementation_tasks_path.read_text(encoding="utf-8"))
+        embedded_design = json.loads(
+            (result.project_root / generator.DESIGN_PATH).read_text(encoding="utf-8")
+        )
+        self.assertEqual(task_report, final_plan)
+        self.assertEqual(embedded_design["implementation_tasks"], final_plan)
+
+    def test_persists_quality_report_in_project_and_manifest(self) -> None:
+        design = build_game_logic_design(normalize_game_spec("플랫포머"))
+        generator = UnityProjectGenerator()
+        result = generator.generate(design, self.output_root / "QualityReport")
+        report = {
+            "report_version": "1.0.0",
+            "score": 92,
+            "threshold": 80,
+            "passed": True,
+            "metrics": [],
+            "problems": [],
+            "telemetry": {},
+        }
+
+        report_path = generator.update_quality_report(result.project_root, report)
+
+        self.assertEqual(json.loads(report_path.read_text(encoding="utf-8")), report)
+        embedded_design = json.loads(
+            (result.project_root / generator.DESIGN_PATH).read_text(encoding="utf-8")
+        )
+        manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(embedded_design["quality_report"], report)
+        self.assertEqual(manifest["quality_report"], generator.QUALITY_REPORT_PATH.as_posix())
+
     def test_rejects_existing_destination(self) -> None:
         destination = self.output_root / "Existing"
         destination.mkdir()
@@ -147,6 +298,20 @@ class UnityProjectGeneratorTest(unittest.TestCase):
 
         with self.assertRaises(FileExistsError):
             UnityProjectGenerator().generate(design, destination)
+
+    def test_staging_commit_retries_a_transient_windows_file_lock(self) -> None:
+        staging = MagicMock(spec=Path)
+        destination = MagicMock(spec=Path)
+        staging.replace.side_effect = [PermissionError("locked"), None]
+        destination.exists.return_value = False
+
+        UnityProjectGenerator._commit_staging_directory(
+            staging,
+            destination,
+            max_attempts=2,
+        )
+
+        self.assertEqual(staging.replace.call_count, 2)
 
 
 if __name__ == "__main__":

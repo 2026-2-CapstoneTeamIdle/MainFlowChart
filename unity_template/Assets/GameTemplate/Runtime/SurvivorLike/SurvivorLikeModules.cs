@@ -1,3 +1,4 @@
+#if false // Compatibility shell: MonoBehaviours were moved to filename-matched scripts.
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -41,32 +42,6 @@ namespace TeamIdle.GameTemplate.SurvivorLike
             if (IsInitialized && target != null)
             {
                 target.linearVelocity = input.Movement.normalized * moveSpeed;
-            }
-        }
-    }
-
-    public sealed class ChaseAgent2D : MonoBehaviour
-    {
-        [SerializeField]
-        private Transform target;
-
-        [SerializeField]
-        private float speed = 2f;
-
-        public void SetTarget(Transform nextTarget)
-        {
-            target = nextTarget;
-        }
-
-        private void Update()
-        {
-            if (target != null)
-            {
-                transform.position = Vector3.MoveTowards(
-                    transform.position,
-                    target.position,
-                    speed * Time.deltaTime
-                );
             }
         }
     }
@@ -123,106 +98,6 @@ namespace TeamIdle.GameTemplate.SurvivorLike
 
                 yield return new WaitForSeconds(Mathf.Max(0.05f, spawnInterval));
             }
-        }
-    }
-
-    public sealed class AutoTargetSystemModule : GameModuleBehaviour
-    {
-        [SerializeField]
-        private Transform origin;
-
-        [SerializeField]
-        private Projectile2D projectilePrefab;
-
-        [SerializeField]
-        private LayerMask enemyMask;
-
-        [SerializeField]
-        private float range = 8f;
-
-        [SerializeField]
-        private float attacksPerSecond = 1f;
-
-        [SerializeField]
-        private float damage = 10f;
-
-        [SerializeField]
-        private int projectileCount = 1;
-
-        private ProjectileSystemModule projectiles;
-        private float nextAttackTime;
-
-        public override string ModuleId => "auto_target_system";
-
-        public float Damage
-        {
-            get => damage;
-            set => damage = Mathf.Max(0f, value);
-        }
-
-        public float AttacksPerSecond
-        {
-            get => attacksPerSecond;
-            set => attacksPerSecond = Mathf.Max(0.01f, value);
-        }
-
-        public int ProjectileCount
-        {
-            get => projectileCount;
-            set => projectileCount = Mathf.Max(1, value);
-        }
-
-        protected override void OnInitialize(GameContext context)
-        {
-            projectiles = context.GetRequired<ProjectileSystemModule>();
-            origin ??= transform;
-            context.Register(this);
-        }
-
-        private void Update()
-        {
-            if (!IsInitialized || projectilePrefab == null || Time.time < nextAttackTime)
-            {
-                return;
-            }
-
-            var target = FindNearest();
-            if (target == null)
-            {
-                return;
-            }
-
-            var baseDirection = ((Vector2)target.position - (Vector2)origin.position).normalized;
-            var spread = Mathf.Min(45f, 8f * (projectileCount - 1));
-            for (var index = 0; index < projectileCount; index++)
-            {
-                var t = projectileCount == 1 ? 0.5f : index / (float)(projectileCount - 1);
-                var angle = Mathf.Lerp(-spread * 0.5f, spread * 0.5f, t);
-                var direction = Quaternion.Euler(0f, 0f, angle) * baseDirection;
-                projectiles.Spawn(projectilePrefab, origin.position, direction, damage, 12f);
-            }
-
-            nextAttackTime = Time.time + 1f / attacksPerSecond;
-        }
-
-        private Transform FindNearest()
-        {
-            var hits = Physics2D.OverlapCircleAll(origin.position, range, enemyMask);
-            Transform nearest = null;
-            var nearestDistance = float.PositiveInfinity;
-            foreach (var hit in hits)
-            {
-                var distance = (
-                    (Vector2)hit.transform.position - (Vector2)origin.position
-                ).sqrMagnitude;
-                if (distance < nearestDistance)
-                {
-                    nearest = hit.transform;
-                    nearestDistance = distance;
-                }
-            }
-
-            return nearest;
         }
     }
 
@@ -327,81 +202,5 @@ namespace TeamIdle.GameTemplate.SurvivorLike
         [TextArea]
         public string description = string.Empty;
     }
-
-    public sealed class UpgradeSelectionSystemModule : GameModuleBehaviour
-    {
-        public sealed class UpgradeChoice
-        {
-            public UpgradeDefinition Upgrade { get; set; }
-            public UpgradeRarity Rarity { get; set; }
-        }
-
-        [SerializeField]
-        private List<UpgradeDefinition> upgradePool = new();
-
-        [SerializeField]
-        private int choiceCount = 3;
-
-        private readonly List<UpgradeChoice> currentChoices = new();
-        private ExperienceSystemModule experience;
-        private RaritySystemModule rarity;
-
-        public override string ModuleId => "upgrade_selection_system";
-
-        public IReadOnlyList<UpgradeChoice> CurrentChoices => currentChoices;
-
-        public event Action<IReadOnlyList<UpgradeChoice>> ChoicesPresented;
-
-        public event Action<UpgradeChoice> Selected;
-
-        public bool Select(int index)
-        {
-            if (index < 0 || index >= currentChoices.Count)
-            {
-                return false;
-            }
-
-            var choice = currentChoices[index];
-            currentChoices.Clear();
-            Selected?.Invoke(choice);
-            return true;
-        }
-
-        protected override void OnInitialize(GameContext context)
-        {
-            experience = context.GetRequired<ExperienceSystemModule>();
-            rarity = context.GetRequired<RaritySystemModule>();
-            experience.LevelGained += OnLevelGained;
-            context.Register(this);
-        }
-
-        protected override void OnShutdown()
-        {
-            if (experience != null)
-            {
-                experience.LevelGained -= OnLevelGained;
-            }
-        }
-
-        private void OnLevelGained(int _)
-        {
-            currentChoices.Clear();
-            var candidates = new List<UpgradeDefinition>(upgradePool);
-            var count = Mathf.Min(Mathf.Max(1, choiceCount), candidates.Count);
-            for (var index = 0; index < count; index++)
-            {
-                var candidateIndex = UnityEngine.Random.Range(0, candidates.Count);
-                currentChoices.Add(
-                    new UpgradeChoice
-                    {
-                        Upgrade = candidates[candidateIndex],
-                        Rarity = rarity.Roll(),
-                    }
-                );
-                candidates.RemoveAt(candidateIndex);
-            }
-
-            ChoicesPresented?.Invoke(currentChoices);
-        }
-    }
 }
+#endif

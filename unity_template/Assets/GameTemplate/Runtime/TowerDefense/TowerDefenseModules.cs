@@ -1,3 +1,4 @@
+#if false // Compatibility shell: MonoBehaviours were moved to filename-matched scripts.
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -72,11 +73,19 @@ namespace TeamIdle.GameTemplate.TowerDefense
         [SerializeField]
         private float spawnInterval = 0.5f;
 
+        [SerializeField]
+        private bool autoStartFirstWave = true;
+
+        [SerializeField]
+        private float initialDelay = 1.5f;
+
         private bool waveRunning;
 
         public override string ModuleId => "wave_spawner";
 
         public int WaveNumber { get; private set; }
+
+        public bool IsWaveRunning => waveRunning;
 
         public event Action<int> WaveStarted;
 
@@ -96,6 +105,16 @@ namespace TeamIdle.GameTemplate.TowerDefense
         protected override void OnInitialize(GameContext context)
         {
             context.Register(this);
+            if (autoStartFirstWave)
+            {
+                StartCoroutine(StartFirstWaveAfterDelay());
+            }
+        }
+
+        private IEnumerator StartFirstWaveAfterDelay()
+        {
+            yield return new WaitForSeconds(Mathf.Max(0f, initialDelay));
+            StartNextWave();
         }
 
         private IEnumerator SpawnWave()
@@ -213,3 +232,4 @@ namespace TeamIdle.GameTemplate.TowerDefense
         }
     }
 }
+#endif

@@ -30,6 +30,9 @@ from mainflow.contracts import (
     FinalValidationAgentInput,
     FinalValidationAgentOutput,
     FinalValidationResult,
+    GameValidatorAIAgentInput,
+    GameValidatorAIAgentOutput,
+    GameValidatorAIResult,
     GameLogicDraft,
     GameValidationResult,
     GenerateImageAgentInput,
@@ -222,6 +225,8 @@ def mock_generate_image_node(
             {
                 "asset_id": asset_request["assets"][0]["asset_id"],
                 "name": "Mock Player",
+                "kind": "sprite",
+                "unity_binding_key": asset_request["assets"][0]["unity_binding_key"],
                 "artifact": image_reference,
                 "file_format": "svg",
                 "width": 64,
@@ -229,6 +234,7 @@ def mock_generate_image_node(
                 "prompt": f"{request['image_style']} player character",
             }
         ],
+        "missing_required_asset_ids": [],
         "notes": [],
     }
     return {
@@ -291,6 +297,14 @@ def mock_design_game_logic_node(
                 "required": True,
                 "suggested_filename": "player-image.png",
                 "unity_binding_key": "asset_registry:player-image",
+                "generation_spec": {
+                    "kind": "sprite",
+                    "width": 64,
+                    "height": 64,
+                    "transparent": True,
+                    "sprite_mode": "single",
+                    "pixels_per_unit": 32,
+                },
             }
         ],
     }
@@ -315,6 +329,16 @@ def mock_design_game_logic_node(
                 "required": True,
                 "suggested_filename": "theme-sound.wav",
                 "unity_binding_key": "asset_registry:theme-sound",
+                "generation_spec": {
+                    "kind": "bgm",
+                    "target_duration_seconds": 90.0,
+                    "loop": True,
+                    "channels": "stereo",
+                    "sample_rate_hz": 44100,
+                    "unity_load_type": "streaming",
+                    "mixer_group": "Music",
+                    "spatial_blend": 0.0,
+                },
             }
         ],
     }
@@ -385,12 +409,17 @@ def mock_generate_sound_node(
             {
                 "asset_id": asset_request["assets"][0]["asset_id"],
                 "name": "Mock Theme",
+                "kind": "bgm",
+                "unity_binding_key": asset_request["assets"][0]["unity_binding_key"],
                 "artifact": sound_reference,
                 "file_format": "wav",
                 "duration_seconds": 0.1,
+                "loop": True,
+                "mixer_group": "Music",
                 "prompt": f"Short theme for a {request['genre']} game",
             }
         ],
+        "missing_required_asset_ids": [],
         "notes": [],
     }
     return {
@@ -526,6 +555,19 @@ def mock_validate_image_node(
         ],
         "issues": [],
         "validated_asset_ids": [asset["asset_id"]] if passed else [],
+        "validated_assets": {
+            "manifest_version": "1.0.0",
+            "contract_version": CONTRACT_VERSION,
+            "assets": [
+                {
+                    key: asset[key]
+                    for key in ("asset_id", "unity_binding_key", "artifact", "file_format")
+                }
+                | {"asset_type": "image" if asset["artifact"]["category"] == "image" else "sound"}
+            ]
+            if passed
+            else [],
+        },
     }
     return {
         "image_validation_result": runtime.manager.write_json(
@@ -564,6 +606,19 @@ def mock_validate_sound_node(
         ],
         "issues": [],
         "validated_asset_ids": [asset["asset_id"]] if passed else [],
+        "validated_assets": {
+            "manifest_version": "1.0.0",
+            "contract_version": CONTRACT_VERSION,
+            "assets": [
+                {
+                    key: asset[key]
+                    for key in ("asset_id", "unity_binding_key", "artifact", "file_format")
+                }
+                | {"asset_type": "image" if asset["artifact"]["category"] == "image" else "sound"}
+            ]
+            if passed
+            else [],
+        },
     }
     return {
         "sound_validation_result": runtime.manager.write_json(
@@ -659,5 +714,49 @@ def mock_final_validation_node(
             "final_validation_result.json",
             result,
             producer="final_validation",
+        )
+    }
+
+
+def mock_game_quality_validator_node(
+    state: GameValidatorAIAgentInput,
+    runtime: MockRuntime,
+) -> GameValidatorAIAgentOutput:
+    runtime.delay("game_quality_validator")
+    final_result = cast(
+        FinalValidationResult,
+        runtime.manager.read_json(state["final_validation_result"]),
+    )
+    passed = final_result["status"] == "passed"
+    result: GameValidatorAIResult = {
+        "report_version": "1.0.0",
+        "contract_version": CONTRACT_VERSION,
+        "status": "passed" if passed else "failed",
+        "score": 90.0 if passed else 0.0,
+        "summary": "Mock independent quality audit completed.",
+        "requirement_coverage": [
+            {
+                "requirement": "Complete the requested vertical slice",
+                "status": "satisfied" if passed else "missing",
+                "evidence": ["final_validation_result.status"],
+            }
+        ],
+        "findings": [],
+        "strengths": ["Mock hard validation passed"] if passed else [],
+        "limitations": ["Mock evaluation does not invoke an LLM"],
+        "inspected_files": ["game/unity_project/mock-game.json"],
+        "provider": "mock",
+        "model": "mock-validator",
+        "attempts": 1,
+        "turns": 1,
+        "tool_calls": ["list_project_files", "read_project_text"],
+    }
+    return {
+        "game_validator_ai_result": runtime.manager.write_json(
+            state["project_id"],
+            "validation",
+            "game_validator_ai_result.json",
+            result,
+            producer="game_quality_validator",
         )
     }

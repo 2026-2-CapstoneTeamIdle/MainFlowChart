@@ -1,4 +1,3 @@
-using System;
 using TeamIdle.GameTemplate.Common;
 using TeamIdle.GameTemplate.Core;
 using UnityEngine;
@@ -32,6 +31,16 @@ namespace TeamIdle.GameTemplate.Platformer
         private float jumpQueuedUntil = float.NegativeInfinity;
 
         public override string ModuleId => "platformer_movement";
+
+        public float MoveSpeed => moveSpeed;
+
+        public float JumpVelocity => jumpVelocity;
+
+        public void Configure(float nextMoveSpeed, float nextJumpVelocity)
+        {
+            moveSpeed = Mathf.Max(0.1f, nextMoveSpeed);
+            jumpVelocity = Mathf.Max(0.1f, nextJumpVelocity);
+        }
 
         public void Bind(Rigidbody2D body, Transform nextGroundCheck = null)
         {
@@ -85,60 +94,6 @@ namespace TeamIdle.GameTemplate.Platformer
             }
 
             return false;
-        }
-    }
-
-    public sealed class CollectibleSystemModule : GameModuleBehaviour
-    {
-        [SerializeField]
-        private int requiredCount;
-
-        public override string ModuleId => "collectible_system";
-
-        public int CollectedCount { get; private set; }
-
-        public bool RequirementMet => CollectedCount >= requiredCount;
-
-        public event Action<int, int> Collected;
-
-        public void Collect(int amount = 1)
-        {
-            CollectedCount = Mathf.Max(0, CollectedCount + amount);
-            Collected?.Invoke(CollectedCount, requiredCount);
-        }
-
-        protected override void OnInitialize(GameContext context)
-        {
-            context.Register(this);
-        }
-    }
-
-    public sealed class GoalSystemModule : GameModuleBehaviour
-    {
-        private CollectibleSystemModule collectibles;
-
-        public override string ModuleId => "goal_system";
-
-        public bool IsCompleted { get; private set; }
-
-        public event Action Completed;
-
-        public bool TryComplete()
-        {
-            if (IsCompleted || (collectibles != null && !collectibles.RequirementMet))
-            {
-                return false;
-            }
-
-            IsCompleted = true;
-            Completed?.Invoke();
-            return true;
-        }
-
-        protected override void OnInitialize(GameContext context)
-        {
-            context.TryGet(out collectibles);
-            context.Register(this);
         }
     }
 }
