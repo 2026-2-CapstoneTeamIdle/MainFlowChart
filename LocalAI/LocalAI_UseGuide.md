@@ -1,6 +1,6 @@
 # LocalAI 사용 가이드
 
-통합 버전: 1.4.0. 기본 모델은 Qwen2.5-Coder-7B-Instruct Q5_K_M(API 이름: qwen2.5-coder-7b-q5-k-m)이다.
+통합 버전: 1.5.0. 기본 텍스트 모델은 Qwen2.5-Coder-7B-Instruct Q5_K_M(API 이름: qwen2.5-coder-7b-q5-k-m)이다.
 LocalAI v4.11.0 llama.cpp를 사용한다. 공식 텍스트 전용 GGUF는 약 5.44GB이며
 멀티모달 파일은 설치하지 않는다. context 8192, gpu_layers 99, 동시 추론 슬롯 1개,
 호스트 프롬프트 캐시 상한 1024MiB와
@@ -12,6 +12,12 @@ context=8192인지 확인한다.
 선택형 시각 검증은 Qwen3-VL-4B-Instruct Q4_K_M과 Q8 vision projector를 사용한다.
 `preload-visual.yaml`을 선택하면 코드 모델과 VLM을 함께 등록하되 한 번에 한 backend만
 활성화한다. 자세한 실행 흐름은 `docs/VisualValidationManager.md`를 따른다.
+
+Node 공통 실행기의 로컬 이미지 생성은 `stabilityai/sd-turbo`를 `sd-turbo`라는 API 이름으로
+사용한다. 6GB 전용 GPU를 기준으로 512x512, FP16, 기본 2 step으로 설정했다. 이 경로는
+`run_node_llm(output="image")` 전용이며 기존 `mainflow/image_backends.py`의 게임 에셋 생성
+경로를 교체하거나 변경하지 않는다. `LOCALAI_SINGLE_ACTIVE_BACKEND`도 활성화해 텍스트/VLM/이미지
+backend가 동시에 VRAM을 점유하지 않고 모델 전환 시 이전 backend를 내리도록 했다.
 
 MainFlow에도 같은 값을 `LOCAL_LLM_CONTEXT_TOKENS=8192`로 설정한다. 이 값은 서버의
 `context_size`를 변경하지 않고 호출 전 입력 예산을 검사하는 용도이므로 두 값을 항상 같게 유지한다.
@@ -36,6 +42,66 @@ uv run --locked python -m LocalAI.check_connection --model qwen2.5-coder-7b-q5-k
 Web UI: http://127.0.0.1:8080 / 호스트 API: http://127.0.0.1:8080/v1.
 연결 검사는 등록 여부만 확인하며 코드 생성 성공을 보장하지 않는다.
 모델은 idle-capstone-local-ai-models named volume에 저장되며 기존 모델은 삭제하지 않는다.
+`Local-AIBackendSetup` 일회성 서비스는 CUDA 12 Diffusers backend를
+`idle-capstone-local-ai-backends` volume에 설치하고 SD-Turbo 설정을 쓰기 가능한 runtime 설정
+volume으로 복사한다. LocalAI는 이 준비 서비스가 성공한 뒤 시작한다. Diffusers 가중치는 최초
+시작 시 `idle-capstone-local-ai-models`의 관리형 cache로 다운로드된다. 단일 checkpoint와 예제
+이미지는 제외하고 Diffusers 구성요소만 저장한다. 따라서 최초 컨테이너 시작과 첫 요청은
+backend/모델 다운로드 때문에 오래 걸릴 수 있다. runtime 설정은
+`idle-capstone-local-ai-configuration` volume에 저장된다.
+
+## Node 공통 이미지 생성
+
+State에 `project_id`가 바인딩된 비동기 Node에서 텍스트 호출과 같은 함수에
+`output="image"`를 지정한다.
+
+```python
+from MCP import ImageGenerationOptions, ImageRunResult, run_node_llm
+
+
+async def make_target_image(state):
+    result = await run_node_llm(
+        "pixel art side-view platformer, forest ruins, readable game screen",
+        system_prompt="Create a coherent target screenshot without text or watermark.",
+        ai="sd_turbo",
+        output="image",
+        image_options=ImageGenerationOptions(
+            size="512x512",
+            steps=2,
+            negative_prompt="blurry, text, watermark, broken UI",
+            filename_prefix="visual_target",
+        ),
+    )
+    assert isinstance(result, ImageRunResult)
+    return {"target_image": result.artifacts[0]}
+```
+
+결과 이미지는 임시 URL이 아니라
+`workspace/{project_id}/generated/images/{filename_prefix}_*.png`에 저장되고 manifest에
+등록된 `ArtifactReference`로 반환된다. `system_prompt`는 이미지 모델의 별도 system role이
+아니라 이미지 prompt 앞에 붙는 지시문으로 처리한다. 이미지 모델은 MCP 파일 Tool을 호출하지
+않으며, `require_tool=True`는 오류다.
+
+별칭을 생략해도 이미지 출력의 기본 모델은 `LOCAL_IMAGE_MODEL` 또는 `sd-turbo`다. 로컬 호스트와
+Docker 주소는 다음 변수로 분리한다.
+
+```powershell
+$env:LOCAL_IMAGE_BASE_URL = "http://127.0.0.1:8080/v1"
+$env:LOCAL_IMAGE_MODEL = "sd-turbo"
+```
+
+Compose의 MainFlow 컨테이너에는 `http://Local-AIModel:8080/v1`이 자동 주입된다. 현재 이미지
+분기는 LocalAI만 허용한다. 다른 로컬 이미지 모델을 추가하려면 새 LocalAI YAML을 `/models`에
+mount하고, `LocalAI/profiles.py`에 `capabilities=frozenset({"image"})`인 별칭을 추가한다.
+
+실제 공통 실행기부터 Artifact 저장까지 한 번에 확인하려면 다음을 실행한다.
+
+```powershell
+$env:LOCAL_IMAGE_BASE_URL = "http://127.0.0.1:8080/v1"
+uv run --locked python -m LocalAI.check_image_generation
+```
+
+출력 JSON의 `artifacts[0].relative_path`가 실제 생성 파일 경로다.
 
 ## 게임 코드 생성
 

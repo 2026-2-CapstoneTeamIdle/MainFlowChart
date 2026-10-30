@@ -1,0 +1,33 @@
+# LocalAI image profile for a 6 GB NVIDIA GPU.
+# SD-Turbo is intentionally kept at 512x512 and 1-4 steps by the caller.
+name: sd-turbo
+description: Fast local 512x512 image generation for node-level visual tasks
+backend: diffusers
+known_usecases:
+  - image
+artifacts:
+  - name: model
+    target: model
+    source:
+      type: huggingface
+      repo: stabilityai/sd-turbo
+      ignore_patterns:
+        - .gitattributes
+        - LICENSE.md
+        - README.md
+        - "*.png"
+        - "*.jpg"
+        - sd_turbo.safetensors
+    resolved:
+      endpoint: https://huggingface.co
+      revision: b261bac6fd2cf515557d5d0707481eafa0485ec2
+      cache_key: 5a4c06427fbc882820f50ad951715b8837fe187334f5f21447229bfaec2733a0
+parameters:
+  model: stabilityai/sd-turbo
+f16: true
+step: 2
+diffusers:
+  cuda: true
+  pipeline_type: AutoPipelineForText2Image
+  enable_parameters: negative_prompt,num_inference_steps
+  cfg_scale: 0.0

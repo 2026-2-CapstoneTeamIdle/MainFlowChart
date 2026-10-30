@@ -3,19 +3,24 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from base64 import b64encode
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from LocalAI.profiles import AI_MODEL_PROFILES, resolve_ai_settings
 from mainflow.ArtifactManager import ArtifactManager
+from MCP.image_provider import GeneratedImageData, LocalImageGenerationProvider
 from MCP.llm_config import LLMSettings
-from MCP.llm_runner import MCPToolLLMRunner
+from MCP.llm_runner import MCPToolLLMRunner, run_node_llm
 from MCP.llm_types import (
+    ImageGenerationOptions,
+    ImageRunResult,
     LLMConversationMessage,
     LLMProviderResponse,
     LLMToolCall,
 )
 from MCP.manager import MCPManager, MCPToolDefinition
+from MCP.node_context import bind_mcp_tools
 from MCP.server import mcp
 
 
@@ -182,6 +187,82 @@ class LLMRunnerTest(unittest.IsolatedAsyncioTestCase):
     def test_unknown_local_ai_profile_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             resolve_ai_settings("not-registered", "analysis")
+
+    def test_sd_turbo_profile_is_image_only(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            settings = resolve_ai_settings("sd-turbo", "generate_image", capability="image")
+
+        self.assertEqual(settings.provider, "local")
+        self.assertEqual(settings.model, "sd-turbo")
+        self.assertEqual(settings.base_url, "http://127.0.0.1:8080/v1")
+        with self.assertRaises(ValueError):
+            resolve_ai_settings("sd-turbo", "analysis")
+
+    async def test_image_output_is_saved_as_project_artifact(self) -> None:
+        png = b"\x89PNG\r\n\x1a\nnode-image"
+        generated = GeneratedImageData(png, "image/png", ".png")
+
+        async def image_node(state: dict[str, str]) -> ImageRunResult:
+            result = await run_node_llm(
+                "pixel art forest platformer",
+                ai="sd_turbo",
+                output="image",
+                image_options=ImageGenerationOptions(filename_prefix="target_scene"),
+            )
+            assert isinstance(result, ImageRunResult)
+            return result
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory) / "workspace"
+            with patch.dict(os.environ, {"MAINFLOW_WORKSPACE": str(workspace)}):
+                artifact_manager = ArtifactManager()
+                project_id = artifact_manager.create_project()
+                bound_node = bind_mcp_tools("generate_image", image_node)
+                with patch.object(
+                    LocalImageGenerationProvider,
+                    "generate",
+                    AsyncMock(return_value=(generated,)),
+                ):
+                    result = await bound_node({"project_id": project_id})
+
+                self.assertEqual(result.provider, "local")
+                self.assertEqual(result.model, "sd-turbo")
+                self.assertEqual(len(result.artifacts), 1)
+                self.assertEqual(
+                    artifact_manager.read_bytes(result.artifacts[0]),
+                    png,
+                )
+                self.assertTrue(
+                    result.artifacts[0]["relative_path"].startswith(
+                        "generated/images/target_scene_01_"
+                    )
+                )
+
+    async def test_local_image_provider_accepts_base64_response(self) -> None:
+        png = b"\x89PNG\r\n\x1a\nprovider-image"
+        settings = LLMSettings(
+            provider="local",
+            model="sd-turbo",
+            api_key=None,
+            base_url="http://127.0.0.1:8080/v1",
+            timeout_seconds=30,
+        )
+        provider = LocalImageGenerationProvider(settings)
+        with patch.object(
+            provider,
+            "_post_json",
+            return_value={"data": [{"b64_json": b64encode(png).decode("ascii")}]},
+        ) as request:
+            images = await provider.generate(
+                "pixel art tower",
+                ImageGenerationOptions(size="512x512", steps=2),
+            )
+
+        self.assertEqual(images[0].content, png)
+        payload = request.call_args.args[0]
+        self.assertEqual(payload["model"], "sd-turbo")
+        self.assertEqual(payload["step"], 2)
+        self.assertEqual(payload["response_format"], "b64_json")
 
 
 if __name__ == "__main__":

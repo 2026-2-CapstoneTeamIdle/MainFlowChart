@@ -24,6 +24,7 @@ LangGraph Node
 - `MCP/config.py`: Docker와 로컬 환경 변수 설정
 - `MCP/llm_config.py`: 공급자·모델·endpoint 환경 변수 해석
 - `MCP/llm_providers.py`: Gemini와 OpenAI 호환 API 응답을 공통 형식으로 변환
+- `MCP/image_provider.py`: LocalAI 이미지 응답을 검사·다운로드·decode
 - `MCP/llm_runner.py`: LLM Tool 요청을 MCP로 실행하고 결과를 모델에 다시 전달
 
 LangGraph의 Edge와 State 계약은 변경하지 않는다. MCP는 파일 접근 능력을 제공할 뿐이며 Agent
@@ -227,6 +228,32 @@ runner = MCPToolLLMRunner(manager, provider)
 테스트에서는 이 방식으로 가짜 Provider를 넣어 실제 API 호출 없이 Tool 반복, Node 권한,
 프로젝트 격리를 검증한다.
 
+### 같은 실행기로 로컬 이미지 생성
+
+기존 텍스트/MCP 호출은 그대로이며 `output="image"`를 지정한 경우에만 LocalAI 이미지 endpoint로
+분기한다. 이 분기는 파일 Tool 호출을 하지 않고 현재 Node에 바인딩된 `project_id`를 사용해 결과를
+즉시 이미지 Artifact로 등록한다.
+
+```python
+from MCP import ImageGenerationOptions, run_node_llm
+
+result = await run_node_llm(
+    "pixel art tower defense target screen",
+    ai="sd_turbo",
+    output="image",
+    image_options=ImageGenerationOptions(
+        size="512x512",
+        steps=2,
+        filename_prefix="target_screen",
+    ),
+)
+image_reference = result.artifacts[0]
+```
+
+반환 형식은 `ImageRunResult`이며 `artifacts`, `provider`, `model`, `prompt`, `size`를 가진다.
+기본 모델 SD-Turbo는 6GB 전용 GPU에 맞춰 512x512 FP16과 적은 step을 사용한다. 기존 게임 에셋
+생성기(`mainflow/image_backends.py`)는 별도 경로로 유지된다.
+
 ## 6. Node별 도구 권한
 
 `MCP/policies.py`의 `NODE_TOOL_ALLOWLIST`가 LLM에 공개할 도구를 결정한다.
@@ -282,6 +309,8 @@ Validator AI다. 생성 Agent와 다른 시스템 프롬프트 및 MCP 정책을
 | `LOCAL_LLM_API_KEY` | 없음 | Local endpoint가 인증을 요구할 때만 사용 |
 | `LOCAL_LLM_MODEL` | `gemma3` | Local SLM 기본 모델 |
 | `LOCAL_LLM_BASE_URL` | `http://127.0.0.1:11434/v1` | Local OpenAI 호환 endpoint |
+| `LOCAL_IMAGE_BASE_URL` | `http://127.0.0.1:8080/v1` | LocalAI 이미지 endpoint |
+| `LOCAL_IMAGE_MODEL` | `sd-turbo` | `output="image"`의 기본 로컬 이미지 모델 |
 
 API 키와 토큰은 MCP 도구 인자, workspace, manifest에 저장하지 않는다. 외부 공개 환경에서는 별도
 인증 계층을 추가해야 하며 현재 Compose 설정은 로컬 개발 전용이다.
