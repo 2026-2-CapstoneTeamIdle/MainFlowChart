@@ -63,6 +63,20 @@ def final_validation_node(state: FinalValidationAgentInput) -> FinalValidationAg
         logic = payloads["logic_analysis"]
         integrated = payloads["integrated_game"]
         draft = payloads["game_logic_draft"]
+        visual_reference = state.get("visual_validation_result")
+        if visual_reference is None:
+            visual = {"mode": "disabled", "status": "skipped"}
+        else:
+            if visual_reference["project_id"] != state["project_id"]:
+                raise ValueError("Cross-project input: visual_validation_result")
+            visual = manager.read_json(visual_reference)
+            evidence.append(visual_reference)
+        check(
+            "final.visual_validation",
+            visual["status"] == "passed"
+            or (visual["mode"] == "disabled" and visual["status"] == "skipped"),
+            ("Visual validation must pass when enabled; disabled mode may be explicitly skipped"),
+        )
         check(
             "integration.game_available",
             integrated["status"] == "integrated" and integrated["entry_artifact"] is not None,

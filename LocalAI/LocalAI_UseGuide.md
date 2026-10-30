@@ -1,6 +1,6 @@
 # LocalAI 사용 가이드
 
-통합 버전: 1.3.0. 기본 모델은 Qwen2.5-Coder-7B-Instruct Q5_K_M(API 이름: qwen2.5-coder-7b-q5-k-m)이다.
+통합 버전: 1.4.0. 기본 모델은 Qwen2.5-Coder-7B-Instruct Q5_K_M(API 이름: qwen2.5-coder-7b-q5-k-m)이다.
 LocalAI v4.11.0 llama.cpp를 사용한다. 공식 텍스트 전용 GGUF는 약 5.44GB이며
 멀티모달 파일은 설치하지 않는다. context 8192, gpu_layers 99, 동시 추론 슬롯 1개,
 호스트 프롬프트 캐시 상한 1024MiB와
@@ -8,6 +8,10 @@ LocalAI v4.11.0 llama.cpp를 사용한다. 공식 텍스트 전용 GGUF는 약 5
 Unity가 사용할 여유를 남기는 구성이다.
 자동 컨텍스트 축소는 끄므로 LocalAI 시작 로그의 effective runtime tuning에서
 context=8192인지 확인한다.
+
+선택형 시각 검증은 Qwen3-VL-4B-Instruct Q4_K_M과 Q8 vision projector를 사용한다.
+`preload-visual.yaml`을 선택하면 코드 모델과 VLM을 함께 등록하되 한 번에 한 backend만
+활성화한다. 자세한 실행 흐름은 `docs/VisualValidationManager.md`를 따른다.
 
 MainFlow에도 같은 값을 `LOCAL_LLM_CONTEXT_TOKENS=8192`로 설정한다. 이 값은 서버의
 `context_size`를 변경하지 않고 호출 전 입력 예산을 검사하는 용도이므로 두 값을 항상 같게 유지한다.

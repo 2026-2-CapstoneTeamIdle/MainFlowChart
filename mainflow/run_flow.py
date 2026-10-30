@@ -51,6 +51,20 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Override the workspace directory (default: ./workspace).",
     )
+    visual_mode = parser.add_mutually_exclusive_group()
+    visual_mode.add_argument(
+        "--visual-validation",
+        dest="visual_validation",
+        action="store_true",
+        help="Enable Unity screenshot, VLM comparison, and bounded visual repair.",
+    )
+    visual_mode.add_argument(
+        "--skip-visual-validation",
+        dest="visual_validation",
+        action="store_false",
+        help="Skip screenshot/VLM validation even when the environment enables it.",
+    )
+    parser.set_defaults(visual_validation=None)
     return parser
 
 
@@ -107,6 +121,8 @@ def main() -> int:
     arguments = build_parser().parse_args()
     if arguments.workspace:
         os.environ["MAINFLOW_WORKSPACE"] = str(arguments.workspace.resolve())
+    if arguments.visual_validation is not None:
+        os.environ["MAINFLOW_VISUAL_VALIDATION"] = "1" if arguments.visual_validation else "0"
 
     initial_state = load_request(arguments)
     final_state = cast(WorkflowState, build_graph().invoke(initial_state))
@@ -115,6 +131,16 @@ def main() -> int:
     image_generation = manager.read_json(final_state["image_draft"])
     sound_generation = manager.read_json(final_state["sound_draft"])
     final_validation = manager.read_json(final_state["final_validation_result"])
+    visual_reference = final_state.get("visual_validation_result")
+    visual_validation = (
+        manager.read_json(visual_reference)
+        if visual_reference is not None
+        else {
+            "mode": "disabled",
+            "status": "skipped",
+            "summary": "Visual validation result was not emitted by the invoked graph.",
+        }
+    )
     game_validator_ai = manager.read_json(final_state["game_validator_ai_result"])
     project_root = manager.ensure_project(final_state["project_id"])
 
@@ -125,6 +151,7 @@ def main() -> int:
         "image_generation": image_generation,
         "sound_generation": sound_generation,
         "final_validation": final_validation,
+        "visual_validation": visual_validation,
         "game_validator_ai": game_validator_ai,
         "final_state": final_state,
     }

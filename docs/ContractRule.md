@@ -12,6 +12,8 @@
 5. 계약 `3.4.0`은 게임 설계를 7개 v2 문서로 분리하고 `level_plan`을 Unity Scene 조립에 전달한다.
 6. `condition`은 비어 있지 않은 한 문장으로 보관하며, Analysis가 기능 요구사항으로 변환한다.
 7. `image_style`이 `Custom`이면 PNG/JPG 파일을 함께 제공해야 한다.
+8. `visual_validation_result`는 선택형 시각 검증의 독립 보고서다. 비활성 모드는
+   `mode=disabled`, `status=skipped`로 명시하며 최종 검증에서 허용한다.
 
 ## 사용자 입력 계약
 
@@ -181,8 +183,9 @@ Play Mode 검증은 `UNITY_PLAYTEST_METRICS` JSON 로그로 완료 여부, 경�
 | `validate_image` | 요청, 이미지 에셋 요청, 이미지 draft, 에셋 기준 | `image_validation_result` | validation 결과 |
 | `validate_sound` | 요청, 사운드 에셋 요청, 사운드 draft, 에셋 기준 | `sound_validation_result` | validation 결과 |
 | `apply_assets_to_game` | 세 draft와 이미지·사운드 검증 결과 | `integrated_game` | 통합 게임 |
-| `final_validation` | `parsed_request`, `logic_analysis`, 게임 draft, 게임·이미지·사운드 검증 결과, 통합 게임 | `final_validation_result` | 최종 검증 결과 |
-| `game_quality_validator` | 전체 요구사항, draft, 게임·이미지·사운드·최종 검증 결과, 통합 게임 | `game_validator_ai_result` | 독립 AI 품질 평가 |
+| `visual_validation` | 요청·LogicAnalysis·게임 draft·게임 검증·통합 게임 | `visual_validation_result` | 목표 화면, 회차별 Unity 캡처, VLM 판정과 수정 기록 |
+| `final_validation` | `parsed_request`, `logic_analysis`, 게임 draft, 게임·이미지·사운드·시각 검증 결과, 통합 게임 | `final_validation_result` | 최종 검증 결과 |
+| `game_quality_validator` | 전체 요구사항, draft, 게임·이미지·사운드·시각·최종 검증 결과, 통합 게임 | `game_validator_ai_result` | 독립 AI 품질 평가 |
 
 `game/project_context_index.json`은 자연어 요약이 아니라 생성된 C#을 결정적으로 스캔한 계약이다.
 파일 해시, 클래스와 상속 관계, 공개 메서드·속성·필드·이벤트, `module_id`, 기능 및 검증 기준 ID,

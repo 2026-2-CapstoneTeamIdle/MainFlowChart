@@ -1,0 +1,46 @@
+# LocalAI integration v1.4.0: keep the code model and add Qwen3-VL 4B Q4_K_M.
+# LOCALAI_MAX_ACTIVE_BACKENDS=1 ensures only one model occupies VRAM at a time.
+- url: https://raw.githubusercontent.com/mudler/LocalAI/v4.11.0/gallery/qwen3.yaml
+  name: qwen2.5-coder-7b-q5-k-m
+  files:
+    - filename: qwen2.5-coder-7b-instruct-q5_k_m.gguf
+      uri: huggingface://Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/qwen2.5-coder-7b-instruct-q5_k_m.gguf
+      sha256: 586844eac4d6d6321689f0192c8aa8e69cd8625974a5cc2d925b1a03366e4d16
+  overrides:
+    backend: llama-cpp
+    context_size: 8192
+    gpu_layers: 99
+    options:
+      - parallel:1
+      - cache_ram:1024
+      - fit_params:false
+    parameters:
+      model: qwen2.5-coder-7b-instruct-q5_k_m.gguf
+      temperature: 0.1
+
+- url: https://raw.githubusercontent.com/mudler/LocalAI/v4.11.0/gallery/qwen3.yaml
+  name: qwen3-vl-4b-instruct-q4-k-m
+  files:
+    - filename: Qwen3VL-4B-Instruct-Q4_K_M.gguf
+      uri: huggingface://Qwen/Qwen3-VL-4B-Instruct-GGUF/Qwen3VL-4B-Instruct-Q4_K_M.gguf
+      sha256: 66358cb18bb6b3b1b6675aa412c7a88ef01d228f481184d13668e5201c730a0a
+    - filename: mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf
+      uri: huggingface://Qwen/Qwen3-VL-4B-Instruct-GGUF/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf
+      sha256: 30ba2c7dd3127a4561b6cba9d13d0f711c91bdb38742e2f56d73c8cb596bd06d
+  overrides:
+    backend: llama-cpp
+    context_size: 8192
+    gpu_layers: 99
+    low_vram: true
+    known_usecases:
+      - chat
+      - vision
+    mmproj: mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf
+    options:
+      - parallel:1
+      - fit_params:false
+      - mmproj_use_gpu:true
+      - image_max_tokens:1024
+    parameters:
+      model: Qwen3VL-4B-Instruct-Q4_K_M.gguf
+      temperature: 0.0

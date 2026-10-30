@@ -90,6 +90,7 @@ class GeminiProvider:
         system_prompt: str | None,
         temperature: float,
         require_tool: bool,
+        max_tokens: int | None = None,
     ) -> LLMProviderResponse:
         types = self._types
         gemini_tools = []
@@ -125,6 +126,7 @@ class GeminiProvider:
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
                 temperature=temperature,
+                max_output_tokens=max_tokens,
                 tools=gemini_tools or None,
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
                 tool_config=tool_config,
@@ -237,12 +239,17 @@ class OpenAICompatibleProvider:
         system_prompt: str | None,
         temperature: float,
         require_tool: bool,
+        max_tokens: int | None = None,
     ) -> LLMProviderResponse:
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": self._messages(messages, system_prompt),
             "temperature": temperature,
         }
+        if max_tokens is not None:
+            if max_tokens < 1:
+                raise ValueError("max_tokens must be positive")
+            payload["max_tokens"] = max_tokens
         if tools:
             payload["tools"] = [
                 {

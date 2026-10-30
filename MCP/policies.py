@@ -30,6 +30,7 @@ NODE_TOOL_ALLOWLIST: dict[str, frozenset[str]] = {
     "validate_image": WORKING_FILE_TOOLS,
     "validate_sound": WORKING_FILE_TOOLS,
     "apply_assets_to_game": WORKING_FILE_TOOLS,
+    "visual_validation": WORKING_FILE_TOOLS,
     "final_validation": WORKING_FILE_TOOLS,
 }
 

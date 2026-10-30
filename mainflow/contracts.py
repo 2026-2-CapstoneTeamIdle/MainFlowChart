@@ -708,6 +708,46 @@ class GameValidatorAIResult(TypedDict):
     tool_calls: list[str]
 
 
+class VisualChecklistResult(TypedDict):
+    criterion_id: str
+    status: Literal["passed", "failed", "unverifiable"]
+    message: str
+    evidence: list[str]
+
+
+class VisualValidationFinding(TypedDict):
+    severity: Literal["warning", "error"]
+    criterion_id: str
+    message: str
+    recommendation: str
+    suggested_files: list[str]
+
+
+class VisualValidationAttempt(TypedDict):
+    attempt: int
+    status: Literal["passed", "needs_revision", "failed"]
+    score: float
+    summary: str
+    screenshot: ArtifactReference | None
+    checklist_results: list[VisualChecklistResult]
+    findings: list[VisualValidationFinding]
+    modified_files: list[str]
+    compile_passed: bool | None
+    feature_checklist_passed: bool | None
+
+
+class VisualValidationResult(TypedDict):
+    report_version: Literal["1.0.0"]
+    contract_version: ContractVersion
+    mode: Literal["enabled", "disabled"]
+    status: Literal["passed", "failed", "skipped"]
+    model: str
+    max_attempts: int
+    attempts: list[VisualValidationAttempt]
+    target_image: ArtifactReference | None
+    summary: str
+
+
 # ---------------------------------------------------------------------------
 # LangGraph shared state
 # total=False is intentional because the graph fills fields incrementally.
@@ -733,6 +773,7 @@ class WorkflowState(TypedDict, total=False):
     image_validation_result: ArtifactReference
     sound_validation_result: ArtifactReference
     integrated_game: ArtifactReference
+    visual_validation_result: ArtifactReference
     final_validation_result: ArtifactReference
     game_validator_ai_result: ArtifactReference
 
@@ -899,10 +940,24 @@ class FinalValidationAgentInput(TypedDict):
     project_id: str
     logic_analysis: ArtifactReference
     integrated_game: ArtifactReference
+    visual_validation_result: ArtifactReference
 
 
 class FinalValidationAgentOutput(TypedDict):
     final_validation_result: ArtifactReference
+
+
+class VisualValidationAgentInput(TypedDict):
+    project_id: str
+    parsed_request: ArtifactReference
+    logic_analysis: ArtifactReference
+    game_logic_draft: ArtifactReference
+    game_validation_result: ArtifactReference
+    integrated_game: ArtifactReference
+
+
+class VisualValidationAgentOutput(TypedDict):
+    visual_validation_result: ArtifactReference
 
 
 class GameValidatorAIAgentInput(TypedDict):
@@ -914,6 +969,7 @@ class GameValidatorAIAgentInput(TypedDict):
     image_validation_result: ArtifactReference
     sound_validation_result: ArtifactReference
     integrated_game: ArtifactReference
+    visual_validation_result: ArtifactReference
     final_validation_result: ArtifactReference
 
 

@@ -1,0 +1,137 @@
+"""Optional visual target comparison and bounded repair Node."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import cast
+
+from game_pipeline.unity_project_validator import UnityProjectValidator
+from game_pipeline.visual_validation import (
+    DEFAULT_VLM_MODEL,
+    VISUAL_MODEL_ENV,
+    VISUAL_PROJECT_ROOT,
+    VisualValidationWorkflow,
+    visual_attempt_limit,
+    visual_validation_enabled,
+)
+from mainflow.ArtifactManager import ArtifactManager
+from mainflow.contracts import (
+    CONTRACT_VERSION,
+    GameLogicDraft,
+    GameValidationResult,
+    LogicAnalysis,
+    ParsedRequest,
+    VisualValidationAgentInput,
+    VisualValidationAgentOutput,
+    VisualValidationResult,
+)
+from mainflow.nodes._common import log
+
+
+# Node 계약
+# - 이전 Node: apply_assets_to_game
+# - 입력 State: project_id, parsed_request, logic_analysis, game_logic_draft,
+#   game_validation_result, integrated_game
+# - 입력 파일: game/unity_project, Visual Checklist.md
+# - 출력 State: visual_validation_result(ArtifactReference)
+# - 출력 파일: validation/visual_validation_result.json,
+#   validation/visual/target.png, validation/visual/attempt_N.png
+# - 다음 Node: final_validation
+def visual_validation_node(
+    state: VisualValidationAgentInput,
+) -> VisualValidationAgentOutput:
+    manager = ArtifactManager()
+    project_id = state["project_id"]
+
+    if not visual_validation_enabled():
+        log("시각 검증 모드가 꺼져 있어 VLM 캡처/수정 단계를 건너뜁니다.")
+        result: VisualValidationResult = {
+            "report_version": "1.0.0",
+            "contract_version": CONTRACT_VERSION,
+            "mode": "disabled",
+            "status": "skipped",
+            "model": "none",
+            "max_attempts": visual_attempt_limit(),
+            "attempts": [],
+            "target_image": None,
+            "summary": "MAINFLOW_VISUAL_VALIDATION is disabled.",
+        }
+        return _write_result(manager, project_id, result)
+
+    log("목표 화면과 Unity 캡처를 VLM으로 비교하고 최대 3회 안에서 수정합니다.")
+    try:
+        request = cast(ParsedRequest, manager.read_json(state["parsed_request"]))
+        logic = cast(LogicAnalysis, manager.read_json(state["logic_analysis"]))
+        draft = cast(GameLogicDraft, manager.read_json(state["game_logic_draft"]))
+        game_validation = cast(
+            GameValidationResult,
+            manager.read_json(state["game_validation_result"]),
+        )
+        if game_validation["status"] != "passed":
+            raise RuntimeError("Visual validation requires passed game validation")
+
+        workspace_root = manager.ensure_project(project_id)
+        project_root = manager.resolve_project_path(project_id, VISUAL_PROJECT_ROOT)
+        required_version = UnityProjectValidator._read_project_version(project_root)
+        editor = UnityProjectValidator.find_unity_editor(required_version)
+        if editor is None:
+            raise RuntimeError(
+                "Visual validation mode requires a Unity Editor with graphical rendering support"
+            )
+
+        repository_root = Path(__file__).resolve().parents[2]
+
+        def record_image(filename: str, content: bytes):
+            return manager.write_bytes(
+                project_id,
+                "validation",
+                filename,
+                content,
+                producer="visual_validation",
+                media_type="image/png",
+            )
+
+        result = VisualValidationWorkflow(
+            editor=editor,
+            timeout_seconds=int(os.environ.get("MAINFLOW_UNITY_VALIDATION_TIMEOUT_SECONDS", "300")),
+            checklist_path=repository_root / "Visual Checklist.md",
+            source_docs=repository_root / "docs",
+            attempts=visual_attempt_limit(),
+        ).run(
+            project_root=project_root,
+            workspace_root=workspace_root,
+            request=request,
+            logic=logic,
+            draft=draft,
+            record_image=record_image,
+        )
+    except Exception as error:  # noqa: BLE001 - persist failure at the workflow boundary
+        result = {
+            "report_version": "1.0.0",
+            "contract_version": CONTRACT_VERSION,
+            "mode": "enabled",
+            "status": "failed",
+            "model": os.environ.get(VISUAL_MODEL_ENV, DEFAULT_VLM_MODEL),
+            "max_attempts": visual_attempt_limit(),
+            "attempts": [],
+            "target_image": None,
+            "summary": f"{type(error).__name__}: {error}",
+        }
+    return _write_result(manager, project_id, result)
+
+
+def _write_result(
+    manager: ArtifactManager,
+    project_id: str,
+    result: VisualValidationResult,
+) -> VisualValidationAgentOutput:
+    return {
+        "visual_validation_result": manager.write_json(
+            project_id,
+            "validation",
+            "visual_validation_result.json",
+            result,
+            producer="visual_validation",
+        )
+    }

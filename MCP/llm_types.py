@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeAlias
 
 from MCP.manager import MCPToolDefinition
 
@@ -17,12 +17,18 @@ class LLMToolCall:
     arguments: dict[str, Any]
 
 
+LLMContentBlock: TypeAlias = dict[str, Any]
+LLMMessageContent: TypeAlias = str | list[LLMContentBlock]
+
+
 @dataclass(frozen=True)
 class LLMConversationMessage:
     """Small common message format translated by each provider adapter."""
 
     role: str
-    content: str = ""
+    # OpenAI-compatible providers accept multimodal content blocks here.  Text-only
+    # callers keep using a plain string, so the existing node API remains unchanged.
+    content: LLMMessageContent = ""
     tool_calls: tuple[LLMToolCall, ...] = ()
     tool_call_id: str | None = None
     tool_name: str | None = None
@@ -72,6 +78,7 @@ class LLMProvider(Protocol):
         system_prompt: str | None,
         temperature: float,
         require_tool: bool,
+        max_tokens: int | None = None,
     ) -> LLMProviderResponse:
         """Generate one assistant turn, possibly containing tool calls."""
 
