@@ -1,6 +1,6 @@
 # LocalAI 사용 가이드
 
-통합 버전: 1.5.0. 기본 텍스트 모델은 Qwen2.5-Coder-7B-Instruct Q5_K_M(API 이름: qwen2.5-coder-7b-q5-k-m)이다.
+통합 버전: 1.6.0. 기본 텍스트 모델은 Qwen2.5-Coder-7B-Instruct Q5_K_M(API 이름: qwen2.5-coder-7b-q5-k-m)이다.
 LocalAI v4.11.0 llama.cpp를 사용한다. 공식 텍스트 전용 GGUF는 약 5.44GB이며
 멀티모달 파일은 설치하지 않는다. 코더 모델은 context 16384, gpu_layers 99, 동시 추론 슬롯 1개,
 호스트 프롬프트 캐시 상한 1024MiB와
@@ -18,6 +18,10 @@ Node 공통 실행기의 로컬 이미지 생성은 `stabilityai/sd-turbo`를 `s
 `run_node_llm(output="image")` 전용이며 기존 `mainflow/image_backends.py`의 게임 에셋 생성
 경로를 교체하거나 변경하지 않는다. `LOCALAI_SINGLE_ACTIVE_BACKEND`도 활성화해 텍스트/VLM/이미지
 backend가 동시에 VRAM을 점유하지 않고 모델 전환 시 이전 backend를 내리도록 했다.
+
+GPU 추론만 Vast.ai의 vLLM으로 옮길 때는 이 로컬 구성을 삭제하지 않고 provider를 `vastai`로
+전환한다. 역할별 Coder/VLM/이미지 endpoint와 SSH tunnel 설정은
+`docs/VastAIManager.md`를 따른다.
 
 MainFlow에도 같은 값을 `LOCAL_LLM_CONTEXT_TOKENS=16384`로 설정한다. 이 값은 서버의
 `context_size`를 변경하지 않고 호출 전 입력 예산을 검사하는 용도이므로 두 값을 항상 같게 유지한다.
@@ -66,19 +70,21 @@ async def make_target_image(state):
         ai="sd_turbo",
         output="image",
         image_options=ImageGenerationOptions(
-            size="512x512",
+            size="512x288",
             steps=2,
             negative_prompt="blurry, text, watermark, broken UI",
             filename_prefix="visual_target",
+            artifact_category="validation",
         ),
     )
     assert isinstance(result, ImageRunResult)
     return {"target_image": result.artifacts[0]}
 ```
 
-결과 이미지는 임시 URL이 아니라
-`workspace/{project_id}/generated/images/{filename_prefix}_*.png`에 저장되고 manifest에
-등록된 `ArtifactReference`로 반환된다. `system_prompt`는 이미지 모델의 별도 system role이
+기본 결과 이미지는 임시 URL이 아니라
+`workspace/{project_id}/generated/images/{filename_prefix}_*.png`에 저장된다. 검증 전용 호출처럼
+`artifact_category="validation"`을 지정하면 `workspace/{project_id}/validation/`에 저장된다.
+두 경우 모두 manifest에 등록된 `ArtifactReference`로 반환된다. `system_prompt`는 이미지 모델의 별도 system role이
 아니라 이미지 prompt 앞에 붙는 지시문으로 처리한다. 이미지 모델은 MCP 파일 Tool을 호출하지
 않으며, `require_tool=True`는 오류다.
 

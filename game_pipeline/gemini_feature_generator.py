@@ -227,7 +227,26 @@ class LocalAIJsonClient:
     supports_feature_planning = True
 
     @classmethod
-    def from_environment(cls) -> LocalAIJsonClient:
+    def from_environment(cls, runtime: str = "local") -> LocalAIJsonClient:
+        normalized_runtime = runtime.strip().lower()
+        if normalized_runtime in {"vast", "vastai", "vast.ai", "vllm"}:
+            from VastAI.settings import load_vastai_settings
+
+            remote = load_vastai_settings("coder")
+            return cls(
+                base_url=remote.base_url,
+                model=remote.model,
+                api_key=remote.api_key,
+                timeout_seconds=int(remote.timeout_seconds),
+                max_output_tokens=remote.max_output_tokens or 8192,
+                context_window_tokens=remote.context_tokens or 32768,
+                reasoning_effort=(
+                    os.environ.get("VASTAI_CODER_REASONING_EFFORT", "").strip().lower() or None
+                ),
+            )
+        if normalized_runtime != "local":
+            raise ValueError("runtime must be 'local' or 'vastai'")
+
         base_url = os.environ.get("LOCAL_LLM_BASE_URL", DEFAULT_LOCAL_BASE_URL).strip()
         parsed_url = urllib.parse.urlparse(base_url)
         if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
@@ -394,7 +413,9 @@ def create_feature_generator_from_environment() -> GeminiFeatureGenerator:
         return GeminiFeatureGenerator.from_environment()
     if provider == "local":
         return GeminiFeatureGenerator(LocalAIJsonClient.from_environment())
-    raise ValueError("MAINFLOW_FEATURE_PROVIDER must be 'gemini' or 'local'")
+    if provider in {"vast", "vastai", "vast.ai", "vllm"}:
+        return GeminiFeatureGenerator(LocalAIJsonClient.from_environment("vastai"))
+    raise ValueError("MAINFLOW_FEATURE_PROVIDER must be 'gemini', 'local', or 'vastai'")
 
 
 class GeminiFeatureGenerator:

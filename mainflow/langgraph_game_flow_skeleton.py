@@ -151,6 +151,39 @@ def build_graph():
     return graph.compile()
 
 
+def build_game_test_graph():
+    """Build the asset-free game test route without changing production edges.
+
+    The route composes the Unity modules, runs compilation and feature checklist
+    validation, then performs the visual checklist. Image/sound generation,
+    validation, and application nodes are deliberately absent.
+    """
+
+    graph = StateGraph(WorkflowState)
+
+    def add_node(name, node):
+        graph.add_node(name, bind_mcp_tools(name, node))
+
+    add_node("user_input", user_input_node)
+    add_node("parse_input", parse_input_node)
+    add_node("analysis", analysis_node)
+    add_node("logic_analysis", logic_analysis_node)
+    add_node("design_game_logic", design_game_logic_node)
+    add_node("validate_game", validate_game_node)
+    add_node("visual_validation", visual_validation_node)
+
+    graph.add_edge(START, "user_input")
+    graph.add_edge("user_input", "parse_input")
+    graph.add_edge("parse_input", "analysis")
+    graph.add_edge("analysis", "logic_analysis")
+    graph.add_edge("logic_analysis", "design_game_logic")
+    graph.add_edge("design_game_logic", "validate_game")
+    graph.add_edge("validate_game", "visual_validation")
+    graph.add_edge("visual_validation", END)
+
+    return graph.compile()
+
+
 if __name__ == "__main__":
     app = build_graph()
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import cast
@@ -12,6 +13,7 @@ from game_pipeline.visual_validation import (
     VISUAL_MODEL_ENV,
     VISUAL_PROJECT_ROOT,
     VisualValidationWorkflow,
+    build_visual_target_prompt,
     visual_attempt_limit,
     visual_validation_enabled,
 )
@@ -27,12 +29,59 @@ from mainflow.contracts import (
     VisualValidationResult,
 )
 from mainflow.nodes._common import log
+from MCP import ImageGenerationOptions, ImageRunResult, run_node_llm
+
+VISUAL_TARGET_AI_ENV = "MAINFLOW_VISUAL_TARGET_AI"
+VISUAL_TARGET_SIZE_ENV = "MAINFLOW_VISUAL_TARGET_SIZE"
+VISUAL_TARGET_STEPS_ENV = "MAINFLOW_VISUAL_TARGET_STEPS"
+DEFAULT_VISUAL_TARGET_AI = "sd_turbo"
+DEFAULT_VISUAL_TARGET_SIZE = "512x288"
+DEFAULT_VISUAL_TARGET_STEPS = 2
+
+
+class RunNodeLLMVisualTargetGenerator:
+    """Generate a comparison-only target without touching the asset backend."""
+
+    def __init__(self, manager: ArtifactManager) -> None:
+        self.manager = manager
+
+    def generate(self, request: ParsedRequest, logic: LogicAnalysis) -> bytes:
+        prompt = build_visual_target_prompt(request, logic)
+        result = asyncio.run(
+            run_node_llm(
+                prompt,
+                system_prompt=(
+                    "Create one coherent gameplay reference image for visual validation only. "
+                    "Do not create reusable sprites, textures, logos, captions, or a device frame."
+                ),
+                ai=os.environ.get(VISUAL_TARGET_AI_ENV, DEFAULT_VISUAL_TARGET_AI),
+                output="image",
+                image_options=ImageGenerationOptions(
+                    size=os.environ.get(VISUAL_TARGET_SIZE_ENV, DEFAULT_VISUAL_TARGET_SIZE),
+                    steps=int(
+                        os.environ.get(
+                            VISUAL_TARGET_STEPS_ENV,
+                            str(DEFAULT_VISUAL_TARGET_STEPS),
+                        )
+                    ),
+                    negative_prompt=(
+                        "key art, poster, logo, watermark, caption, device frame, blurry UI, "
+                        "unreadable gameplay"
+                    ),
+                    filename_prefix="visual_target_source",
+                    artifact_category="validation",
+                ),
+            )
+        )
+        if not isinstance(result, ImageRunResult) or len(result.artifacts) != 1:
+            raise RuntimeError("Visual target generation must return exactly one image artifact")
+        return self.manager.read_bytes(result.artifacts[0])
 
 
 # Node 계약
-# - 이전 Node: apply_assets_to_game
+# - 이전 Node: apply_assets_to_game(운영) 또는 validate_game(game-test)
 # - 입력 State: project_id, parsed_request, logic_analysis, game_logic_draft,
-#   game_validation_result, integrated_game
+#   game_validation_result, integrated_game(운영에서만)
 # - 입력 파일: game/unity_project, Visual Checklist.md
 # - 출력 State: visual_validation_result(ArtifactReference)
 # - 출력 파일: validation/visual_validation_result.json,
@@ -98,6 +147,7 @@ def visual_validation_node(
             checklist_path=repository_root / "Visual Checklist.md",
             source_docs=repository_root / "docs",
             attempts=visual_attempt_limit(),
+            target_generator=RunNodeLLMVisualTargetGenerator(manager),
         ).run(
             project_root=project_root,
             workspace_root=workspace_root,

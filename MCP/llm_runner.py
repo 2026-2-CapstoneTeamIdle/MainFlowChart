@@ -143,27 +143,44 @@ async def run_node_llm(
 
             settings = resolve_ai_settings(ai, manager.node_name, capability="image")
         else:
-            if provider is not None and provider.strip().lower() not in {
+            normalized_image_provider = (provider or "local").strip().lower()
+            if normalized_image_provider not in {
                 "local",
                 "localslm",
                 "local_slm",
+                "vast",
+                "vastai",
+                "vast.ai",
+                "vllm",
             }:
-                raise ValueError("Image generation currently supports only the local provider")
-            image_model = model or os.environ.get("LOCAL_IMAGE_MODEL", "sd-turbo")
-            settings = LLMSettings.from_environment(
-                node_name=manager.node_name,
-                provider="local",
-                model=image_model,
-            )
-            image_base_url = os.environ.get("LOCAL_IMAGE_BASE_URL")
-            if image_base_url:
+                raise ValueError("Image generation supports local or Vast.ai providers")
+            if normalized_image_provider in {"vast", "vastai", "vast.ai", "vllm"}:
+                from VastAI.settings import load_vastai_settings
+
+                remote = load_vastai_settings("image")
                 settings = LLMSettings(
-                    provider=settings.provider,
-                    model=settings.model,
-                    api_key=settings.api_key,
-                    base_url=image_base_url.strip(),
-                    timeout_seconds=settings.timeout_seconds,
+                    provider="vastai",
+                    model=model or remote.model,
+                    api_key=remote.api_key,
+                    base_url=remote.base_url,
+                    timeout_seconds=remote.timeout_seconds,
                 )
+            else:
+                image_model = model or os.environ.get("LOCAL_IMAGE_MODEL", "sd-turbo")
+                settings = LLMSettings.from_environment(
+                    node_name=manager.node_name,
+                    provider="local",
+                    model=image_model,
+                )
+                image_base_url = os.environ.get("LOCAL_IMAGE_BASE_URL")
+                if image_base_url:
+                    settings = LLMSettings(
+                        provider=settings.provider,
+                        model=settings.model,
+                        api_key=settings.api_key,
+                        base_url=image_base_url.strip(),
+                        timeout_seconds=settings.timeout_seconds,
+                    )
 
         options = image_options or ImageGenerationOptions()
         effective_prompt = prompt.strip()
@@ -181,7 +198,7 @@ async def run_node_llm(
             artifacts.append(
                 artifact_manager.write_bytes(
                     manager.project_id,
-                    "image",
+                    options.artifact_category,
                     filename,
                     generated_image.content,
                     producer=f"{manager.node_name}:run_node_llm",

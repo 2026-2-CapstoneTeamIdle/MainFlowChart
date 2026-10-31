@@ -11,13 +11,14 @@ from MCP.llm_config import LLMSettings
 
 @dataclass(frozen=True)
 class LocalAIModelProfile:
-    """Non-secret connection metadata for one LocalAI-served model."""
+    """Non-secret connection metadata for one OpenAI-compatible model."""
 
     provider: str
     model: str
     base_url_environment: str
     default_base_url: str
     api_key_environment: str | None = None
+    model_environment: str | None = None
     allowed_nodes: frozenset[str] = frozenset()
     capabilities: frozenset[str] = frozenset({"text"})
 
@@ -25,11 +26,9 @@ class LocalAIModelProfile:
         """Resolve runtime values without storing credentials in the profile."""
 
         if self.allowed_nodes and node_name not in self.allowed_nodes:
-            raise PermissionError(f"Node {node_name} cannot use LocalAI model profile {self.model}")
+            raise PermissionError(f"Node {node_name} cannot use model profile {self.model}")
         if capability not in self.capabilities:
-            raise ValueError(
-                f"LocalAI model profile {self.model} does not support {capability!r} output"
-            )
+            raise ValueError(f"Model profile {self.model} does not support {capability!r} output")
 
         api_key = None
         if self.api_key_environment is not None:
@@ -39,16 +38,29 @@ class LocalAIModelProfile:
             self.default_base_url,
         ).strip()
         if not base_url:
-            raise ValueError(f"{self.base_url_environment} must be a non-empty LocalAI URL")
+            raise ValueError(f"{self.base_url_environment} must be a non-empty endpoint URL")
 
-        timeout_value = os.environ.get("LLM_TIMEOUT_SECONDS", "120")
+        timeout_environment = (
+            "VASTAI_INFERENCE_TIMEOUT_SECONDS"
+            if self.provider == "vastai"
+            else "LLM_TIMEOUT_SECONDS"
+        )
+        timeout_value = os.environ.get(
+            timeout_environment, "600" if self.provider == "vastai" else "120"
+        )
         timeout_seconds = float(timeout_value)
         if timeout_seconds <= 0:
             raise ValueError("LLM_TIMEOUT_SECONDS must be greater than zero")
 
+        model = self.model
+        if self.model_environment is not None:
+            model = os.environ.get(self.model_environment, self.model).strip()
+            if not model:
+                raise ValueError(f"{self.model_environment} must not be empty")
+
         return LLMSettings(
             provider=self.provider,
-            model=self.model,
+            model=model,
             api_key=api_key,
             base_url=base_url,
             timeout_seconds=timeout_seconds,
@@ -83,6 +95,33 @@ AI_MODEL_PROFILES: dict[str, LocalAIModelProfile] = {
         base_url_environment="LOCAL_IMAGE_BASE_URL",
         default_base_url="http://127.0.0.1:8080/v1",
         api_key_environment="LOCAL_LLM_API_KEY",
+        capabilities=frozenset({"image"}),
+    ),
+    "vast_coder": LocalAIModelProfile(
+        provider="vastai",
+        model="mainflow-coder",
+        model_environment="VASTAI_CODER_MODEL",
+        base_url_environment="VASTAI_CODER_BASE_URL",
+        default_base_url="http://127.0.0.1:18000/v1",
+        api_key_environment="VASTAI_INFERENCE_API_KEY",
+    ),
+    "vast_vlm": LocalAIModelProfile(
+        provider="vastai",
+        model="mainflow-vlm",
+        model_environment="VASTAI_VLM_MODEL",
+        base_url_environment="VASTAI_VLM_BASE_URL",
+        default_base_url="http://127.0.0.1:18001/v1",
+        api_key_environment="VASTAI_INFERENCE_API_KEY",
+        allowed_nodes=frozenset({"visual_validation"}),
+    ),
+    "vast_image": LocalAIModelProfile(
+        provider="vastai",
+        model="mainflow-image",
+        model_environment="VASTAI_IMAGE_MODEL",
+        base_url_environment="VASTAI_IMAGE_BASE_URL",
+        default_base_url="http://127.0.0.1:18002/v1",
+        api_key_environment="VASTAI_INFERENCE_API_KEY",
+        allowed_nodes=frozenset({"visual_validation", "generate_image"}),
         capabilities=frozenset({"image"}),
     ),
 }

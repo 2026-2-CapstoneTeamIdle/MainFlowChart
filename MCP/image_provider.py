@@ -46,6 +46,8 @@ def validate_image_options(options: ImageGenerationOptions) -> None:
         raise ValueError("image steps must be between 1 and 50")
     if not _FILENAME_PREFIX_PATTERN.fullmatch(options.filename_prefix):
         raise ValueError("image filename_prefix must contain only letters, digits, '.', '_' or '-'")
+    if options.artifact_category not in {"image", "validation"}:
+        raise ValueError("generated images may only use the image or validation artifact category")
 
 
 def _image_metadata(content: bytes, declared_media_type: str | None = None) -> tuple[str, str]:
@@ -76,10 +78,11 @@ class LocalImageGenerationProvider:
     name = "local"
 
     def __init__(self, settings: LLMSettings) -> None:
-        if settings.provider != "local":
-            raise ValueError("Local image generation requires the local provider")
+        if settings.provider not in {"local", "vastai"}:
+            raise ValueError("Image generation requires a local or Vast.ai provider")
         if settings.base_url is None:
             raise ValueError("Local image generation requires a base URL")
+        self.name = settings.provider
         self.model = settings.model
         self._api_key = settings.api_key
         self._base_url = settings.base_url.rstrip("/")

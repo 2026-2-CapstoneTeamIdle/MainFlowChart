@@ -309,6 +309,6 @@ def create_llm_provider(settings: LLMSettings) -> LLMProvider:
 
     if settings.provider == "gemini":
         return GeminiProvider(settings)
-    if settings.provider in {"openai", "local"}:
+    if settings.provider in {"openai", "local", "vastai"}:
         return OpenAICompatibleProvider(settings)
     raise ValueError(f"Unsupported LLM provider: {settings.provider}")

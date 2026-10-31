@@ -6,7 +6,7 @@ import os
 import re
 from dataclasses import dataclass
 
-SUPPORTED_LLM_PROVIDERS = ("gemini", "openai", "local")
+SUPPORTED_LLM_PROVIDERS = ("gemini", "openai", "local", "vastai")
 
 
 def _normalize_provider(value: str) -> str:
@@ -18,6 +18,10 @@ def _normalize_provider(value: str) -> str:
         "localslm": "local",
         "local_slm": "local",
         "ollama": "local",
+        "vast": "vastai",
+        "vastai": "vastai",
+        "vast.ai": "vastai",
+        "vllm": "vastai",
     }
     normalized = aliases.get(value.strip().lower())
     if normalized is None:
@@ -72,6 +76,7 @@ class LLMSettings:
             "gemini": ("GEMINI_MODEL", "gemini-3-flash-preview"),
             "openai": ("OPENAI_MODEL", "gpt-4.1-mini"),
             "local": ("LOCAL_LLM_MODEL", "gemma3"),
+            "vastai": ("VASTAI_CODER_MODEL", "mainflow-coder"),
         }
         provider_model_name, default_model = provider_defaults[normalized_provider]
         resolved_model = model or _first_environment(
@@ -87,12 +92,16 @@ class LLMSettings:
             "gemini": ("GEMINI_API_KEY",),
             "openai": ("OPENAI_API_KEY",),
             "local": ("LOCAL_LLM_API_KEY",),
+            "vastai": ("VASTAI_INFERENCE_API_KEY",),
         }
         api_key = _first_environment(*key_names[normalized_provider])
         base_urls = {
             "gemini": None,
             "openai": _first_environment("OPENAI_BASE_URL", default="https://api.openai.com/v1"),
             "local": _first_environment("LOCAL_LLM_BASE_URL", default="http://127.0.0.1:11434/v1"),
+            "vastai": _first_environment(
+                "VASTAI_CODER_BASE_URL", default="http://127.0.0.1:18000/v1"
+            ),
         }
         timeout_value = _first_environment("LLM_TIMEOUT_SECONDS", default="120")
         if timeout_value is None:

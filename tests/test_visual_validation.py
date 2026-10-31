@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from game_pipeline.feature_checklist_validation import RepairPlan
 from game_pipeline.visual_validation import (
@@ -16,6 +17,9 @@ from game_pipeline.visual_validation import (
     visual_validation_enabled,
 )
 from mainflow.contracts import CONTRACT_VERSION
+from mainflow.nodes.visual_validation import RunNodeLLMVisualTargetGenerator
+from MCP import ImageRunResult
+from MCP.llm_types import LLMProviderResponse
 
 
 class _Target:
@@ -64,6 +68,120 @@ class _Repair:
 
 
 class VisualValidationTest(unittest.TestCase):
+    def test_vlm_retries_incomplete_checklist_response(self) -> None:
+        checklist_ids = tuple(f"VC{index:02d}" for index in range(1, 11))
+        responses = []
+        for count in (9, 10):
+            responses.append(
+                json.dumps(
+                    {
+                        "status": "passed",
+                        "score": 90,
+                        "summary": "ok",
+                        "results": [
+                            {"id": criterion_id, "s": "passed", "m": "visible"}
+                            for criterion_id in checklist_ids[:count]
+                        ],
+                        "findings": [],
+                    }
+                )
+            )
+
+        class Provider:
+            async def complete(self, *args, **kwargs):
+                return LLMProviderResponse(text=responses.pop(0))
+
+            async def aclose(self):
+                return None
+
+        with (
+            patch(
+                "game_pipeline.visual_validation.create_llm_provider",
+                return_value=Provider(),
+            ),
+            patch.dict(
+                "os.environ",
+                {
+                    "LLM_VISUAL_VALIDATION_PROVIDER": "local",
+                    "LLM_VISUAL_VALIDATION_RESPONSE_ATTEMPTS": "2",
+                },
+                clear=True,
+            ),
+        ):
+            result, _ = VisualVLMReviewer().review(
+                target=b"target",
+                current=b"current",
+                checklist="visual checklist",
+                checklist_ids=checklist_ids,
+                request={
+                    "contract_version": CONTRACT_VERSION,
+                    "image_style": "Pixel Art",
+                    "mood_style": "Fantasy",
+                    "genre": "플랫포머",
+                    "viewpoint": "사이드뷰",
+                    "condition": "보석을 모은다.",
+                    "custom_image": None,
+                },
+                inventory=[],
+            )
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(responses, [])
+
+    def test_target_generator_uses_validation_scoped_node_runner_image(self) -> None:
+        reference = {
+            "contract_version": CONTRACT_VERSION,
+            "artifact_id": "validation-target",
+            "project_id": "20261031_01",
+            "category": "validation",
+            "relative_path": "validation/visual_target_source_01.png",
+            "media_type": "image/png",
+            "size_bytes": 10,
+            "sha256": "0" * 64,
+            "created_at": "now",
+            "producer": "visual_validation:run_node_llm",
+        }
+        manager = MagicMock()
+        manager.read_bytes.return_value = b"target-png"
+        llm_result = ImageRunResult(
+            artifacts=(reference,),
+            provider="local",
+            model="sd-turbo",
+            prompt="target",
+            size="512x288",
+        )
+        request = {
+            "contract_version": CONTRACT_VERSION,
+            "image_style": "Pixel Art",
+            "mood_style": "Fantasy",
+            "genre": "플랫포머",
+            "viewpoint": "사이드뷰",
+            "condition": "보석을 모은다.",
+            "custom_image": None,
+        }
+        logic = {
+            "contract_version": CONTRACT_VERSION,
+            "logic_analysis_id": "logic",
+            "genre": "플랫포머",
+            "viewpoint": "사이드뷰",
+            "mood_style": "Fantasy",
+            "core_loop": "collect",
+            "features": [],
+            "criteria": [],
+        }
+
+        with patch(
+            "mainflow.nodes.visual_validation.run_node_llm",
+            new=AsyncMock(return_value=llm_result),
+        ) as run_node_llm:
+            content = RunNodeLLMVisualTargetGenerator(manager).generate(request, logic)
+
+        self.assertEqual(content, b"target-png")
+        options = run_node_llm.await_args.kwargs["image_options"]
+        self.assertEqual(options.artifact_category, "validation")
+        self.assertEqual(run_node_llm.await_args.kwargs["output"], "image")
+        manager.read_bytes.assert_called_once_with(reference)
+
     def test_mode_and_attempt_bounds(self) -> None:
         self.assertTrue(visual_validation_enabled("enabled"))
         self.assertFalse(visual_validation_enabled("off"))

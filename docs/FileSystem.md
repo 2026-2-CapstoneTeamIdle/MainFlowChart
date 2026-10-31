@@ -193,6 +193,8 @@ LLM이 MCP로 Unity 소스 등 생성 중인 작업 파일을 수정할 때도 `
 - `validation/final_validation_result.json`: 기준별 판정, 실패 원인, `evidence` 참조와 최종 패키지 참조.
 - `validation/visual_validation_result.json`: 시각 검증 모드, 회차별 점수·finding·수정 파일과
   Unity 재검증 결과. 비활성 실행도 `skipped` 기록을 남긴다.
+- `validation/visual_target_source_*.png`: `run_node_llm`이 직접 만든 비교 전용 원본. 게임 에셋
+  manifest 또는 Unity 적용 입력으로 사용하지 않는다.
 - `validation/visual/target.png`, `attempt_N.png`: 목표 화면과 회차별 실제 Unity 캡처.
 - `validation/game_validator_ai_result.json`: 완성된 게임에 대한 독립 Validator AI의 요구사항
   충족도, 품질 점수, 근거, 수정 권고.

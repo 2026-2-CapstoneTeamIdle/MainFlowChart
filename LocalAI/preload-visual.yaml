@@ -1,4 +1,4 @@
-# LocalAI integration v1.6.0: keep the 16K code model and add Qwen3-VL 4B Q4_K_M.
+# LocalAI integration v1.6.0: 16K code, visual target, and Qwen3-VL review share one runtime.
 # LOCALAI_MAX_ACTIVE_BACKENDS=1 ensures only one model occupies VRAM at a time.
 - url: https://raw.githubusercontent.com/mudler/LocalAI/v4.11.0/gallery/qwen3.yaml
   name: qwen2.5-coder-7b-q5-k-m

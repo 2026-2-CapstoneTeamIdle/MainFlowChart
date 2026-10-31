@@ -953,7 +953,7 @@ class VisualValidationAgentInput(TypedDict):
     logic_analysis: ArtifactReference
     game_logic_draft: ArtifactReference
     game_validation_result: ArtifactReference
-    integrated_game: ArtifactReference
+    integrated_game: NotRequired[ArtifactReference]
 
 
 class VisualValidationAgentOutput(TypedDict):

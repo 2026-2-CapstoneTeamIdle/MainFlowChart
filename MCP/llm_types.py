@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypeAlias
 
-from mainflow.contracts import ArtifactReference
+from mainflow.contracts import ArtifactCategory, ArtifactReference
 from MCP.manager import MCPToolDefinition
 
 
@@ -74,6 +74,7 @@ class ImageGenerationOptions:
     steps: int = 2
     negative_prompt: str | None = None
     filename_prefix: str = "generated_image"
+    artifact_category: ArtifactCategory = "image"
 
 
 @dataclass(frozen=True)

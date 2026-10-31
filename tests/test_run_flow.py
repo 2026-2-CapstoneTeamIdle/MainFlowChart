@@ -55,6 +55,35 @@ class RunFlowExitTest(unittest.TestCase):
     def test_validator_ai_revision_sets_nonzero_exit(self):
         self.assertEqual(self.run_cli("passed", "needs_revision"), 1)
 
+    def test_game_test_uses_asset_free_graph_and_both_validation_results(self):
+        state = {
+            "project_id": "20261031_01",
+            "game_validation_result": "game-validation",
+            "visual_validation_result": "visual-validation",
+        }
+        manager = MagicMock()
+        manager.read_json.side_effect = [
+            {"status": "passed"},
+            {"status": "passed"},
+        ]
+        with (
+            patch("mainflow.run_flow.load_request", return_value={}),
+            patch("mainflow.run_flow.build_graph") as production_graph,
+            patch("mainflow.run_flow.build_game_test_graph") as game_test_graph,
+            patch("mainflow.run_flow.ArtifactManager", return_value=manager),
+            patch("sys.argv", ["mainflow", "--game-test"]),
+            patch("sys.stdout", new_callable=io.StringIO),
+            patch("sys.stderr", new_callable=io.StringIO),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            game_test_graph.return_value.invoke.return_value = state
+            manager.ensure_project.return_value = "workspace/test"
+            result = main()
+
+        self.assertEqual(result, 0)
+        game_test_graph.assert_called_once_with()
+        production_graph.assert_not_called()
+
     def test_console_encoding_is_reconfigured_for_unicode_output(self):
         buffer = io.BytesIO()
         stream = ReconfigurableTextStream(buffer, encoding="cp949")

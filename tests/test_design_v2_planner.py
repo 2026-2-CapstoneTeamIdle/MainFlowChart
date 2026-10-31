@@ -150,6 +150,14 @@ class StagedDesignV2PlannerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "executable platformer scenarios"):
             validate_design_v2(invalid)
 
+    def test_non_platformer_level_rejects_incomplete_generated_zone(self) -> None:
+        survivor_spec = normalize_game_spec("뱀서류")
+        invalid = build_design_v2(survivor_spec, "적 무리에서 생존한다.")
+        invalid["level_plan"]["zones"] = [{}]  # type: ignore[list-item]
+
+        with self.assertRaisesRegex(ValueError, "zone 0 is missing fields"):
+            validate_design_v2(invalid)
+
 
 if __name__ == "__main__":
     unittest.main()

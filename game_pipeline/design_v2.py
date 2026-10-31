@@ -116,6 +116,31 @@ def validate_design_v2(bundle: DesignV2Bundle) -> None:
     if bundle["game_design"]["target_play_minutes"] < 3:
         raise ValueError("target_play_minutes must be at least 3")
     level = bundle["level_plan"]
+    required_zone_fields = {
+        "zone_id",
+        "title",
+        "purpose",
+        "challenge",
+        "reward",
+        "difficulty",
+        "required_mechanics",
+        "start_x",
+        "end_x",
+        "checkpoint",
+        "platforms",
+        "hazards",
+        "enemies",
+        "collectibles",
+    }
+    zone_ids: set[str] = set()
+    for index, zone in enumerate(level["zones"]):
+        missing = required_zone_fields - set(zone)
+        if missing:
+            raise ValueError(f"level_plan zone {index} is missing fields: {sorted(missing)}")
+        zone_id = zone["zone_id"].strip()
+        if not zone_id or zone_id in zone_ids:
+            raise ValueError(f"level_plan zone {index} has an empty or duplicate zone_id")
+        zone_ids.add(zone_id)
     if level["genre"] == "Platformer":
         if len(level["zones"]) < 3:
             raise ValueError("Platformer level_plan requires at least three zones")

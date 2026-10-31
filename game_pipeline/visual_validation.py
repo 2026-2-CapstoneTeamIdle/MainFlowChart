@@ -14,7 +14,7 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from PIL import Image
 
@@ -27,14 +27,11 @@ from game_pipeline.unity_project_validator import UnityProjectValidator
 from mainflow.contracts import (
     ArtifactReference,
     GameLogicDraft,
-    ImageGenerationSpec,
     LogicAnalysis,
     ParsedRequest,
     VisualValidationAttempt,
     VisualValidationResult,
 )
-from mainflow.image_backends import create_image_generator
-from mainflow.image_generation import ImageAssetPlan, ImageRequest, PlaceholderImageGenerator
 from MCP.llm_config import LLMSettings
 from MCP.llm_providers import create_llm_provider
 from MCP.llm_types import LLMConversationMessage
@@ -44,6 +41,7 @@ VISUAL_ATTEMPTS_ENV = "MAINFLOW_VISUAL_VALIDATION_ATTEMPTS"
 VISUAL_PROVIDER_ENV = "LLM_VISUAL_VALIDATION_PROVIDER"
 VISUAL_MODEL_ENV = "LLM_VISUAL_VALIDATION_MODEL"
 VISUAL_MAX_TOKENS_ENV = "LLM_VISUAL_VALIDATION_MAX_TOKENS"
+VISUAL_REVIEW_ATTEMPTS_ENV = "LLM_VISUAL_VALIDATION_RESPONSE_ATTEMPTS"
 DEFAULT_VLM_MODEL = "qwen3-vl-4b-instruct-q4-k-m"
 MAX_VISUAL_ATTEMPTS = 3
 REQUIRED_VISUAL_IDS = frozenset(f"VC{index:02d}" for index in range(1, 9))
@@ -92,58 +90,25 @@ def _strict_json(text: str) -> dict[str, Any]:
     return cast(dict[str, Any], payload)
 
 
-class VisualTargetGenerator:
-    """Create one gameplay-screen reference through the existing image backend."""
+class VisualTargetGenerator(Protocol):
+    """Boundary implemented by the workflow layer, independent of asset backends."""
 
     def generate(self, request: ParsedRequest, logic: LogicAnalysis) -> bytes:
-        generator = create_image_generator()
-        if (
-            isinstance(generator, PlaceholderImageGenerator)
-            and os.environ.get("MAINFLOW_VISUAL_ALLOW_PLACEHOLDER_TARGET", "0") != "1"
-        ):
-            raise RuntimeError(
-                "Visual validation needs a real target image. Configure MAINFLOW_IMAGE_BACKEND "
-                "as openai/local, or explicitly allow the diagnostic placeholder target."
-            )
-        spec: ImageGenerationSpec = {
-            "kind": "background",
-            "width": 1280,
-            "height": 720,
-            "transparent": False,
-            "sprite_mode": "single",
-            "pixels_per_unit": 100,
-        }
-        plan = ImageAssetPlan(
-            asset_id="visual-target",
-            purpose="완성 목표 게임 화면",
-            description="플레이 중인 대표 장면 전체와 HUD",
-            required=True,
-            filename="visual_target.png",
-            unity_binding_key="visual.target",
-            kind="background",
-            generation_spec=spec,
-        )
-        features = ", ".join(item["name"] for item in logic["features"])
-        prompt = (
-            "A polished but feasible 2D Unity gameplay screenshot, not key art or a poster. "
-            f"Genre: {request['genre']}; viewpoint: {request['viewpoint']}; "
-            f"art style: {request['image_style']}; mood: {request['mood_style']}. "
-            f"User request: {request['condition']}. Visible gameplay features: {features}. "
-            "Show the player, traversable play space, threats or objectives, and a readable minimal "
-            "HUD. Use a 16:9 composition, no logos, no mock-device frame, no explanatory text."
-        )
-        return generator.generate(
-            ImageRequest(
-                plan=plan,
-                style=request["image_style"],
-                mood_style=request["mood_style"],
-                viewpoint=request["viewpoint"],
-                genre=logic["genre"],
-                width=1280,
-                height=720,
-                prompt=prompt,
-            )
-        )
+        """Return one comparison-only gameplay target image."""
+
+
+def build_visual_target_prompt(request: ParsedRequest, logic: LogicAnalysis) -> str:
+    """Build the comparison-image prompt without selecting an image backend."""
+
+    features = ", ".join(item["name"] for item in logic["features"])
+    return (
+        "A polished but feasible 2D Unity gameplay screenshot, not key art or a poster. "
+        f"Genre: {request['genre']}; viewpoint: {request['viewpoint']}; "
+        f"art style: {request['image_style']}; mood: {request['mood_style']}. "
+        f"User request: {request['condition']}. Visible gameplay features: {features}. "
+        "Show the player, traversable play space, threats or objectives, and a readable minimal "
+        "HUD. Use a 16:9 composition, no logos, no mock-device frame, no explanatory text."
+    )
 
 
 class VisualVLMReviewer:
@@ -160,22 +125,34 @@ class VisualVLMReviewer:
         inventory: list[str],
     ) -> tuple[dict[str, Any], str]:
         provider_name = os.environ.get(VISUAL_PROVIDER_ENV, "local")
-        model = os.environ.get(VISUAL_MODEL_ENV, DEFAULT_VLM_MODEL)
-        settings = LLMSettings.from_environment(
-            node_name="visual_validation",
-            provider=provider_name,
-            model=model,
-        )
-        if settings.provider not in {"local", "openai"}:
+        if provider_name.strip().lower() in {"vast", "vastai", "vast.ai", "vllm"}:
+            from VastAI.settings import load_vastai_settings
+
+            remote = load_vastai_settings("vlm")
+            settings = LLMSettings(
+                provider="vastai",
+                model=remote.model,
+                api_key=remote.api_key,
+                base_url=remote.base_url,
+                timeout_seconds=remote.timeout_seconds,
+            )
+        else:
+            model = os.environ.get(VISUAL_MODEL_ENV, DEFAULT_VLM_MODEL)
+            settings = LLMSettings.from_environment(
+                node_name="visual_validation",
+                provider=provider_name,
+                model=model,
+            )
+        if settings.provider not in {"local", "openai", "vastai"}:
             raise ValueError(
                 "Visual image inputs currently require a local or OpenAI-compatible provider"
             )
-        provider = create_llm_provider(settings)
         max_tokens = int(os.environ.get(VISUAL_MAX_TOKENS_ENV, "768"))
         if not 256 <= max_tokens <= 2048:
             raise ValueError(f"{VISUAL_MAX_TOKENS_ENV} must be between 256 and 2048")
 
         async def call() -> str:
+            provider = create_llm_provider(settings)
             try:
                 response = await provider.complete(
                     [
@@ -213,8 +190,22 @@ class VisualVLMReviewer:
             finally:
                 await provider.aclose()
 
-        payload = self._validate(self._normalize(_strict_json(asyncio.run(call()))), checklist_ids)
-        return payload, settings.model
+        response_attempts = int(os.environ.get(VISUAL_REVIEW_ATTEMPTS_ENV, "2"))
+        if not 1 <= response_attempts <= 3:
+            raise ValueError(f"{VISUAL_REVIEW_ATTEMPTS_ENV} must be between 1 and 3")
+        last_error: ValueError | None = None
+        for _ in range(response_attempts):
+            try:
+                payload = self._validate(
+                    self._normalize(_strict_json(asyncio.run(call()))), checklist_ids
+                )
+                return payload, settings.model
+            except ValueError as error:
+                last_error = error
+        raise ValueError(
+            f"Visual review returned an invalid checklist after {response_attempts} attempts: "
+            f"{last_error}"
+        )
 
     @staticmethod
     def _prompt(
@@ -444,7 +435,7 @@ class VisualValidationWorkflow:
         checklist_path: Path,
         source_docs: Path,
         attempts: int,
-        target_generator: VisualTargetGenerator | None = None,
+        target_generator: VisualTargetGenerator,
         reviewer_factory: Callable[[], VisualVLMReviewer] = VisualVLMReviewer,
         capture: UnityVisualCapture | None = None,
         repair_factory: Callable[[], FeatureChecklistRepairAI] = (
@@ -458,7 +449,7 @@ class VisualValidationWorkflow:
         self.checklist_path = checklist_path
         self.source_docs = source_docs
         self.attempts = attempts
-        self.target_generator = target_generator or VisualTargetGenerator()
+        self.target_generator = target_generator
         self.reviewer_factory = reviewer_factory
         self.capture = capture or UnityVisualCapture(editor, timeout_seconds)
         self.repair_factory = repair_factory

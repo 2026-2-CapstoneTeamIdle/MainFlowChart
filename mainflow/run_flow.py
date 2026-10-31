@@ -11,7 +11,7 @@ from typing import Any, cast, get_args
 
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import GameGenre, ImageStyle, MoodStyle, Viewpoint, WorkflowState
-from mainflow.langgraph_game_flow_skeleton import build_graph
+from mainflow.langgraph_game_flow_skeleton import build_game_test_graph, build_graph
 
 IMAGE_STYLES = cast(tuple[str, ...], get_args(ImageStyle))
 GAME_GENRES = cast(tuple[str, ...], get_args(GameGenre))
@@ -50,6 +50,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--workspace",
         type=Path,
         help="Override the workspace directory (default: ./workspace).",
+    )
+    parser.add_argument(
+        "--game-test",
+        action="store_true",
+        help=(
+            "Skip image/sound generation and application; run module composition, Unity compile, "
+            "feature checklists, and visual checklists."
+        ),
     )
     visual_mode = parser.add_mutually_exclusive_group()
     visual_mode.add_argument(
@@ -118,16 +126,52 @@ def load_request(arguments: argparse.Namespace) -> WorkflowState:
 
 def main() -> int:
     configure_console_encoding()
-    arguments = build_parser().parse_args()
+    parser = build_parser()
+    arguments = parser.parse_args()
+    if arguments.game_test and arguments.visual_validation is False:
+        parser.error("--game-test cannot be combined with --skip-visual-validation")
     if arguments.workspace:
         os.environ["MAINFLOW_WORKSPACE"] = str(arguments.workspace.resolve())
-    if arguments.visual_validation is not None:
+    if arguments.game_test:
+        os.environ["MAINFLOW_VISUAL_VALIDATION"] = "1"
+    elif arguments.visual_validation is not None:
         os.environ["MAINFLOW_VISUAL_VALIDATION"] = "1" if arguments.visual_validation else "0"
 
     initial_state = load_request(arguments)
-    final_state = cast(WorkflowState, build_graph().invoke(initial_state))
+    graph = build_game_test_graph() if arguments.game_test else build_graph()
+    final_state = cast(WorkflowState, graph.invoke(initial_state))
     manager = ArtifactManager()
     game_validation = manager.read_json(final_state["game_validation_result"])
+    if arguments.game_test:
+        visual_validation = manager.read_json(final_state["visual_validation_result"])
+        project_root = manager.ensure_project(final_state["project_id"])
+        output: dict[str, Any] = {
+            "mode": "game-test",
+            "project_id": final_state["project_id"],
+            "project_root": str(project_root),
+            "asset_generation": "skipped",
+            "execution_order": [
+                "module_composition",
+                "compile_test",
+                "feature_checklist_test",
+                "visual_checklist_test",
+            ],
+            "game_validation": game_validation,
+            "visual_validation": visual_validation,
+            "final_state": final_state,
+        }
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+        if game_validation.get("status") != "passed":
+            print(
+                "Game test failed during compilation or feature checklist validation.",
+                file=sys.stderr,
+            )
+            return 1
+        if visual_validation.get("status") != "passed":
+            print("Game test failed during visual checklist validation.", file=sys.stderr)
+            return 1
+        return 0
+
     image_generation = manager.read_json(final_state["image_draft"])
     sound_generation = manager.read_json(final_state["sound_draft"])
     final_validation = manager.read_json(final_state["final_validation_result"])

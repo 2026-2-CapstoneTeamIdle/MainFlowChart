@@ -9,7 +9,7 @@
 ```text
 LangGraph Node
   └─ run_node_llm(prompt, provider=...)
-      ├─ Gemini / OpenAI / Local SLM adapter
+      ├─ Gemini / OpenAI / Local SLM / Vast.ai vLLM adapter
       └─ MCPManager(node_name)
           └─ Streamable HTTP Client
               └─ mcp-server:8001/mcp
@@ -196,6 +196,7 @@ Node State project_id=20261014_03
 gemini_result = await run_node_llm(prompt, provider="gemini")
 openai_result = await run_node_llm(prompt, provider="openai", model="팀 지정 모델")
 local_result = await run_node_llm(prompt, provider="local", model="qwen3:8b")
+vast_result = await run_node_llm(prompt, provider="vastai", model="mainflow-coder")
 ```
 
 `provider`를 생략하면 `LLM_{NODE_NAME}_PROVIDER`, `LLM_PROVIDER`, `gemini` 순서로 선택한다. 예를 들어
@@ -245,12 +246,15 @@ result = await run_node_llm(
         size="512x512",
         steps=2,
         filename_prefix="target_screen",
+        artifact_category="validation",
     ),
 )
 image_reference = result.artifacts[0]
 ```
 
 반환 형식은 `ImageRunResult`이며 `artifacts`, `provider`, `model`, `prompt`, `size`를 가진다.
+`artifact_category` 기본값은 기존과 같은 `image`이고, 비교 전용 이미지는 `validation`을 지정할
+수 있다. 허용 범위는 두 category로 제한된다.
 기본 모델 SD-Turbo는 6GB 전용 GPU에 맞춰 512x512 FP16과 적은 step을 사용한다. 기존 게임 에셋
 생성기(`mainflow/image_backends.py`)는 별도 경로로 유지된다.
 
@@ -293,7 +297,7 @@ Validator AI다. 생성 Agent와 다른 시스템 프롬프트 및 MCP 정책을
 | `MCP_MAX_TEXT_BYTES` | `262144` | 한 번에 읽거나 쓰는 UTF-8 최대 크기 |
 | `MCP_MAX_LIST_ENTRIES` | `200` | 파일 목록 최대 개수 |
 | `MAINFLOW_WORKSPACE` | 저장소의 `workspace/` | 접근 가능한 workspace root |
-| `LLM_PROVIDER` | `gemini` | 전체 Node 기본 공급자: `gemini`, `openai`, `local` |
+| `LLM_PROVIDER` | `gemini` | 전체 Node 기본 공급자: `gemini`, `openai`, `local`, `vastai` |
 | `LLM_MODEL` | 공급자별 기본값 | 전체 Node 기본 모델 재정의 |
 | `LLM_{NODE}_PROVIDER` | 없음 | 특정 Node 공급자 재정의, 예: `LLM_ANALYSIS_PROVIDER` |
 | `LLM_{NODE}_MODEL` | 없음 | 특정 Node 모델 재정의, 예: `LLM_ANALYSIS_MODEL` |
@@ -310,6 +314,13 @@ Validator AI다. 생성 Agent와 다른 시스템 프롬프트 및 MCP 정책을
 | `LOCAL_LLM_MODEL` | `gemma3` | Local SLM 기본 모델 |
 | `LOCAL_LLM_BASE_URL` | `http://127.0.0.1:11434/v1` | Local OpenAI 호환 endpoint |
 | `LOCAL_IMAGE_BASE_URL` | `http://127.0.0.1:8080/v1` | LocalAI 이미지 endpoint |
+| `VASTAI_INFERENCE_API_KEY` | 없음 | 원격 vLLM 추론 서버 키. Vast 계정 API 키와 분리 |
+| `VASTAI_CODER_BASE_URL` | `http://127.0.0.1:18000/v1` | SSH tunnel 또는 TLS 기반 Coder vLLM endpoint |
+| `VASTAI_VLM_BASE_URL` | `http://127.0.0.1:18001/v1` | 시각 검증 VLM endpoint |
+| `VASTAI_IMAGE_BASE_URL` | `http://127.0.0.1:18002/v1` | OpenAI Images 호환 vLLM-Omni endpoint |
+
+Vast.ai는 모델 추론에만 사용하고 MCP, workspace, Unity는 기존 환경에 둔다. 역할별 모델과 SSH
+tunnel 구성은 `docs/VastAIManager.md`를 따른다.
 | `LOCAL_IMAGE_MODEL` | `sd-turbo` | `output="image"`의 기본 로컬 이미지 모델 |
 
 API 키와 토큰은 MCP 도구 인자, workspace, manifest에 저장하지 않는다. 외부 공개 환경에서는 별도
