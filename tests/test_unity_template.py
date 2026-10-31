@@ -314,6 +314,7 @@ class UnityTemplateTest(unittest.TestCase):
         self.assertIn("com.unity.2d.tilemap", dependencies)
         self.assertIn("com.unity.modules.physics2d", dependencies)
         self.assertIn("com.unity.modules.particlesystem", dependencies)
+        self.assertIn("com.unity.modules.animation", dependencies)
         self.assertIn("com.unity.ugui", dependencies)
 
     def test_bootstrap_scene_references_config_and_runtime_scripts(self) -> None:

@@ -2,12 +2,12 @@
 
 통합 버전: 1.5.0. 기본 텍스트 모델은 Qwen2.5-Coder-7B-Instruct Q5_K_M(API 이름: qwen2.5-coder-7b-q5-k-m)이다.
 LocalAI v4.11.0 llama.cpp를 사용한다. 공식 텍스트 전용 GGUF는 약 5.44GB이며
-멀티모달 파일은 설치하지 않는다. context 8192, gpu_layers 99, 동시 추론 슬롯 1개,
+멀티모달 파일은 설치하지 않는다. 코더 모델은 context 16384, gpu_layers 99, 동시 추론 슬롯 1개,
 호스트 프롬프트 캐시 상한 1024MiB와
 동시 활성 backend 1개로 설정한다. 12GB GPU에서 모델 전체를 GPU에 올리되 Windows와
 Unity가 사용할 여유를 남기는 구성이다.
 자동 컨텍스트 축소는 끄므로 LocalAI 시작 로그의 effective runtime tuning에서
-context=8192인지 확인한다.
+context=16384인지 확인한다. 시각 검증 VLM은 context 8192를 유지한다.
 
 선택형 시각 검증은 Qwen3-VL-4B-Instruct Q4_K_M과 Q8 vision projector를 사용한다.
 `preload-visual.yaml`을 선택하면 코드 모델과 VLM을 함께 등록하되 한 번에 한 backend만
@@ -19,7 +19,7 @@ Node 공통 실행기의 로컬 이미지 생성은 `stabilityai/sd-turbo`를 `s
 경로를 교체하거나 변경하지 않는다. `LOCALAI_SINGLE_ACTIVE_BACKEND`도 활성화해 텍스트/VLM/이미지
 backend가 동시에 VRAM을 점유하지 않고 모델 전환 시 이전 backend를 내리도록 했다.
 
-MainFlow에도 같은 값을 `LOCAL_LLM_CONTEXT_TOKENS=8192`로 설정한다. 이 값은 서버의
+MainFlow에도 같은 값을 `LOCAL_LLM_CONTEXT_TOKENS=16384`로 설정한다. 이 값은 서버의
 `context_size`를 변경하지 않고 호출 전 입력 예산을 검사하는 용도이므로 두 값을 항상 같게 유지한다.
 기능 생성은 전체 API 인덱스 대신 요구사항 관련 모듈의 시그니처만 검색해 전달한다.
 
@@ -115,7 +115,8 @@ $env:MAINFLOW_FEATURE_PROVIDER = "local"
 $env:LOCAL_LLM_BASE_URL = "http://127.0.0.1:8080/v1"
 $env:LOCAL_LLM_MODEL = "qwen2.5-coder-7b-q5-k-m"
 $env:LLM_TIMEOUT_SECONDS = "300"
-$env:MAINFLOW_LOCAL_MAX_OUTPUT_TOKENS = "2048"
+$env:LOCAL_LLM_CONTEXT_TOKENS = "16384"
+$env:MAINFLOW_LOCAL_MAX_OUTPUT_TOKENS = "8192"
 uv run --locked python -m mainflow.run_flow --image-style "Pixel Art" --mood-style "Fantasy" --genre "플랫포머" --viewpoint "사이드뷰" --condition "벽을 타고 올라갈 수 있는 게임"
 ```
 

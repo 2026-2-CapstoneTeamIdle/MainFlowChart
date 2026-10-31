@@ -1,5 +1,5 @@
-# LocalAI integration v1.3.0: Qwen2.5-Coder 7B Q5_K_M for a 12 GB NVIDIA GPU.
-# One inference slot and an 8K context leave headroom for Windows and Unity.
+# LocalAI integration v1.6.0: Qwen2.5-Coder 7B Q5_K_M for a 12 GB NVIDIA GPU.
+# One inference slot and a 16K context allow bounded 8K structured code responses.
 - url: https://raw.githubusercontent.com/mudler/LocalAI/v4.11.0/gallery/qwen3.yaml
   name: qwen2.5-coder-7b-q5-k-m
   files:
@@ -8,7 +8,7 @@
       sha256: 586844eac4d6d6321689f0192c8aa8e69cd8625974a5cc2d925b1a03366e4d16
   overrides:
     backend: llama-cpp
-    context_size: 8192
+    context_size: 16384
     gpu_layers: 99
     low_vram: false
     options:

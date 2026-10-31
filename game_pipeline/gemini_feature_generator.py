@@ -221,8 +221,8 @@ class LocalAIJsonClient:
     api_key: str | None = None
     timeout_seconds: int = 300
     max_attempts: int = 2
-    max_output_tokens: int = 2048
-    context_window_tokens: int = 8192
+    max_output_tokens: int = 8192
+    context_window_tokens: int = 16384
     reasoning_effort: str | None = None
     supports_feature_planning = True
 
@@ -236,8 +236,8 @@ class LocalAIJsonClient:
         if not model:
             raise ValueError("LOCAL_LLM_MODEL must not be empty")
         timeout = int(os.environ.get("LLM_TIMEOUT_SECONDS", "300"))
-        max_output_tokens = int(os.environ.get("MAINFLOW_LOCAL_MAX_OUTPUT_TOKENS", "2048"))
-        context_window_tokens = int(os.environ.get("LOCAL_LLM_CONTEXT_TOKENS", "8192"))
+        max_output_tokens = int(os.environ.get("MAINFLOW_LOCAL_MAX_OUTPUT_TOKENS", "8192"))
+        context_window_tokens = int(os.environ.get("LOCAL_LLM_CONTEXT_TOKENS", "16384"))
         reasoning_effort = os.environ.get("LOCAL_LLM_REASONING_EFFORT", "").strip().lower()
         if reasoning_effort and reasoning_effort not in {"none", "low", "medium", "high"}:
             raise ValueError("LOCAL_LLM_REASONING_EFFORT must be one of: none, low, medium, high")
@@ -553,6 +553,31 @@ class GeminiFeatureGenerator:
             "name",
             "sortingOrder",
             "sprite",
+            "transform",
+            "TryGetComponent",
+        },
+        "Button": {
+            "enabled",
+            "gameObject",
+            "GetComponent",
+            "interactable",
+            "name",
+            "navigation",
+            "onClick",
+            "targetGraphic",
+            "transform",
+            "TryGetComponent",
+        },
+        "Text": {
+            "alignment",
+            "color",
+            "enabled",
+            "font",
+            "fontSize",
+            "gameObject",
+            "GetComponent",
+            "name",
+            "text",
             "transform",
             "TryGetComponent",
         },
@@ -1329,6 +1354,9 @@ Rules:
   allowed_api_contract for every project type used.
 - Resolve player components and GetModule<T>() dependencies only in BindGeneratedFeature. The
   context parameter is not available elsewhere; later callbacks use bindingContext.
+- Never read bindingContext from OnInitialize. It is assigned later by BindGeneratedFeature.
+- GetModule<T>() accepts only concrete module types listed in allowed_api_contract. Environment,
+  Entities, and Ui are Transform properties, not component types.
 - Follow feature_implementation_plan. Create its missing objects under the planned Environment,
   Entities, or Ui root during binding and give each object its planned stable name.
 - Execute real behavior after binding from Update, FixedUpdate, or a Unity 2D collision callback.
@@ -1336,6 +1364,8 @@ Rules:
   tags/layers, UnityEditor, file/network/process/reflection/native/unsafe APIs.
 - Transform roots and Transform.Find results need .gameObject when a GameObject is required.
 - Register UI listeners once during binding; never poll or invoke them every frame.
+- Button has no isPressed property; subscribe through button.onClick.AddListener(...).
+- Cache ParticleSystem.main in a local variable before changing its fields.
 - Declare exactly one class: {class_name}. Do not add helper classes; keep helper state and methods
   inside that module. Every helper method reachable from a runtime callback must execute real code.
 - Return raw C# in source_code without Markdown and keep the module under 120 lines.
@@ -1454,6 +1484,8 @@ Context:
             )
         self._validate_project_api_members(source, module_id)
         self._validate_unity_api_members(source, module_id)
+        self._validate_binding_lifecycle(source, module_id)
+        self._validate_unity_value_type_mutations(source, module_id)
         self._validate_single_generated_class(source, module_id, class_name)
 
         binding_requirements = {
@@ -1827,8 +1859,19 @@ Context:
         )
         for type_name, member in direct_calls:
             allowed = type_apis.get(type_name)
-            if allowed is not None and member not in allowed and member not in component_members:
+            if allowed is None:
+                invalid.add(f"unknown module type {type_name}")
+            elif member not in allowed and member not in component_members:
                 invalid.add(f"{type_name}.{member}")
+
+        # A stored module reference does not necessarily have an immediate member access, so it
+        # must be checked independently from `GetModule<T>().Member` calls.
+        for type_name in re.findall(
+            r"GetModule\s*<\s*([A-Z][A-Za-z0-9_]*)\s*>\s*\(",
+            source,
+        ):
+            if type_name not in type_apis:
+                invalid.add(f"unknown module type {type_name}")
 
         if re.search(r"private\s+GeneratedFeatureBindingContext\s+bindingContext\s*;", source):
             allowed_context = type_apis.get("GeneratedFeatureBindingContext", set())
@@ -1888,7 +1931,8 @@ Context:
 
         for type_name, allowed in cls.UNITY_MEMBER_ALLOWLIST.items():
             for member in re.findall(
-                rf"AddComponent\s*<\s*{re.escape(type_name)}\s*>\s*\(\s*\)\s*\.\s*"
+                rf"(?:AddComponent|GetComponent)\s*<\s*{re.escape(type_name)}\s*>"
+                r"\s*\(\s*\)\s*\.\s*"
                 r"([A-Za-z_][A-Za-z0-9_]*)",
                 source,
             ):
@@ -1923,6 +1967,36 @@ Context:
         if invalid:
             raise ValueError(
                 f"Generated source for {module_id} invents Unity APIs: {sorted(invalid)}"
+            )
+
+    @staticmethod
+    def _validate_binding_lifecycle(source: str, module_id: str) -> None:
+        """Prevent generated code from reading a binding that the assembler has not supplied."""
+
+        initializer = GeminiFeatureGenerator._method_body(source, "OnInitialize")
+        if initializer is not None and re.search(r"\bbindingContext\b", initializer):
+            raise ValueError(
+                f"Generated source for {module_id} uses bindingContext in OnInitialize; "
+                "resolve player, module, environment, entity, and UI bindings only in "
+                "BindGeneratedFeature"
+            )
+
+    @staticmethod
+    def _validate_unity_value_type_mutations(source: str, module_id: str) -> None:
+        """Reject Unity struct-property writes that C# cannot assign through a temporary value."""
+
+        direct_main_writes = sorted(
+            set(
+                re.findall(
+                    r"\.\s*main\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*=",
+                    source,
+                )
+            )
+        )
+        if direct_main_writes:
+            raise ValueError(
+                f"Generated source for {module_id} mutates ParticleSystem.main directly: "
+                f"{direct_main_writes}; assign `var main = particles.main` first and mutate main"
             )
 
     @staticmethod
@@ -2157,7 +2231,8 @@ Context:
     @staticmethod
     def _method_body(source: str, method_name: str) -> str | None:
         signature = re.search(
-            rf"private\s+void\s+{re.escape(method_name)}\s*\([^)]*\)\s*\{{",
+            rf"(?:public|private|protected|internal)\s+(?:override\s+)?void\s+"
+            rf"{re.escape(method_name)}\s*\([^)]*\)\s*\{{",
             source,
         )
         if signature is None:

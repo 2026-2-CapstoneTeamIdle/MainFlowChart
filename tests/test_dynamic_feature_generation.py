@@ -249,6 +249,85 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
                 {"generated_feature_01": requirement},
             )
 
+    def test_generated_source_rejects_unknown_get_module_type(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "보스를 생성한다."}
+        invalid_source = GENERATED_SOURCE.replace(
+            "input = context.GetModule<InputAdapterModule>();",
+            "input = context.GetModule<Environment>();",
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": invalid_source,
+        }
+
+        with self.assertRaisesRegex(ValueError, "unknown module type Environment"):
+            GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+                module,
+                {"generated_feature_01": requirement},
+            )
+
+    def test_generated_source_rejects_button_is_pressed(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "버튼 강화"}
+        invalid_source = GENERATED_SOURCE.replace(
+            "var direction = Vector2.right * Mathf.Sign(input.Movement.x);",
+            "var pressed = bindingContext.Ui.GetComponent<Button>().isPressed;",
+        ).replace(
+            "using UnityEngine;",
+            "using UnityEngine;\nusing UnityEngine.UI;",
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": invalid_source,
+        }
+
+        with self.assertRaisesRegex(ValueError, "Button.isPressed"):
+            GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+                module,
+                {"generated_feature_01": requirement},
+            )
+
+    def test_generated_source_rejects_binding_context_in_initializer(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "보스를 생성한다."}
+        invalid_source = GENERATED_SOURCE.replace(
+            "context.Register(this);",
+            'context.Register(this);\n            bindingContext.Environment.Find("Boss");',
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": invalid_source,
+        }
+
+        with self.assertRaisesRegex(ValueError, "bindingContext in OnInitialize"):
+            GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+                module,
+                {"generated_feature_01": requirement},
+            )
+
+    def test_generated_source_rejects_direct_particle_main_mutation(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "파티클 생성"}
+        invalid_source = GENERATED_SOURCE.replace(
+            "var direction = Vector2.right * Mathf.Sign(input.Movement.x);",
+            "bindingContext.Player.AddComponent<ParticleSystem>().main.startLifetime = 1f;",
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": invalid_source,
+        }
+
+        with self.assertRaisesRegex(ValueError, "mutates ParticleSystem.main directly"):
+            GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+                module,
+                {"generated_feature_01": requirement},
+            )
+
     def test_generated_source_rejects_additional_helper_class(self) -> None:
         requirement = {"feature_id": "feature_01", "feature_description": "문을 연다."}
         invalid_source = GENERATED_SOURCE.rstrip().removesuffix("}")
@@ -328,7 +407,7 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
         request = urlopen.call_args.args[0]
         payload = json.loads(request.data.decode("utf-8"))
         self.assertEqual(payload["model"], "qwen2.5-coder-7b-q5-k-m")
-        self.assertEqual(payload["max_tokens"], 2048)
+        self.assertEqual(payload["max_tokens"], 8192)
         self.assertEqual(payload["response_format"]["type"], "json_schema")
         self.assertEqual(
             payload["response_format"]["json_schema"]["schema"],
