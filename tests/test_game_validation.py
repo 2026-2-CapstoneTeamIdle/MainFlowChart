@@ -337,7 +337,8 @@ class GameFailureIsolationTest(unittest.TestCase):
                             "genre": "플랫포머",
                             "viewpoint": "사이드뷰",
                             "condition": (
-                                "시간을 역행한다, 중력을 반전한다, 목적지에 도달하는 게임"
+                                "그림자를 분리해 스위치를 누른다. 과거 움직임을 복제해 "
+                                "발판을 작동한다. 포탈을 직접 배치해 목적지에 도달하는 게임"
                             ),
                         }
                     ),
@@ -375,6 +376,13 @@ class GameFailureIsolationTest(unittest.TestCase):
                     / "Generated"
                     / "Scripts"
                 )
+                partial_repair_record = (
+                    workspace
+                    / final_state["project_id"]
+                    / "validation"
+                    / "partial_repair"
+                    / "attempt_0.json"
+                )
 
             self.assertGreaterEqual(len(set(attempted)), 2)
             self.assertEqual(attempted.count(first_module[0]), 2)
@@ -394,9 +402,14 @@ class GameFailureIsolationTest(unittest.TestCase):
             )
             generated_ids = {module["module_id"] for module in failed_design["generated_modules"]}
             self.assertTrue(
-                generated_ids.isdisjoint(diagnostic_validation_plan["required_feature_bindings"])
+                generated_ids.issubset(set(diagnostic_validation_plan["required_feature_bindings"]))
             )
-            self.assertEqual(list(diagnostic_script_directory.glob("*.cs")), [])
+            generated_scripts = {path.name for path in diagnostic_script_directory.glob("*.cs")}
+            self.assertEqual(
+                generated_scripts,
+                {f"{module['class_name']}.cs" for module in failed_design["generated_modules"]},
+            )
+            self.assertTrue(partial_repair_record.is_file())
 
     def test_repair_failure_reuses_existing_blueprint_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -546,6 +559,8 @@ class GameFailureIsolationTest(unittest.TestCase):
                 sound_request = manager.read_json(final_state["sound_asset_request"])
                 image_draft = manager.read_json(final_state["image_draft"])
                 sound_draft = manager.read_json(final_state["sound_draft"])
+                image_validation = manager.read_json(final_state["image_validation_result"])
+                sound_validation = manager.read_json(final_state["sound_validation_result"])
                 integrated_game = manager.read_json(final_state["integrated_game"])
                 final_validation = manager.read_json(final_state["final_validation_result"])
 
@@ -579,6 +594,35 @@ class GameFailureIsolationTest(unittest.TestCase):
                 self.assertEqual(sound_draft["status"], "generated")
                 self.assertEqual(len(sound_draft["assets"]), len(sound_request["assets"]))
                 self.assertEqual(integrated_game["status"], "failed")
+                self.assertEqual(
+                    set(integrated_game["applied_image_asset_ids"]),
+                    set(image_validation["validated_asset_ids"]),
+                )
+                self.assertEqual(
+                    set(integrated_game["applied_sound_asset_ids"]),
+                    {asset["asset_id"] for asset in sound_draft["assets"]},
+                )
+                unity_project = (
+                    manager.ensure_project(final_state["project_id"]) / "game/unity_project"
+                )
+                binding_manifest_path = (
+                    unity_project / "Assets/GameTemplate/Generated/AssetBindingManifest.json"
+                )
+                self.assertTrue(binding_manifest_path.is_file())
+                binding_manifest = json.loads(binding_manifest_path.read_text(encoding="utf-8"))
+                for entry in binding_manifest["entries"]:
+                    self.assertTrue((unity_project / entry["unity_path"]).is_file())
+                self.assertTrue(
+                    (
+                        unity_project / "Assets/GameTemplate/Generated/GenerationRequest.json"
+                    ).is_file()
+                )
+                self.assertTrue(
+                    (
+                        manager.ensure_project(final_state["project_id"])
+                        / "game/diagnostic_integrated_unity_project.zip"
+                    ).is_file()
+                )
                 self.assertEqual(final_validation["status"], "failed")
 
 

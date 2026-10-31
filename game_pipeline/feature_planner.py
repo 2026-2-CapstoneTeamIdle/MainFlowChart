@@ -87,6 +87,14 @@ def plan_feature_mechanics(
 def _mapped_mechanics(name: str, genre: GameGenre, description: str = "") -> tuple[str, ...]:
     if name == "성장":
         return ("experience",) if genre == "뱀서류" else ("stats",)
+    if genre == "뱀서류" and name == "사용자 지정 조건":
+        normalized = description.replace(" ", "")
+        level_up_words = ("레벨이오르면", "레벨업", "경험치를모아")
+        choice_words = ("특전3개", "선택지3개", "3가지특전", "하나를선택")
+        if any(word in normalized for word in level_up_words) and any(
+            word in normalized for word in choice_words
+        ):
+            return ("experience", "rarity", "upgrade_selection")
     if genre == "플랫포머" and name == "사용자 지정 조건":
         normalized = description.replace(" ", "")
         destination_words = ("목적지", "목표지점", "도착점", "스테이지클리어")

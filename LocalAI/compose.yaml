@@ -2,7 +2,9 @@ services:
   Local-AIBackendSetup:
     image: ${LOCALAI_IMAGE:-docker.io/localai/localai:v4.11.0-gpu-nvidia-cuda-12}
     entrypoint: ["/bin/sh"]
-    command: ["/setup/setup-runtime.sh"]
+    # Windows checkouts may expose this bind-mounted script with CRLF line endings.
+    # Normalize it in-memory before execution so /bin/sh never parses `set -eu\r`.
+    command: ["-c", "tr -d '\\r' < /setup/setup-runtime.sh | /bin/sh"]
     volumes:
       - type: volume
         source: local-ai-backends

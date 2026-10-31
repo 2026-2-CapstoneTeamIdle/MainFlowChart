@@ -23,6 +23,7 @@ from game_pipeline import (
 )
 from game_pipeline.gemini_feature_generator import (
     FEATURE_IMPLEMENTATION_PLAN_SCHEMA,
+    GENERATED_MODULE_SCHEMA,
     _estimate_tokens,
 )
 from mainflow.contracts import CONTRACT_VERSION, FeatureRequirement, GameLogicDraft, ParsedRequest
@@ -174,7 +175,7 @@ class PerFeatureStructuredJsonClient:
         schema: Mapping[str, Any],
     ) -> Mapping[str, Any]:
         self.calls += 1
-        if '"generated_feature_01": {' in prompt:
+        if '"generated_feature_01"' in prompt:
             return {
                 "generated_modules": [
                     {
@@ -228,6 +229,71 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
         generator = GeminiFeatureGenerator(FakeStructuredJsonClient({}))
         with self.assertRaisesRegex(ValueError, "banned APIs"):
             generator._validate_module(module, {"generated_feature_01": requirement})
+
+    def test_generated_source_rejects_invented_unity_members(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "문을 연다."}
+        invalid_source = GENERATED_SOURCE.replace(
+            "var direction = Vector2.right * Mathf.Sign(input.Movement.x);",
+            'var gate = bindingContext.Environment.CreateGameObject("Gate");',
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": invalid_source,
+        }
+
+        with self.assertRaisesRegex(ValueError, "Transform.CreateGameObject"):
+            GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+                module,
+                {"generated_feature_01": requirement},
+            )
+
+    def test_generated_source_rejects_additional_helper_class(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "문을 연다."}
+        invalid_source = GENERATED_SOURCE.rstrip().removesuffix("}")
+        invalid_source += "\n    public class InventedEnemy : MonoBehaviour {}\n}\n"
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": invalid_source,
+        }
+
+        with self.assertRaisesRegex(ValueError, "must declare only WallClimbModule"):
+            GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+                module,
+                {"generated_feature_01": requirement},
+            )
+
+    def test_generated_source_rejects_runtime_delegation_to_empty_method(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "문을 연다."}
+        invalid_source = GENERATED_SOURCE.replace(
+            "var direction = Vector2.right * Mathf.Sign(input.Movement.x);",
+            "ApplyUpgrade();",
+        )
+        namespace_end = invalid_source.rfind("}\n")
+        class_end = invalid_source.rfind("}\n", 0, namespace_end)
+        invalid_source = (
+            invalid_source[:class_end]
+            + "        private void ApplyUpgrade()\n"
+            + "        {\n"
+            + "            // TODO: implement later\n"
+            + "        }\n"
+            + invalid_source[class_end:]
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": invalid_source,
+        }
+
+        with self.assertRaisesRegex(ValueError, "empty methods.*ApplyUpgrade"):
+            GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+                module,
+                {"generated_feature_01": requirement},
+            )
 
     def test_default_feature_provider_is_local_qwen(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
@@ -319,6 +385,32 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "input budget before request"):
                 client.generate_json("x" * 20_000, {"type": "object"})
         urlopen.assert_not_called()
+
+    def test_localai_adapts_output_budget_to_fit_feature_prompt(self) -> None:
+        api_response = {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": json.dumps({"generated_modules": []})},
+                }
+            ]
+        }
+        response = MagicMock()
+        response.read.return_value = json.dumps(api_response).encode("utf-8")
+        response_context = MagicMock()
+        response_context.__enter__.return_value = response
+        client = LocalAIJsonClient(context_window_tokens=8192, max_output_tokens=4096)
+
+        with patch(
+            "game_pipeline.gemini_feature_generator.urllib.request.urlopen",
+            return_value=response_context,
+        ) as urlopen:
+            client.generate_json("x" * 16_000, GENERATED_MODULE_SCHEMA)
+
+        request = urlopen.call_args.args[0]
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertGreaterEqual(payload["max_tokens"], 1536)
+        self.assertLess(payload["max_tokens"], 4096)
 
     def test_localai_planning_reserves_less_output_and_accepts_larger_input(self) -> None:
         api_response = {
@@ -601,6 +693,22 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
                 "save_load",
             ],
         )
+        self.assertFalse(plan.generation_requirements)
+
+    def test_survivor_level_up_choices_reuse_existing_modules(self) -> None:
+        description = "경험치를 모아 레벨이 오르면 무작위 특전 3개 중 하나를 선택한다"
+        features: list[FeatureRequirement] = [
+            {
+                "feature_id": "feature-03",
+                "name": "사용자 지정 조건",
+                "description": description,
+                "source_text": description,
+            }
+        ]
+
+        plan = plan_feature_mechanics(features, "뱀서류")
+
+        self.assertEqual(plan.mechanics, ["experience", "rarity", "upgrade_selection"])
         self.assertFalse(plan.generation_requirements)
 
     def test_generated_source_accepts_event_driven_runtime_behavior(self) -> None:
@@ -1502,6 +1610,11 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
         self.assertEqual(len(client.prompts), 2)
         self.assertIn("previous_source_code", client.prompts[1])
         self.assertIn("referenced_project_apis", client.prompts[1])
+        self.assertIn("required_source_skeleton", client.prompts[1])
+        self.assertIn(
+            '[GeneratedGameModule(\\"generated_feature_01\\")]',
+            client.prompts[1],
+        )
         self.assertIn("GENERATED_SOURCE_VALIDATION_FAILED", client.prompts[1])
         self.assertIn("method-local context", client.prompts[1])
         self.assertIn("context.Player.transform.localScale.x", client.prompts[1])

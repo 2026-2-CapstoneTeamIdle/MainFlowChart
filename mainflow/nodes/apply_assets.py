@@ -62,19 +62,7 @@ def apply_assets_to_game_node(
     # 사운드 파일은 sound_draft.assets[].artifact로 찾는다. 요청서의 suggested_filename은
     # 항상 .wav지만 ELEVENLABS_OUTPUT_FORMAT=mp3_*이면 실제 파일은 .mp3다.
     game_failed = game_draft["status"] == "failed"
-    if game_failed:
-        integrated_game: IntegratedGame = {
-            "contract_version": CONTRACT_VERSION,
-            "status": "failed",
-            "entry_artifact": None,
-            "game_artifacts": [],
-            "applied_image_asset_ids": [],
-            "applied_sound_asset_ids": [],
-            "notes": [
-                "게임 생성 실패로 에셋 적용은 건너뛰었지만 이미지/사운드 파이프라인은 완료됨"
-            ],
-        }
-    else:
+    try:
         application = UnityAssetApplicator(manager).apply(
             state["project_id"],
             image_request,
@@ -83,6 +71,7 @@ def apply_assets_to_game_node(
             sound_draft,
             image_validation,
             sound_validation,
+            include_unvalidated_drafts=game_failed,
         )
         manifest_reference = manager.write_json(
             state["project_id"],
@@ -98,25 +87,49 @@ def apply_assets_to_game_node(
         archive_reference = manager.write_bytes(
             state["project_id"],
             "game",
-            "integrated_unity_project.zip",
+            (
+                "diagnostic_integrated_unity_project.zip"
+                if game_failed
+                else "integrated_unity_project.zip"
+            ),
             UnityProjectGenerator().create_archive(unity_project_root),
             producer="apply_assets_to_game",
             media_type="application/zip",
         )
-        notes = [
-            "검증을 통과한 에셋을 Unity 프로젝트에 복사하고 바인딩 manifest를 생성함",
-            "Unity Editor가 프로젝트를 열 때 importer 설정과 씬 바인딩을 적용함",
-        ]
+        notes = []
+        if game_failed:
+            notes.append(
+                "게임 생성은 실패했지만 진단용 Unity 프로젝트에 검증을 통과한 "
+                "이미지/사운드 에셋을 적용함"
+            )
+        else:
+            notes.append("검증을 통과한 에셋을 Unity 프로젝트에 복사하고 바인딩 manifest를 생성함")
+        notes.append("Unity Editor가 프로젝트를 열 때 importer 설정과 씬 바인딩을 적용함")
         notes.extend(application.manifest["warnings"])
         integrated_game = {
             "contract_version": CONTRACT_VERSION,
-            "status": "integrated",
+            "status": "failed" if game_failed else "integrated",
             "entry_artifact": archive_reference,
             "game_artifacts": [manifest_reference, archive_reference],
             "asset_binding_manifest": manifest_reference,
             "applied_image_asset_ids": application.applied_image_asset_ids,
             "applied_sound_asset_ids": application.applied_sound_asset_ids,
             "notes": notes,
+        }
+    except Exception as error:  # noqa: BLE001 - preserve downstream workflow isolation
+        if not game_failed:
+            raise
+        integrated_game = {
+            "contract_version": CONTRACT_VERSION,
+            "status": "failed",
+            "entry_artifact": None,
+            "game_artifacts": [],
+            "applied_image_asset_ids": [],
+            "applied_sound_asset_ids": [],
+            "notes": [
+                "게임 생성 실패 후 진단용 Unity 프로젝트에도 에셋을 적용하지 못함: "
+                f"{type(error).__name__}: {error}"
+            ],
         }
     return {
         "integrated_game": manager.write_json(

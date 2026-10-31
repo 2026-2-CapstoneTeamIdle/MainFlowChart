@@ -268,7 +268,72 @@ def design_game_logic_node(
                         f"{type(error).__name__}: {error}"
                     )
             if feature_generation_failures:
-                design["generated_modules"] = deepcopy(generated_modules)
+                # A failed sibling feature must not bypass compiler repair for modules that were
+                # generated successfully. Assemble the usable subset, run the normal Unity
+                # compile/repair loop, and only then report the unresolved required features.
+                # This keeps the diagnostic project compile-clean whenever bounded repair can
+                # fix it, while the overall draft correctly remains failed.
+                if generated_modules:
+                    successful_ids = [module["module_id"] for module in generated_modules]
+                    failed_ids = {module_id for module_id, _ in feature_generation_failures}
+                    partial_design = deepcopy(design)
+                    partial_design["generated_modules"] = deepcopy(generated_modules)
+                    partial_design["selected_modules"] = list(
+                        dict.fromkeys(partial_design["selected_modules"] + successful_ids)
+                    )
+                    partial_design["unsupported_mechanics"] = []
+                    validation_plan = partial_design.get("design_v2", {}).get("validation_plan")
+                    if isinstance(validation_plan, dict):
+                        required_bindings = validation_plan.get("required_feature_bindings")
+                        if isinstance(required_bindings, list):
+                            validation_plan["required_feature_bindings"] = [
+                                binding
+                                for binding in required_bindings
+                                if binding not in failed_ids
+                            ]
+                    partial_design["implementation_tasks"] = development_loop.snapshot()
+                    workspace_project_root = manager.ensure_project(state["project_id"])
+                    partial_project_root = workspace_project_root / "game" / "unity_project"
+                    try:
+                        partial_generation = unity_generator.generate(
+                            partial_design,
+                            partial_project_root,
+                            image_style=request["image_style"],
+                            mood_style=request["mood_style"],
+                            viewpoint=request["viewpoint"],
+                            reference_image=request["custom_image"],
+                        )
+                        log(
+                            "성공한 생성 기능만 먼저 Unity 컴파일·수정 루프로 검증합니다: "
+                            + ", ".join(successful_ids)
+                        )
+                        partial_design, partial_generation = validate_and_repair(
+                            design=partial_design,
+                            generation=partial_generation,
+                            request=request,
+                            generator=unity_generator,
+                            feature_generator=feature_generator,
+                            max_repairs=int(os.environ.get("MAINFLOW_GAME_MAX_REPAIRS", "2")),
+                            record=lambda name, data: manager.write_json(
+                                state["project_id"],
+                                "validation",
+                                f"partial_repair/{name}.json",
+                                data,
+                                producer="design_game_logic",
+                            ),
+                        )
+                        generated_modules = deepcopy(partial_design["generated_modules"])
+                        design["generated_modules"] = deepcopy(generated_modules)
+                    except Exception as partial_error:  # noqa: BLE001 - preserve root failures
+                        feature_generation_failures.append(
+                            ("generated_subset_unity_validation", partial_error)
+                        )
+                        log(
+                            "성공한 생성 기능의 Unity 수정 루프도 실패했습니다: "
+                            f"{type(partial_error).__name__}: {partial_error}"
+                        )
+                else:
+                    design["generated_modules"] = []
                 design["implementation_tasks"] = development_loop.snapshot()
                 details = "; ".join(
                     f"{module_id}: {type(error).__name__}: {error}"
@@ -639,9 +704,9 @@ def design_game_logic_node(
         # This node is a fan-out boundary.  Record game failure as data instead
         # of aborting the graph so image and sound branches can still run.
         log(f"게임 생성에 실패했지만 이미지/사운드 파이프라인은 계속합니다: {error}")
-        # Preserve every source-validated module in failure artifacts so the next repair run can
-        # inspect it. These modules are not yet Unity-compiled, however, and therefore must not be
-        # copied into the user-facing diagnostic project when a sibling generation task fails.
+        # Preserve every source-validated module in failure artifacts and in the diagnostic Unity
+        # project. A failed sibling feature must not discard modules that were generated
+        # successfully; Unity validation can then compile and inspect the usable subset.
         if generated_modules:
             design["generated_modules"] = deepcopy(generated_modules)
         if development_loop is not None:
@@ -701,17 +766,19 @@ def design_game_logic_node(
             entry_scene_path = unity_project_root / UnityProjectGenerator.ENTRY_SCENE
             if not manifest_path.is_file() or not entry_scene_path.is_file():
                 diagnostic_design = deepcopy(design)
-                generated_ids = {module["module_id"] for module in generated_modules}
+                generated_ids = [module["module_id"] for module in generated_modules]
+                generated_id_set = set(generated_ids)
                 unresolved_ids = set(diagnostic_design["unsupported_mechanics"])
-                uncompiled_generated_ids = unresolved_ids | generated_ids
-                diagnostic_design["generated_modules"] = []
+                failed_generated_ids = unresolved_ids - generated_id_set
+                diagnostic_design["generated_modules"] = deepcopy(generated_modules)
                 diagnostic_design["selected_modules"] = list(
                     dict.fromkeys(
                         [
                             module_id
                             for module_id in diagnostic_design["selected_modules"]
-                            if module_id not in uncompiled_generated_ids
+                            if module_id not in failed_generated_ids
                         ]
+                        + generated_ids
                     )
                 )
                 diagnostic_design["unsupported_mechanics"] = []
@@ -722,7 +789,7 @@ def design_game_logic_node(
                         validation_plan["required_feature_bindings"] = [
                             binding
                             for binding in required_bindings
-                            if binding not in uncompiled_generated_ids
+                            if binding not in failed_generated_ids
                         ]
                 diagnostic_generation = unity_generator.generate(
                     diagnostic_design,
@@ -749,7 +816,8 @@ def design_game_logic_node(
             )
             diagnostic_note = (
                 "요청 기능 생성은 실패했지만 컴파일·문맥 검사를 위한 진단용 Unity "
-                "프로젝트를 game/unity_project에 보존했습니다."
+                "프로젝트를 game/unity_project에 보존했습니다. 성공적으로 생성된 기능 "
+                f"모듈 {len(generated_modules)}개도 Generated/Scripts에 반영했습니다."
             )
             log(diagnostic_note)
         except Exception as diagnostic_error:  # noqa: BLE001 - preserve original failure
