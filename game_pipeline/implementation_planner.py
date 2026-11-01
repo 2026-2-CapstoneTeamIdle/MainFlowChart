@@ -385,7 +385,7 @@ GENRE_PLANS: dict[GenreProfile, GameImplementationPlan] = {
         "minimum_session_minutes": 10,
         "core_loop_phases": [
             "이동",
-            "자동 공격",
+            "요청된 방식의 공격",
             "적 처치",
             "경험치 획득",
             "3개 강화 중 선택",
@@ -399,20 +399,18 @@ GENRE_PLANS: dict[GenreProfile, GameImplementationPlan] = {
                     "top_down_movement",
                     "health_damage_system",
                     "enemy_spawn_system",
-                    "auto_target_system",
-                    "projectile_system",
                 ],
                 [
-                    "플레이어 이동과 자동 조준 공격을 동시에 실행한다.",
+                    "플레이어 이동과 사용자 요구에 지정된 공격을 동시에 실행한다.",
                     "시간에 따라 적 수·체력·속도를 증가시킨다.",
                 ],
             ),
             _system(
-                "wing_progression",
+                "survivor_progression",
                 ["experience_system", "rarity_system", "upgrade_selection_system"],
                 [
-                    "처치 경험치로 레벨업한다.",
-                    "희귀도가 있는 세 선택지로 날개 능력과 외형 단계를 강화한다.",
+                    "요구사항에 지정된 보상 획득 절차를 거쳐 레벨업한다.",
+                    "희귀도가 있는 세 선택지로 요청된 능력과 외형 단계를 강화한다.",
                 ],
                 ["survival_combat"],
             ),
@@ -420,7 +418,7 @@ GENRE_PLANS: dict[GenreProfile, GameImplementationPlan] = {
         "content": [
             _content("enemy_variant", 5, "속도·체력·행동이 다른 적"),
             _content("wave_stage", 8, "시간 기반 난도 상승"),
-            _content("upgrade", 16, "공격력·공속·이속·깃털 수 조합"),
+            _content("upgrade", 16, "요청된 공격·생존·이동 능력 조합"),
             _content("arena_marker", 20, "전투 공간 경계"),
             _content("elite_enemy", 3, "주기적 고난도 적"),
         ],
@@ -428,13 +426,13 @@ GENRE_PLANS: dict[GenreProfile, GameImplementationPlan] = {
         "playtest_scenarios": [
             _scenario(
                 "survivor_combat",
-                "자동 전투",
-                ["적에게 접근한다.", "공격 없이 이동한다."],
-                ["가까운 적을 자동 공격한다.", "처치 시 경험치가 생성된다."],
+                "요청 공격 검증",
+                ["적에게 접근한다.", "요청된 공격 조건을 만족한다."],
+                ["명시된 공격 수단이 피해를 준다.", "명시된 보상 전달 절차가 실행된다."],
             ),
             _scenario(
                 "survivor_upgrade",
-                "날개 강화",
+                "능력 강화",
                 ["레벨업한다.", "세 선택지 중 하나를 고른다."],
                 ["희귀도가 표시된다.", "선택한 능력만 즉시 강화된다."],
             ),

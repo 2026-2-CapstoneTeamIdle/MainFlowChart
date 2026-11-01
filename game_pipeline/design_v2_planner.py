@@ -12,11 +12,14 @@ from game_pipeline.feature_contract import build_generation_contract
 from game_pipeline.gemini_feature_generator import (
     GeminiApiClient,
     LocalAIJsonClient,
+    OpenAIJsonClient,
     StructuredJsonClient,
+    resolve_feature_provider_from_environment,
 )
+from game_pipeline.runtime_invariants import runtime_invariants_for_genre
 from mainflow.contracts import DesignV2Bundle, GameSpec
 
-DesignProvider = Literal["deterministic", "local", "gemini"]
+DesignProvider = Literal["deterministic", "openai", "local", "gemini"]
 STAGE_ORDER = (
     "game_design",
     "system_design",
@@ -202,7 +205,7 @@ class StagedDesignV2Planner:
         _require_same_shape(response, baseline, stage)
         if stage == "game_design" and response["target_play_minutes"] < 3:
             raise ValueError("target_play_minutes must be at least 3")
-        if stage in {"level_plan", "presentation_plan", "validation_plan"}:
+        if stage in {"level_plan", "balance_plan", "presentation_plan", "validation_plan"}:
             candidate = cast(DesignV2Bundle, {**fallback, **result, stage: response})
             validate_design_v2(candidate)
 
@@ -245,6 +248,7 @@ class StagedDesignV2Planner:
             if stage == "validation_plan"
             else "Keep every decision implementable by the supplied Unity 2D modules."
         )
+        runtime_invariants = runtime_invariants_for_genre(game_spec["genre"])
         return (
             f"You are the {STAGE_ROLES[stage]}. Return only the JSON object required by the "
             "schema. Do not emit Markdown, C#, file paths, or commentary. The safety baseline is "
@@ -255,10 +259,17 @@ class StagedDesignV2Planner:
             "Platformer, keep at least three ordered zones (tutorial, challenge, "
             "mastery), landing widths >= minimum_landing_width, horizontal gaps <= "
             "max_horizontal_gap, and upward steps <= max_step_up. The requested mechanic must be "
-            f"used by progression rather than decorative. {critique}\n\n"
+            "used by progression rather than decorative. Treat RUNTIME_INVARIANTS as mandatory "
+            "genre rules even when the user did not spell them out; design their initialization, "
+            "runtime loop, feedback, and validation explicitly. GAME_SPEC features whose origin "
+            "is requirement_dependency are mandatory functional closure for the feature ids in "
+            "supports_feature_ids: wire them into the same runtime systems and preserve their "
+            f"acceptance_criteria in the validation design. {critique}\n\n"
             f"USER_INTENT={design_intent}\n"
             f"VARIATION_SEED={variation_seed}\n"
             f"GAME_SPEC={json.dumps(game_spec, ensure_ascii=False, separators=(',', ':'))}\n"
+            "RUNTIME_INVARIANTS="
+            f"{json.dumps(runtime_invariants, ensure_ascii=False, separators=(',', ':'))}\n"
             "IMPLEMENTATION_INDEX="
             f"{json.dumps(implementation_index, ensure_ascii=False, separators=(',', ':'))}\n"
             f"UPSTREAM={json.dumps(upstream, ensure_ascii=False, separators=(',', ':'))}\n"
@@ -301,9 +312,14 @@ class StagedDesignV2Planner:
 
 
 def create_design_v2_planner_from_environment() -> StagedDesignV2Planner | None:
-    provider = os.environ.get("MAINFLOW_DESIGN_V2_PROVIDER", "deterministic").strip().lower()
+    configured = os.environ.get("MAINFLOW_DESIGN_V2_PROVIDER", "").strip().lower()
+    provider = configured or (
+        "openai" if resolve_feature_provider_from_environment() == "openai" else "deterministic"
+    )
     if provider == "deterministic":
         return None
+    if provider == "openai":
+        return StagedDesignV2Planner(OpenAIJsonClient.from_environment(), "openai")
     if provider == "local":
         return StagedDesignV2Planner(LocalAIJsonClient.from_environment(), "local")
     if provider in {"vast", "vastai", "vast.ai", "vllm"}:

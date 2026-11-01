@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import unittest
 import json
+import unittest
 from pathlib import Path
 
 from game_pipeline.feature_contract import build_generation_contract
@@ -128,6 +128,60 @@ class ProjectContextIndexTest(unittest.TestCase):
         self.assertIn("base_defense_system", contract["retrieved_module_ids"])
         self.assertIn("WaveSpawnerModule", contract["project_types"])
         self.assertNotIn("AudioManagerModule", contract["project_types"])
+
+    def test_survivor_korean_requirement_retrieves_progression_apis(self) -> None:
+        selected = [
+            "top_down_movement",
+            "health_damage_system",
+            "enemy_spawn_system",
+            "game_timer",
+            "experience_system",
+            "upgrade_selection_system",
+            "item_collection_system",
+        ]
+
+        contract = build_generation_contract(
+            selected,
+            requirement_text=(
+                "적이 떨어뜨린 경험치 보석을 수집해 레벨업하고 특전 하나를 선택한다."
+            ),
+            max_module_types=6,
+        )
+
+        self.assertIn("experience_system", contract["retrieved_module_ids"])
+        self.assertIn("upgrade_selection_system", contract["retrieved_module_ids"])
+        self.assertIn("item_collection_system", contract["retrieved_module_ids"])
+        self.assertIn("ExperienceSystemModule", contract["project_types"])
+
+    def test_disabled_compatibility_shell_does_not_replace_active_survivor_apis(self) -> None:
+        index = build_project_context_index(self.runtime)
+        enemy_types = [item for item in index["types"] if item["name"] == "EnemySpawnSystemModule"]
+        movement_types = [
+            item for item in index["types"] if item["name"] == "TopDownMovementModule"
+        ]
+
+        self.assertEqual(len(enemy_types), 1)
+        self.assertEqual(len(movement_types), 1)
+        self.assertIn(
+            "SpawnAt",
+            {member["name"] for member in enemy_types[0]["members"]},
+        )
+        self.assertIn(
+            "ConfigureDifficulty",
+            {member["name"] for member in enemy_types[0]["members"]},
+        )
+        self.assertIn(
+            "MoveSpeed",
+            {member["name"] for member in movement_types[0]["members"]},
+        )
+
+        contract = build_generation_contract(
+            ["enemy_spawn_system", "game_timer", "health_damage_system"],
+            requirement_text="시간에 따라 적 체력이 증가하고 보스를 생성한다.",
+        )
+        enemy_api = contract["project_types"]["EnemySpawnSystemModule"]["api"]
+        self.assertTrue(any("SpawnAt" in signature for signature in enemy_api))
+        self.assertTrue(any("ConfigureDifficulty" in signature for signature in enemy_api))
 
 
 if __name__ == "__main__":

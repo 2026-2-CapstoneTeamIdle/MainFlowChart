@@ -11,6 +11,7 @@ from LocalAI.profiles import AI_MODEL_PROFILES, resolve_ai_settings
 from mainflow.ArtifactManager import ArtifactManager
 from MCP.image_provider import GeneratedImageData, LocalImageGenerationProvider
 from MCP.llm_config import LLMSettings
+from MCP.llm_providers import OpenAIResponsesProvider
 from MCP.llm_runner import MCPToolLLMRunner, run_node_llm
 from MCP.llm_types import (
     ImageGenerationOptions,
@@ -167,6 +168,54 @@ class LLMRunnerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(local.provider, "local")
         self.assertEqual(local.model, "local-model")
         self.assertEqual(local.base_url, "http://local-model:11434/v1")
+
+    def test_openai_settings_default_to_terra_with_low_reasoning(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "openai-key"},
+            clear=True,
+        ):
+            settings = LLMSettings.from_environment(node_name="analysis")
+
+        self.assertEqual(settings.model, "gpt-6.1-terra")
+        self.assertEqual(settings.reasoning_effort, "low")
+
+    async def test_openai_provider_uses_responses_api_shape(self) -> None:
+        settings = LLMSettings(
+            provider="openai",
+            model="gpt-6.1-terra",
+            api_key="openai-key",
+            base_url="https://api.openai.com/v1",
+            timeout_seconds=30,
+            reasoning_effort="low",
+        )
+        provider = OpenAIResponsesProvider(settings)
+        response = {
+            "id": "resp_test",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "ok"}],
+                }
+            ],
+        }
+        with patch.object(provider, "_post_json", return_value=response) as post:
+            result = await provider.complete(
+                [LLMConversationMessage(role="user", content="check")],
+                [],
+                system_prompt="review",
+                temperature=0.0,
+                require_tool=False,
+                max_tokens=2048,
+            )
+
+        payload = post.call_args.args[0]
+        self.assertEqual(payload["model"], "gpt-6.1-terra")
+        self.assertEqual(payload["reasoning"], {"effort": "low"})
+        self.assertEqual(payload["max_output_tokens"], 2048)
+        self.assertNotIn("temperature", payload)
+        self.assertEqual(result.text, "ok")
 
     def test_named_local_ai_profile_resolves_model_and_endpoint(self) -> None:
         environment = {

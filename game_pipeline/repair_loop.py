@@ -23,8 +23,8 @@ def validate_and_repair(
     record: Callable[[str, Any], None],
     max_repairs: int = 2,
 ):
-    if not 0 <= max_repairs <= 3:
-        raise ValueError("MAINFLOW_GAME_MAX_REPAIRS must be between 0 and 3")
+    if not 0 <= max_repairs <= 5:
+        raise ValueError("MAINFLOW_GAME_MAX_REPAIRS must be between 0 and 5")
     validator = UnityProjectValidator(
         mode=os.environ.get("MAINFLOW_UNITY_VALIDATION_MODE", "required"),
         unity_editor=os.environ.get("UNITY_EDITOR_PATH"),
@@ -84,7 +84,7 @@ def validate_and_repair(
         if (
             attempt == max_repairs
             or classification["target"] == "infrastructure"
-            or seen_signatures[classification["signature"]] > 2
+            or seen_signatures[classification["signature"]] > 4
         ):
             raise RuntimeError(f"Unity validation failed after {attempt} repairs: {outcome.issues}")
         target = classification["target"]
@@ -102,8 +102,11 @@ def validate_and_repair(
                     for token in (
                         "error CS",
                         "Exception",
+                        "InvalidOperationException",
                         "Error",
                         "FAILED",
+                        "could not bind",
+                        "did not bind",
                         "runtime.",
                         "Tag:",
                         "CompareTag",
@@ -118,7 +121,13 @@ def validate_and_repair(
                 "failed_checks": [c for c in outcome.checks if not c["passed"]],
                 "diagnostics": "\n".join(diagnostic_lines)[:6000] or outcome.unity_log[-6000:],
             }
-            modules = feature_generator.repair(design, feedback)
+            if seen_signatures[classification["signature"]] >= 2:
+                # A second identical failure means editing the same candidate is stuck in a
+                # local minimum. Re-plan and regenerate only the named module from its original
+                # immutable requirement while preserving unrelated compiled modules.
+                modules = feature_generator.regenerate(design, feedback)
+            else:
+                modules = feature_generator.repair(design, feedback)
             revised = deepcopy(design)
             revised["generated_modules"] = modules
         else:

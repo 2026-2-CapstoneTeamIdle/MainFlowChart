@@ -433,7 +433,7 @@ class GameFailureIsolationTest(unittest.TestCase):
                 return modules
 
             feature_generator.generate.side_effect = generated_modules
-            feature_generator.repair.side_effect = lambda design, _feedback: design[
+            feature_generator.repair.side_effect = lambda design, _feedback, **_kwargs: design[
                 "generated_modules"
             ]
             context_reviewer = MagicMock()
@@ -560,7 +560,6 @@ class GameFailureIsolationTest(unittest.TestCase):
                 image_draft = manager.read_json(final_state["image_draft"])
                 sound_draft = manager.read_json(final_state["sound_draft"])
                 image_validation = manager.read_json(final_state["image_validation_result"])
-                sound_validation = manager.read_json(final_state["sound_validation_result"])
                 integrated_game = manager.read_json(final_state["integrated_game"])
                 final_validation = manager.read_json(final_state["final_validation_result"])
 

@@ -12,7 +12,7 @@ from game_pipeline.blueprint_planner import (
     create_blueprint_planner_from_environment,
 )
 from game_pipeline.game_blueprint import build_game_blueprint
-from game_pipeline.gemini_feature_generator import LocalAIJsonClient
+from game_pipeline.gemini_feature_generator import LocalAIJsonClient, OpenAIJsonClient
 from game_pipeline.design_catalog import normalize_game_spec
 
 
@@ -98,6 +98,18 @@ class BlueprintPlannerTest(unittest.TestCase):
         self.assertIsNotNone(planner)
         self.assertIsInstance(planner.client, LocalAIJsonClient)
         self.assertEqual(planner.client.model, "planner-test-model")
+
+    def test_openai_key_enables_openai_blueprint_planner(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"OPENAI_API_KEY": "test-openai-key", "OPENAI_MODEL": "gpt-4.1"},
+            clear=True,
+        ):
+            planner = create_blueprint_planner_from_environment()
+
+        self.assertIsNotNone(planner)
+        self.assertIsInstance(planner.client, OpenAIJsonClient)
+        self.assertEqual(planner.provider, "openai")
 
 
 if __name__ == "__main__":

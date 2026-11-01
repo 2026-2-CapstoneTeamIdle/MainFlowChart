@@ -27,6 +27,7 @@ namespace TeamIdle.GameTemplate.Editor
             public string failed_transition = string.Empty;
             public List<string> unused_requested_features = new();
             public List<string> passed_scenarios = new();
+            public List<string> validation_failures = new();
         }
 
         private const string Active = "TeamIdle.RuntimeSmoke.Active";
@@ -121,6 +122,7 @@ namespace TeamIdle.GameTemplate.Editor
             Metrics.failed_transition = string.Empty;
             Metrics.unused_requested_features.Clear();
             Metrics.passed_scenarios.Clear();
+            Metrics.validation_failures.Clear();
             SessionState.SetBool(Active, true);
             EditorSceneManager.OpenScene(TemplateProjectBuilder.ScenePath);
             EditorApplication.EnterPlaymode();
@@ -473,13 +475,24 @@ namespace TeamIdle.GameTemplate.Editor
         private static void TickSurvivorLikeScenario()
         {
             var spawner = UnityEngine.Object.FindFirstObjectByType<EnemySpawnSystemModule>();
-            var targeting = UnityEngine.Object.FindFirstObjectByType<AutoTargetSystemModule>();
             var cameraFollow = UnityEngine.Object.FindFirstObjectByType<PrototypeCameraFollow>();
-            if (player == null || spawner == null || targeting == null)
+            var playerHealth = player == null ? null : player.GetComponent<HealthComponent>();
+            var healthSystem = UnityEngine.Object.FindFirstObjectByType<HealthDamageSystemModule>();
+            if (player == null || spawner == null || playerHealth == null || healthSystem == null)
             {
                 Finish(
                     false,
-                    "runtime.survivor_setup: player or required survivor modules are missing"
+                    "runtime.survivor_setup: player, health, or enemy spawn foundation is missing"
+                );
+                return;
+            }
+
+            if (playerHealth.Maximum <= 0f || playerHealth.Current <= 0f || healthSystem.IsGameOver)
+            {
+                Finish(
+                    false,
+                    $"runtime.initial_state_viable: health={playerHealth.Current:F1}/"
+                        + $"{playerHealth.Maximum:F1}, game_over={healthSystem.IsGameOver}"
                 );
                 return;
             }
@@ -582,15 +595,6 @@ namespace TeamIdle.GameTemplate.Editor
                 return;
             }
 
-            if (!genreCombatObserved)
-            {
-                if (Time.timeSinceLevelLoad > 8f)
-                {
-                    Finish(false, "runtime.survivor_attack: automatic attack fired no projectile");
-                }
-                return;
-            }
-
             var experience = UnityEngine.Object.FindFirstObjectByType<ExperienceSystemModule>();
             var upgrades = UnityEngine.Object.FindFirstObjectByType<UpgradeSelectionSystemModule>();
             if (experience == null || upgrades == null)
@@ -602,6 +606,25 @@ namespace TeamIdle.GameTemplate.Editor
             if (genreActor != null)
             {
                 var enemyHealth = genreActor.GetComponent<HealthComponent>();
+                if (
+                    enemyHealth != null
+                    && genreEnemyHealthAtAttackStart >= 0f
+                    && enemyHealth.Current < genreEnemyHealthAtAttackStart
+                )
+                {
+                    genreCombatObserved = true;
+                }
+                if (!genreCombatObserved)
+                {
+                    if (Time.timeSinceLevelLoad > 10f)
+                    {
+                        Finish(
+                            false,
+                            "runtime.survivor_attack: requested attack caused no observable damage"
+                        );
+                    }
+                    return;
+                }
                 if (
                     enemyHealth != null
                     && genreEnemyHealthAtAttackStart >= 0f
@@ -1056,6 +1079,25 @@ namespace TeamIdle.GameTemplate.Editor
 
         private static void Finish(bool passed, string detail)
         {
+            if (passed)
+            {
+                foreach (
+                    var probe in UnityEngine.Object.FindObjectsByType<ValidationProbe>(
+                        FindObjectsSortMode.None
+                    )
+                )
+                {
+                    foreach (var record in probe.Records)
+                    {
+                        if (record.passed)
+                            continue;
+                        var failure = record.eventId + ":" + record.message;
+                        Metrics.validation_failures.Add(failure);
+                        passed = false;
+                        detail = "runtime.validation_probe_failed: " + failure;
+                    }
+                }
+            }
             SessionState.SetBool(Active, false);
             InputAdapterModule.TestInputEnabled = false;
             InputAdapterModule.TestDashPressed = false;

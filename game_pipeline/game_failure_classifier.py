@@ -41,6 +41,16 @@ def classify_failure(outcome: UnityValidationOutcome) -> FailureClassification:
         for token in ("no valid unity editor license", "failed to activate", "access is denied")
     ):
         target = "infrastructure"
+    elif any(
+        token in lowered
+        for token in (
+            "generated feature did not bind",
+            "generatedfeaturebindingcontext",
+            "could not bind",
+            "binding failed",
+        )
+    ):
+        target = "binding"
     elif "error cs" in lowered or "compilation" in lowered or "compile" in lowered:
         target = "code"
     elif "required_feature_unbound" in lowered or "runtime.binding" in lowered:

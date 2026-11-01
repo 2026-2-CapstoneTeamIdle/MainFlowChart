@@ -52,6 +52,7 @@ class LLMSettings:
     api_key: str | None
     base_url: str | None
     timeout_seconds: float
+    reasoning_effort: str | None = None
 
     @classmethod
     def from_environment(
@@ -74,7 +75,7 @@ class LLMSettings:
 
         provider_defaults = {
             "gemini": ("GEMINI_MODEL", "gemini-3-flash-preview"),
-            "openai": ("OPENAI_MODEL", "gpt-4.1-mini"),
+            "openai": ("OPENAI_MODEL", "gpt-6.1-terra"),
             "local": ("LOCAL_LLM_MODEL", "gemma3"),
             "vastai": ("VASTAI_CODER_MODEL", "mainflow-coder"),
         }
@@ -110,10 +111,24 @@ class LLMSettings:
         if timeout_seconds <= 0:
             raise ValueError("LLM_TIMEOUT_SECONDS must be greater than zero")
 
+        reasoning_effort = None
+        if normalized_provider == "openai":
+            reasoning_effort = _first_environment(
+                _node_environment_name(node_name, "REASONING_EFFORT"),
+                "MAINFLOW_OPENAI_REASONING_EFFORT",
+                "OPENAI_REASONING_EFFORT",
+                default="low" if resolved_model.startswith("gpt-6") else None,
+            )
+            if reasoning_effort not in {None, "none", "low", "medium", "high", "xhigh", "max"}:
+                raise ValueError(
+                    "OpenAI reasoning effort must be one of: none, low, medium, high, xhigh, max"
+                )
+
         return cls(
             provider=normalized_provider,
             model=resolved_model,
             api_key=api_key,
             base_url=base_urls[normalized_provider],
             timeout_seconds=timeout_seconds,
+            reasoning_effort=reasoning_effort,
         )

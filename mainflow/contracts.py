@@ -64,6 +64,10 @@ class GameFeature(TypedDict):
     feature_id: str
     description: str
     required: bool
+    origin: NotRequired[Literal["user", "genre_inferred", "requirement_dependency"]]
+    supports_feature_ids: NotRequired[list[str]]
+    dependency_role: NotRequired[str]
+    acceptance_criteria: NotRequired[str]
 
 
 class AssetRequirement(TypedDict):
@@ -140,6 +144,7 @@ class GeneratedGameModule(TypedDict):
     source_code: str
     source_sha256: str
     implementation_plan: NotRequired[dict[str, object]]
+    requirement_contract: NotRequired[dict[str, str]]
 
 
 class ImplementationSystem(TypedDict):
@@ -419,6 +424,7 @@ class PlaytestMetrics(TypedDict):
     failed_transition: str
     unused_requested_features: list[str]
     passed_scenarios: list[str]
+    validation_failures: list[str]
 
 
 class QualityMetric(TypedDict):
@@ -470,6 +476,32 @@ class FeatureRequirement(TypedDict):
     name: str
     description: str
     source_text: str
+    origin: NotRequired[Literal["user", "genre_inferred", "requirement_dependency"]]
+    rationale: NotRequired[str]
+    acceptance_criteria: NotRequired[str]
+    supports_feature_ids: NotRequired[list[str]]
+    dependency_role: NotRequired[
+        Literal[
+            "prerequisite_state",
+            "required_actor",
+            "runtime_binding",
+            "interaction_consequence",
+            "player_feedback",
+            "failure_recovery",
+            "genre_core",
+        ]
+    ]
+    implementation_kind: NotRequired[
+        Literal[
+            "reuse_module",
+            "configure_existing",
+            "scene_binding",
+            "design_constraint",
+            "generate_code",
+            "validation_only",
+        ]
+    ]
+    target_mechanics: NotRequired[list[str]]
 
 
 class AnalysisResult(TypedDict):

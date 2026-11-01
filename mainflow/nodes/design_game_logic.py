@@ -19,6 +19,7 @@ from game_pipeline import (
     create_project_context_reviewer_from_environment,
     normalize_game_spec,
     plan_feature_mechanics,
+    resolve_feature_provider_from_environment,
     review_feedback,
 )
 from game_pipeline.feature_contract import build_feature_contract
@@ -27,7 +28,6 @@ from game_pipeline.repair_loop import validate_and_repair
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
-    AnalysisResult,
     DesignGameLogicAgentInput,
     DesignGameLogicAgentOutput,
     GameLogicDraft,
@@ -53,10 +53,11 @@ def design_game_logic_node(
 
     manager = ArtifactManager()
     request = cast(ParsedRequest, manager.read_json(state["parsed_request"]))
-    analysis = cast(AnalysisResult, manager.read_json(state["analysis"]))
     logic_analysis = cast(LogicAnalysis, manager.read_json(state["logic_analysis"]))
 
-    feature_plan = plan_feature_mechanics(analysis["features"], request["genre"])
+    # logic_analysis contains the user's explicit requirements plus the LLM-inferred
+    # genre-essential closure. The original analysis artifact remains immutable evidence.
+    feature_plan = plan_feature_mechanics(logic_analysis["features"], request["genre"])
     game_spec = normalize_game_spec(
         request["genre"],
         {
@@ -114,7 +115,7 @@ def design_game_logic_node(
         if asset["asset_type"] == "sound"
     ]
     request_references = [image_request_reference, sound_request_reference]
-    feature_provider = os.environ.get("MAINFLOW_FEATURE_PROVIDER", "local").strip().lower()
+    feature_provider = resolve_feature_provider_from_environment()
     blueprint_reference = None
     development_loop = None
     implementation_tasks_reference = None
@@ -123,9 +124,9 @@ def design_game_logic_node(
     generated_modules = []
     feature_generation_failures: list[tuple[str, Exception]] = []
     try:
-        design_v2_provider = (
-            os.environ.get("MAINFLOW_DESIGN_V2_PROVIDER", "deterministic").strip().lower()
-        )
+        design_v2_provider = os.environ.get("MAINFLOW_DESIGN_V2_PROVIDER", "").strip().lower()
+        if not design_v2_provider:
+            design_v2_provider = "openai" if feature_provider == "openai" else "deterministic"
         try:
             design_v2_planner = create_design_v2_planner_from_environment()
             if design_v2_planner is not None:
@@ -158,9 +159,9 @@ def design_game_logic_node(
         except Exception as error:  # noqa: BLE001 - optional staged quality enhancement
             log(f"단계별 v2 설계에 실패해 검증된 기본 설계를 사용합니다: {error}")
 
-        blueprint_provider = (
-            os.environ.get("MAINFLOW_BLUEPRINT_PROVIDER", "deterministic").strip().lower()
-        )
+        blueprint_provider = os.environ.get("MAINFLOW_BLUEPRINT_PROVIDER", "").strip().lower()
+        if not blueprint_provider:
+            blueprint_provider = "openai" if feature_provider == "openai" else "deterministic"
         try:
             blueprint_planner = create_blueprint_planner_from_environment()
             if blueprint_planner is not None:
@@ -252,15 +253,17 @@ def design_game_logic_node(
                     return feature_generator.generate(focused_design, requirement)
 
                 try:
-                    generated_modules.extend(
-                        development_loop.run_task(
-                            task_id,
-                            generate_one_feature,
-                            evidence=lambda modules, module_id=module_id: (
-                                f"generated {module_id}: {modules[0]['class_name']}"
-                            ),
-                        )
+                    newly_generated = development_loop.run_task(
+                        task_id,
+                        generate_one_feature,
+                        evidence=lambda modules, module_id=module_id: (
+                            f"generated {module_id}: {modules[0]['class_name']}"
+                        ),
                     )
+                    generated_modules.extend(newly_generated)
+                    # Later generated features need the exact integration surface produced by
+                    # earlier siblings, such as a perk configuring an already generated weapon.
+                    design["generated_modules"] = deepcopy(generated_modules)
                 except Exception as error:  # noqa: BLE001 - isolate one generated feature
                     feature_generation_failures.append((module_id, error))
                     log(
@@ -313,7 +316,7 @@ def design_game_logic_node(
                             request=request,
                             generator=unity_generator,
                             feature_generator=feature_generator,
-                            max_repairs=int(os.environ.get("MAINFLOW_GAME_MAX_REPAIRS", "2")),
+                            max_repairs=int(os.environ.get("MAINFLOW_GAME_MAX_REPAIRS", "4")),
                             record=lambda name, data: manager.write_json(
                                 state["project_id"],
                                 "validation",
@@ -503,6 +506,7 @@ def design_game_logic_node(
                     revised["generated_modules"] = feature_generator.repair(
                         current_design,
                         review_feedback(report),
+                        project_index=project_index,
                     )
                     backup = _available_context_review_backup(current_generation.project_root)
                     current_generation.project_root.rename(backup)
@@ -563,7 +567,7 @@ def design_game_logic_node(
                 request=request,
                 generator=unity_generator,
                 feature_generator=feature_generator,
-                max_repairs=int(os.environ.get("MAINFLOW_GAME_MAX_REPAIRS", "2")),
+                max_repairs=int(os.environ.get("MAINFLOW_GAME_MAX_REPAIRS", "4")),
                 record=lambda name, data: manager.write_json(
                     state["project_id"],
                     "validation",

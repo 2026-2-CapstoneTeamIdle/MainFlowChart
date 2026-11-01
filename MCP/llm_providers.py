@@ -150,8 +150,223 @@ class GeminiProvider:
         await self._client.aio.aclose()
 
 
+class OpenAIResponsesProvider:
+    """OpenAI Responses API adapter with reasoning and MCP function-call support."""
+
+    name = "openai"
+
+    def __init__(self, settings: LLMSettings) -> None:
+        if not settings.api_key:
+            raise RuntimeError("OPENAI_API_KEY is not set")
+        if settings.base_url is None:
+            raise ValueError("The OpenAI provider requires a base URL")
+        self.model = settings.model
+        self._api_key = settings.api_key
+        self._base_url = settings.base_url.rstrip("/")
+        self._timeout_seconds = settings.timeout_seconds
+        self._reasoning_effort = settings.reasoning_effort
+        self._previous_response_id: str | None = None
+
+    @staticmethod
+    def _content(content: Any) -> Any:
+        if not isinstance(content, list):
+            return content
+        converted: list[dict[str, Any]] = []
+        for block in content:
+            if not isinstance(block, dict):
+                raise ValueError("Multimodal message blocks must be JSON objects")
+            block_type = block.get("type")
+            if block_type == "text":
+                converted.append({"type": "input_text", "text": block.get("text", "")})
+            elif block_type == "image_url":
+                image = block.get("image_url") or {}
+                converted.append(
+                    {
+                        "type": "input_image",
+                        "image_url": image.get("url"),
+                        "detail": image.get("detail", "auto"),
+                    }
+                )
+            else:
+                converted.append(block)
+        return converted
+
+    @classmethod
+    def _input_items(cls, messages: list[LLMConversationMessage]) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for message in messages:
+            if message.role in {"user", "assistant"}:
+                if message.content:
+                    items.append(
+                        {
+                            "role": message.role,
+                            "content": cls._content(message.content),
+                        }
+                    )
+                for call in message.tool_calls:
+                    items.append(
+                        {
+                            "type": "function_call",
+                            "call_id": call.call_id,
+                            "name": call.name,
+                            "arguments": json.dumps(call.arguments, ensure_ascii=False),
+                        }
+                    )
+                continue
+            if message.role == "tool":
+                if message.tool_call_id is None or message.tool_result is None:
+                    raise ValueError("Tool messages require a call ID and result")
+                items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": message.tool_call_id,
+                        "output": json.dumps(message.tool_result, ensure_ascii=False),
+                    }
+                )
+                continue
+            raise ValueError(f"Unsupported conversation role: {message.role}")
+        return items
+
+    @staticmethod
+    def _new_tool_outputs(messages: list[LLMConversationMessage]) -> list[LLMConversationMessage]:
+        last_assistant_call = -1
+        for index, message in enumerate(messages):
+            if message.role == "assistant" and message.tool_calls:
+                last_assistant_call = index
+        if last_assistant_call < 0:
+            return messages
+        return [
+            message for message in messages[last_assistant_call + 1 :] if message.role == "tool"
+        ]
+
+    def _post_json(self, payload: dict[str, Any]) -> dict[str, Any]:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self._base_url}/responses",
+            data=body,
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")[:500]
+            raise LLMProviderError(
+                f"openai request failed with HTTP status {error.code}: {detail}"
+            ) from None
+        except urllib.error.URLError as error:
+            raise LLMProviderError("Could not connect to openai provider") from error
+
+    async def complete(
+        self,
+        messages: list[LLMConversationMessage],
+        tools: list[MCPToolDefinition],
+        *,
+        system_prompt: str | None,
+        temperature: float,
+        require_tool: bool,
+        max_tokens: int | None = None,
+    ) -> LLMProviderResponse:
+        del temperature  # Reasoning requests do not accept sampling controls.
+        input_messages = (
+            self._new_tool_outputs(messages) if self._previous_response_id else messages
+        )
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "input": self._input_items(input_messages),
+            "store": True,
+        }
+        if system_prompt:
+            payload["instructions"] = system_prompt
+        if self._previous_response_id:
+            payload["previous_response_id"] = self._previous_response_id
+        if self._reasoning_effort:
+            payload["reasoning"] = {"effort": self._reasoning_effort}
+        if max_tokens is not None:
+            if max_tokens < 1:
+                raise ValueError("max_tokens must be positive")
+            payload["max_output_tokens"] = max_tokens
+        if tools:
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": tool["input_schema"],
+                }
+                for tool in tools
+            ]
+            payload["tool_choice"] = "required" if require_tool else "auto"
+
+        response = await asyncio.to_thread(self._post_json, payload)
+        status = response.get("status")
+        if status == "incomplete":
+            reason = (response.get("incomplete_details") or {}).get("reason")
+            raise LLMProviderError(
+                "openai response was incomplete" + (f": {reason}" if reason else "")
+            )
+        if status == "failed":
+            raise LLMProviderError(f"openai response failed: {response.get('error')}")
+
+        response_id = response.get("id")
+        if isinstance(response_id, str) and response_id:
+            self._previous_response_id = response_id
+
+        text_parts: list[str] = []
+        tool_calls: list[LLMToolCall] = []
+        refusals: list[str] = []
+        for item in response.get("output") or []:
+            item_type = item.get("type")
+            if item_type == "function_call":
+                raw_arguments = item.get("arguments") or "{}"
+                try:
+                    arguments = (
+                        raw_arguments
+                        if isinstance(raw_arguments, dict)
+                        else json.loads(raw_arguments)
+                    )
+                except json.JSONDecodeError as error:
+                    raise LLMProviderError("openai returned invalid JSON tool arguments") from error
+                if not isinstance(arguments, dict):
+                    raise LLMProviderError("Tool arguments must be a JSON object")
+                tool_calls.append(
+                    LLMToolCall(
+                        call_id=item.get("call_id") or item.get("id") or uuid.uuid4().hex,
+                        name=item.get("name") or "",
+                        arguments=arguments,
+                    )
+                )
+                continue
+            if item_type != "message":
+                continue
+            for content in item.get("content") or []:
+                if content.get("type") == "output_text":
+                    text = content.get("text")
+                    if isinstance(text, str):
+                        text_parts.append(text)
+                elif content.get("type") == "refusal":
+                    refusal = content.get("refusal")
+                    if isinstance(refusal, str):
+                        refusals.append(refusal)
+        if refusals:
+            raise LLMProviderError(f"openai refused the request: {'; '.join(refusals)}")
+        if any(not call.name for call in tool_calls):
+            raise LLMProviderError("openai returned a tool call without a name")
+        return LLMProviderResponse(
+            text="".join(text_parts).strip(),
+            tool_calls=tuple(tool_calls),
+        )
+
+    async def aclose(self) -> None:
+        return None
+
+
 class OpenAICompatibleProvider:
-    """Chat Completions adapter shared by OpenAI and local OpenAI-compatible SLMs."""
+    """Chat Completions adapter for local OpenAI-compatible SLMs."""
 
     def __init__(self, settings: LLMSettings) -> None:
         if settings.provider == "openai" and not settings.api_key:
@@ -309,6 +524,8 @@ def create_llm_provider(settings: LLMSettings) -> LLMProvider:
 
     if settings.provider == "gemini":
         return GeminiProvider(settings)
-    if settings.provider in {"openai", "local", "vastai"}:
+    if settings.provider == "openai":
+        return OpenAIResponsesProvider(settings)
+    if settings.provider in {"local", "vastai"}:
         return OpenAICompatibleProvider(settings)
     raise ValueError(f"Unsupported LLM provider: {settings.provider}")

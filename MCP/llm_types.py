@@ -27,8 +27,8 @@ class LLMConversationMessage:
     """Small common message format translated by each provider adapter."""
 
     role: str
-    # OpenAI-compatible providers accept multimodal content blocks here.  Text-only
-    # callers keep using a plain string, so the existing node API remains unchanged.
+    # OpenAI Responses and local OpenAI-compatible providers accept multimodal
+    # content blocks here. Text-only callers keep using a plain string.
     content: LLMMessageContent = ""
     tool_calls: tuple[LLMToolCall, ...] = ()
     tool_call_id: str | None = None

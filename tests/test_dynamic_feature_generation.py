@@ -13,6 +13,7 @@ from game_pipeline import (
     GeminiApiClient,
     GeminiFeatureGenerator,
     LocalAIJsonClient,
+    OpenAIJsonClient,
     UnityProjectGenerator,
     UnityProjectValidator,
     attach_generated_modules,
@@ -381,6 +382,74 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
         self.assertEqual(generator.client.model, "qwen2.5-coder-7b-q5-k-m")
         self.assertEqual(generator.client.timeout_seconds, 300)
 
+    def test_openai_key_selects_openai_feature_provider(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"OPENAI_API_KEY": "test-openai-key", "OPENAI_MODEL": "gpt-4.1"},
+            clear=True,
+        ):
+            generator = create_feature_generator_from_environment()
+
+        self.assertIsInstance(generator.client, OpenAIJsonClient)
+        self.assertEqual(generator.client.model, "gpt-4.1")
+
+    def test_explicit_local_provider_overrides_openai_key(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_API_KEY": "test-openai-key",
+                "MAINFLOW_FEATURE_PROVIDER": "local",
+            },
+            clear=True,
+        ):
+            generator = create_feature_generator_from_environment()
+
+        self.assertIsInstance(generator.client, LocalAIJsonClient)
+
+    def test_openai_request_uses_strict_json_schema(self) -> None:
+        api_response = {
+            "id": "resp_test",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": json.dumps({"generated_modules": []}),
+                        }
+                    ],
+                }
+            ],
+        }
+        response = MagicMock()
+        response.read.return_value = json.dumps(api_response).encode("utf-8")
+        response_context = MagicMock()
+        response_context.__enter__.return_value = response
+
+        with patch(
+            "game_pipeline.gemini_feature_generator.urllib.request.urlopen",
+            return_value=response_context,
+        ) as urlopen:
+            result = OpenAIJsonClient(api_key="test-key").generate_json(
+                "generate",
+                GENERATED_MODULE_SCHEMA,
+            )
+
+        request = urlopen.call_args.args[0]
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(request.full_url, "https://api.openai.com/v1/responses")
+        self.assertEqual(request.headers["Authorization"], "Bearer test-key")
+        self.assertEqual(payload["model"], "gpt-6.1-terra")
+        self.assertEqual(payload["max_output_tokens"], 8192)
+        self.assertFalse(payload["store"])
+        self.assertTrue(payload["text"]["format"]["strict"])
+        self.assertEqual(
+            payload["text"]["format"]["schema"],
+            GENERATED_MODULE_SCHEMA,
+        )
+        self.assertEqual(result, {"generated_modules": []})
+
     def test_localai_request_uses_openai_json_schema_fields(self) -> None:
         api_response = {
             "choices": [
@@ -597,6 +666,24 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
         self.assertEqual(plan.mechanics, ["platformer_movement"])
         self.assertFalse(plan.generation_requirements)
 
+    def test_inferred_binding_requirement_does_not_generate_a_new_csharp_module(self) -> None:
+        features: list[FeatureRequirement] = [
+            {
+                "feature_id": "genre-required-01",
+                "name": "상시 체력 HUD",
+                "description": "현재 체력과 최대 체력을 항상 표시한다.",
+                "source_text": "장르 필수 기능 추론",
+                "origin": "genre_inferred",
+                "implementation_kind": "scene_binding",
+                "target_mechanics": ["health_damage"],
+            }
+        ]
+
+        plan = plan_feature_mechanics(features, "뱀서류")
+
+        self.assertEqual(plan.mechanics, ["health_damage"])
+        self.assertFalse(plan.generation_requirements)
+
     def test_horizontal_movement_reuses_platformer_module(self) -> None:
         features: list[FeatureRequirement] = [
             {
@@ -789,6 +876,95 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
 
         self.assertEqual(plan.mechanics, ["experience", "rarity", "upgrade_selection"])
         self.assertFalse(plan.generation_requirements)
+
+    def test_explicit_survivor_request_does_not_inherit_preset_attack(self) -> None:
+        features: list[FeatureRequirement] = [
+            {
+                "feature_id": "feature-01",
+                "name": "사용자 지정 조건",
+                "description": "플레이어 주변을 회전하는 검이 적에게 피해를 준다.",
+                "source_text": "플레이어 주변을 회전하는 검이 적에게 피해를 준다.",
+            }
+        ]
+
+        plan = plan_feature_mechanics(features, "뱀서류")
+        spec = normalize_game_spec(
+            "뱀서류",
+            {"features": plan.game_features, "mechanics": plan.mechanics},
+        )
+
+        self.assertNotIn("auto_target", spec["mechanics"])
+        self.assertNotIn("projectile", spec["mechanics"])
+        self.assertEqual([item["feature_id"] for item in spec["features"]], ["feature_01"])
+        requirement = plan.generation_requirements["generated_feature_01"]
+        self.assertEqual(requirement["must_preserve"], features[0]["description"])
+        self.assertEqual(requirement["source_text"], features[0]["source_text"])
+
+    def test_specific_attack_requirement_supersedes_generic_keyword_match(self) -> None:
+        source_text = "적을 자동 공격한다. 플레이어 주변을 회전하는 검이 적에게 피해를 준다."
+        features: list[FeatureRequirement] = [
+            {
+                "feature_id": "feature-01",
+                "name": "자동 공격",
+                "description": "조건을 만족하면 공격이 자동으로 실행된다.",
+                "source_text": source_text,
+            },
+            {
+                "feature_id": "feature-02",
+                "name": "사용자 지정 조건",
+                "description": "플레이어 주변을 회전하는 검이 적에게 피해를 준다.",
+                "source_text": source_text,
+            },
+        ]
+
+        plan = plan_feature_mechanics(features, "뱀서류")
+
+        self.assertEqual([item["feature_id"] for item in plan.game_features], ["feature_02"])
+        self.assertEqual(list(plan.generation_requirements), ["generated_feature_02"])
+
+    def test_semantic_validation_rejects_compilable_but_missing_damage(self) -> None:
+        requirement = {
+            "feature_id": "feature_01",
+            "feature_description": "플레이어 주변을 회전하는 검이 적에게 피해를 준다.",
+            "must_preserve": "플레이어 주변을 회전하는 검이 적에게 피해를 준다.",
+            "acceptance_criteria": "검의 충돌로 적 체력이 감소한다.",
+        }
+        module = {
+            "module_id": "generated_feature_01",
+            "feature_id": "feature_01",
+            "feature_description": requirement["feature_description"],
+            "class_name": "WallClimbModule",
+            "source_code": GENERATED_SOURCE,
+        }
+
+        with self.assertRaisesRegex(ValueError, "does not realize required behavior"):
+            GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+                module,
+                {"generated_feature_01": requirement},
+            )
+
+    def test_semantic_validation_rejects_disabled_behavior_placeholder(self) -> None:
+        requirement = {
+            "feature_id": "feature_01",
+            "feature_description": "벽을 타고 오른다.",
+        }
+        module = {
+            "module_id": "generated_feature_01",
+            "feature_id": "feature_01",
+            "feature_description": requirement["feature_description"],
+            "class_name": "WallClimbModule",
+            "source_code": GENERATED_SOURCE.replace(
+                "IsFeatureBound = true;",
+                'Debug.LogWarning("bindings unavailable; affected behaviors are disabled");\n'
+                "            IsFeatureBound = true;",
+            ),
+        }
+
+        with self.assertRaisesRegex(ValueError, "disables required behavior"):
+            GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+                module,
+                {"generated_feature_01": requirement},
+            )
 
     def test_generated_source_accepts_event_driven_runtime_behavior(self) -> None:
         requirement = {"feature_id": "feature_01", "feature_description": "문을 연다."}
@@ -1698,6 +1874,74 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
         self.assertIn("method-local context", client.prompts[1])
         self.assertIn("context.Player.transform.localScale.x", client.prompts[1])
         self.assertLess(_estimate_tokens(client.prompts[1]), 5632)
+
+    def test_context_repair_retrieves_api_named_only_by_review_feedback(self) -> None:
+        design = build_game_logic_design(normalize_game_spec("뱀서류"))
+        module = {
+            "module_id": "generated_feature_02",
+            "feature_id": "feature_02",
+            "feature_description": "경험치 보석을 수집하면 경험치가 증가한다.",
+            "class_name": "GeneratedFeature02Module",
+            "source_code": (
+                "using TeamIdle.GameTemplate.Core;\n"
+                "public sealed class Placeholder { private void Update() {} }"
+            ),
+        }
+        requirement = {
+            "feature_id": "feature_02",
+            "feature_description": "경험치 보석을 수집하면 경험치가 증가한다.",
+            "acceptance_criteria": "보석이 제거되고 경험치가 증가한다.",
+        }
+        feedback = {
+            "issues": [
+                {
+                    "relative_path": "game/unity_project/GeneratedFeature02Module.cs",
+                    "message": "ExperienceSystemModule is available but not connected.",
+                    "suggested_fix": "Resolve ExperienceSystemModule and call Add on collection.",
+                }
+            ]
+        }
+
+        prompt = GeminiFeatureGenerator._build_repair_prompt(
+            design,
+            module,
+            requirement,
+            feedback,
+            implementation_plan=None,
+        )
+
+        self.assertIn('"experience_system"', prompt)
+        self.assertIn('"ExperienceSystemModule"', prompt)
+        self.assertIn("public void Add(int amount)", prompt)
+        self.assertIn("TeamIdle.GameTemplate.SurvivorLike", prompt)
+
+    def test_context_repair_routes_each_review_finding_to_its_generated_module(self) -> None:
+        feedback = {
+            "summary": "multiple integration failures",
+            "issues": [
+                {
+                    "relative_path": "game/unity_project/GeneratedFeature02Module.cs",
+                    "message": "connect ExperienceSystemModule",
+                    "suggested_fix": "call Add",
+                },
+                {
+                    "relative_path": "game/unity_project/GeneratedFeature07Module.cs",
+                    "message": "boss timer is missing",
+                    "suggested_fix": "connect GameTimerModule",
+                },
+            ],
+        }
+
+        routed = GeminiFeatureGenerator._repair_feedback_for_module(
+            feedback,
+            {
+                "module_id": "generated_feature_07",
+                "class_name": "GeneratedFeature07Module",
+            },
+        )
+
+        self.assertEqual(len(routed["issues"]), 1)
+        self.assertIn("boss timer", routed["issues"][0]["message"])
 
     def test_unity_repair_compacts_duplicate_diagnostics_within_local_context(self) -> None:
         features: list[FeatureRequirement] = [

@@ -13,7 +13,9 @@ from game_pipeline.game_blueprint import build_game_blueprint
 from game_pipeline.gemini_feature_generator import (
     GeminiApiClient,
     LocalAIJsonClient,
+    OpenAIJsonClient,
     StructuredJsonClient,
+    resolve_feature_provider_from_environment,
 )
 from mainflow.contracts import (
     BlueprintContentDirective,
@@ -23,7 +25,7 @@ from mainflow.contracts import (
     GameSpec,
 )
 
-BlueprintProvider = Literal["deterministic", "local", "gemini"]
+BlueprintProvider = Literal["deterministic", "openai", "local", "gemini"]
 _HEX_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
 
@@ -230,9 +232,14 @@ class GameBlueprintPlanner:
 def create_blueprint_planner_from_environment() -> GameBlueprintPlanner | None:
     """Return a planner only when explicitly enabled; default runs stay offline and fast."""
 
-    provider = os.environ.get("MAINFLOW_BLUEPRINT_PROVIDER", "deterministic").strip().lower()
+    configured = os.environ.get("MAINFLOW_BLUEPRINT_PROVIDER", "").strip().lower()
+    provider = configured or (
+        "openai" if resolve_feature_provider_from_environment() == "openai" else "deterministic"
+    )
     if provider == "deterministic":
         return None
+    if provider == "openai":
+        return GameBlueprintPlanner(OpenAIJsonClient.from_environment(), "openai")
     if provider == "local":
         return GameBlueprintPlanner(LocalAIJsonClient.from_environment(), "local")
     if provider in {"vast", "vastai", "vast.ai", "vllm"}:
@@ -240,7 +247,8 @@ def create_blueprint_planner_from_environment() -> GameBlueprintPlanner | None:
     if provider == "gemini":
         return GameBlueprintPlanner(GeminiApiClient.from_environment(), "gemini")
     raise ValueError(
-        "MAINFLOW_BLUEPRINT_PROVIDER must be 'deterministic', 'local', 'vastai', or 'gemini'"
+        "MAINFLOW_BLUEPRINT_PROVIDER must be 'deterministic', 'openai', 'local', "
+        "'vastai', or 'gemini'"
     )
 
 

@@ -4,7 +4,12 @@ import io
 import unittest
 from unittest.mock import MagicMock, patch
 
-from mainflow.run_flow import configure_console_encoding, main
+from mainflow.run_flow import (
+    REPOSITORY_ROOT,
+    configure_console_encoding,
+    load_repository_environment,
+    main,
+)
 
 
 class ReconfigurableTextStream(io.TextIOWrapper):
@@ -14,6 +19,12 @@ class ReconfigurableTextStream(io.TextIOWrapper):
 
 
 class RunFlowExitTest(unittest.TestCase):
+    def test_repository_env_is_loaded_without_overriding_shell_values(self):
+        with patch("mainflow.run_flow.load_dotenv") as load_dotenv:
+            load_repository_environment()
+
+        load_dotenv.assert_called_once_with(REPOSITORY_ROOT / ".env", override=False)
+
     def run_cli(self, status, ai_status="passed"):
         state = {
             key: key

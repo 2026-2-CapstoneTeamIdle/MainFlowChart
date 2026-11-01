@@ -75,6 +75,7 @@ class StagedDesignV2PlannerTest(unittest.TestCase):
         self.assertIn("critical playtest lead", client.prompts[-2])
         self.assertIn("UPSTREAM", client.prompts[-2])
         self.assertIn("IMPLEMENTATION_INDEX", client.prompts[0])
+        self.assertIn("RUNTIME_INVARIANTS", client.prompts[0])
         self.assertIn("PlatformerMovementModule", client.prompts[0])
         self.assertIn("GoalSystemModule", client.prompts[0])
         self.assertIn("senior 2D platformer director", client.prompts[-1])
@@ -87,6 +88,33 @@ class StagedDesignV2PlannerTest(unittest.TestCase):
         self.assertTrue(
             all(not report["used_fallback"] for report in planner.customization_reports)
         )
+
+    def test_rejects_zero_starting_player_health(self) -> None:
+        invalid = copy.deepcopy(self.baseline)
+        player_health = next(
+            item for item in invalid["balance_plan"]["stats"] if item["stat_id"] == "player_health"
+        )
+        player_health["initial"] = 0
+
+        with self.assertRaisesRegex(ValueError, "player_health must start positive"):
+            validate_design_v2(invalid)
+
+    def test_survivor_fallback_is_a_complete_survival_loop(self) -> None:
+        survivor = build_design_v2(
+            normalize_game_spec("뱀서류"),
+            "적을 처치해 경험치 보석을 모으고 보스를 처치한다.",
+        )
+
+        validate_design_v2(survivor)
+        stats = {item["stat_id"]: item for item in survivor["balance_plan"]["stats"]}
+        scenario_ids = {
+            scenario["scenario_id"] for scenario in survivor["validation_plan"]["scenarios"]
+        }
+        self.assertGreater(stats["player_health"]["initial"], 0)
+        self.assertEqual(len(survivor["level_plan"]["zones"]), 3)
+        self.assertGreaterEqual(len(survivor["content_plan"]["enemies"]), 3)
+        self.assertIn("survivor_spawn_chase_attack_progression", scenario_ids)
+        self.assertIn("level_up_choice", survivor["presentation_plan"]["ui_screens"])
 
     def test_exact_baseline_copy_is_rewritten_once(self) -> None:
         payloads = [copy.deepcopy(self.baseline["game_design"])]
@@ -130,6 +158,24 @@ class StagedDesignV2PlannerTest(unittest.TestCase):
 
         self.assertEqual(result["level_plan"], self.baseline["level_plan"])
         self.assertEqual(planner.fallback_stages, ["level_plan"])
+
+    def test_invalid_balance_stage_falls_back_without_discarding_other_stages(self) -> None:
+        payloads = [self.customized_stage(stage) for stage in STAGE_ORDER]
+        balance_index = STAGE_ORDER.index("balance_plan")
+        player_health = next(
+            item
+            for item in payloads[balance_index]["stats"]  # type: ignore[index]
+            if item["stat_id"] == "player_health"
+        )
+        player_health["initial"] = 0
+        payloads.append(self.customized_stage("level_plan"))
+        planner = StagedDesignV2Planner(QueuedStructuredClient(payloads), "local")
+
+        result = planner.generate(self.spec, self.intent)
+
+        self.assertEqual(result["balance_plan"], self.baseline["balance_plan"])
+        self.assertEqual(result["game_design"]["title"], "바람 절벽의 대시")
+        self.assertIn("balance_plan", planner.fallback_stages)
 
     def test_invalid_revision_keeps_the_last_validated_level(self) -> None:
         payloads = [self.customized_stage(stage) for stage in STAGE_ORDER]

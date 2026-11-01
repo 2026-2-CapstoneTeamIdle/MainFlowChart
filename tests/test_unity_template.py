@@ -292,6 +292,23 @@ class UnityTemplateTest(unittest.TestCase):
                     source_path.read_text(encoding="utf-8"),
                 )
 
+    def test_health_binding_and_survivor_smoke_guard_initial_state(self) -> None:
+        health_system = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Runtime/Common/HealthDamageSystemModule.cs"
+        ).read_text(encoding="utf-8")
+        assembler = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Editor/PrefabSceneAssembler.cs"
+        ).read_text(encoding="utf-8")
+        smoke = (TEMPLATE_ROOT / "Assets/GameTemplate/Editor/RuntimeSmokeValidator.cs").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("PlayerHealth.Current <= 0f", health_system)
+        self.assertIn('Balance.Initial("player_health", 100f)', assembler)
+        self.assertIn("runtime.initial_state_viable", smoke)
+        self.assertIn("runtime.validation_probe_failed", smoke)
+        self.assertIn("FindObjectsByType<ValidationProbe>", smoke)
+
     def test_template_meta_guids_are_unique(self) -> None:
         owners: dict[str, Path] = {}
         for meta_path in (TEMPLATE_ROOT / "Assets").rglob("*.meta"):

@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from typing import Any, cast, get_args
 
+from dotenv import load_dotenv
+
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import GameGenre, ImageStyle, MoodStyle, Viewpoint, WorkflowState
 from mainflow.langgraph_game_flow_skeleton import build_game_test_graph, build_graph
@@ -17,6 +19,13 @@ IMAGE_STYLES = cast(tuple[str, ...], get_args(ImageStyle))
 GAME_GENRES = cast(tuple[str, ...], get_args(GameGenre))
 MOOD_STYLES = cast(tuple[str, ...], get_args(MoodStyle))
 VIEWPOINTS = cast(tuple[str, ...], get_args(Viewpoint))
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+
+
+def load_repository_environment() -> None:
+    """Load ignored local secrets without replacing explicit shell environment values."""
+
+    load_dotenv(REPOSITORY_ROOT / ".env", override=False)
 
 
 def configure_console_encoding() -> None:
@@ -125,6 +134,7 @@ def load_request(arguments: argparse.Namespace) -> WorkflowState:
 
 
 def main() -> int:
+    load_repository_environment()
     configure_console_encoding()
     parser = build_parser()
     arguments = parser.parse_args()

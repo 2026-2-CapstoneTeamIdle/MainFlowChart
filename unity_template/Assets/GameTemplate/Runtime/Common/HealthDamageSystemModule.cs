@@ -25,6 +25,10 @@ namespace TeamIdle.GameTemplate.Common
             if (PlayerHealth != null)
                 PlayerHealth.Died -= HandlePlayerDied;
             PlayerHealth = health;
+            // GameBootstrap initializes at execution order -1000. A player's ordinary Awake may
+            // not have filled Current yet, so bind against a valid initial state explicitly.
+            if (PlayerHealth != null && PlayerHealth.Current <= 0f && PlayerHealth.Maximum > 0f)
+                PlayerHealth.SetMaximum(PlayerHealth.Maximum);
             IsGameOver = PlayerHealth != null && !PlayerHealth.IsAlive;
             if (PlayerHealth != null)
                 PlayerHealth.Died += HandlePlayerDied;

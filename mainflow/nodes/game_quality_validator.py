@@ -5,7 +5,10 @@ from __future__ import annotations
 import os
 from typing import Any, cast
 
-from game_pipeline import create_game_quality_validator_from_environment
+from game_pipeline import (
+    create_game_quality_validator_from_environment,
+    resolve_feature_provider_from_environment,
+)
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -54,7 +57,7 @@ def game_quality_validator_node(
         }:
             report = _disabled_report()
         else:
-            provider = os.environ.get("MAINFLOW_FEATURE_PROVIDER", "local").strip().lower()
+            provider = resolve_feature_provider_from_environment()
             validator = create_game_quality_validator_from_environment(
                 state["project_id"], provider=provider
             )

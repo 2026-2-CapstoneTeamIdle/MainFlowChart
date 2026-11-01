@@ -18,6 +18,7 @@ from typing import Any, Callable, Literal, cast
 from MCP.llm_config import LLMSettings
 from MCP.llm_providers import create_llm_provider
 from MCP.llm_types import LLMConversationMessage, LLMProvider
+from game_pipeline.gemini_feature_generator import resolve_feature_provider_from_environment
 
 ChecklistStatus = Literal["passed", "failed", "skipped", "error"]
 
@@ -88,7 +89,7 @@ class FeatureChecklistRepairAI:
     @classmethod
     def from_environment(cls) -> FeatureChecklistRepairAI:
         configured = os.environ.get("LLM_FEATURE_CHECKLIST_REPAIR_PROVIDER")
-        fallback = os.environ.get("MAINFLOW_FEATURE_PROVIDER", "local")
+        fallback = resolve_feature_provider_from_environment()
         settings = LLMSettings.from_environment(
             node_name="feature_checklist_repair",
             provider=configured or fallback,

@@ -30,7 +30,9 @@ _PROPERTY_PATTERN = re.compile(
     r"(?m)^\s*(?P<access>public|protected|internal)\s+"
     r"(?P<modifiers>(?:(?:static|virtual|override|abstract|sealed|new)\s+)*)"
     r"(?P<type>[A-Za-z_][A-Za-z0-9_.?]*(?:\s*<[^;>{}]+>)?(?:\[\])?)\s+"
-    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?P<body>=>[^;]+;|\{[^\n]*\})",
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?P<body>=>[^;]+;|"
+    r"\{(?:\s*(?:(?:public|private|protected|internal)\s+)?(?:get|set|init)\s*"
+    r"(?:;|=>[^;]+;|\{[^{}]*\}))*\s*\})",
 )
 _EVENT_PATTERN = re.compile(
     r"(?m)^\s*(?P<access>public|protected|internal)\s+event\s+"
@@ -89,6 +91,20 @@ _RETRIEVAL_HINTS = {
     "stat_growth_system": ("stat", "능력치", "육성", "성장", "훈련"),
     "enemy_spawn_system": ("enemy", "적", "spawn", "생성"),
     "upgrade_choice_system": ("upgrade", "업그레이드", "특전", "레벨업"),
+    "experience_system": ("experience", "경험치", "레벨", "보석", "성장"),
+    "item_collection_system": ("item", "collect", "수집", "보석", "아이템", "획득"),
+    "upgrade_selection_system": (
+        "upgrade",
+        "업그레이드",
+        "특전",
+        "강화",
+        "선택",
+        "레벨업",
+    ),
+    "top_down_movement": ("top down", "탑다운", "이동", "이동속도", "move", "speed"),
+    "game_timer": ("timer", "타이머", "시간", "제한 시간", "경과", "생존"),
+    "player_stat_display": ("hud", "ui", "표시", "체력", "경험치", "레벨", "시간"),
+    "scene_flow_manager": ("restart", "재시작", "승리", "패배", "게임 오버", "결과"),
 }
 
 
@@ -117,6 +133,7 @@ def build_project_context_index(
     type_bodies: dict[str, str] = {}
     for path in source_paths:
         content = path.read_text(encoding="utf-8")
+        parse_content = _strip_statically_disabled_preprocessor_regions(content)
         relative_path = path.relative_to(root).as_posix()
         files.append(
             {
@@ -125,7 +142,7 @@ def build_project_context_index(
                 "line_count": len(content.splitlines()),
             }
         )
-        parsed = _parse_types(content, relative_path)
+        parsed = _parse_types(parse_content, relative_path)
         for item, body in parsed:
             types.append(item)
             type_bodies[item["full_name"]] = body
@@ -153,6 +170,56 @@ def build_project_context_index(
         "module_types": modules,
         "requirements": _requirements(design, request, logic_analysis),
     }
+
+
+def _strip_statically_disabled_preprocessor_regions(content: str) -> str:
+    """Hide literal ``#if false`` branches while preserving source line numbers.
+
+    Compatibility shells remain useful to developers, but Unity does not compile them and they
+    must not overwrite the active API contract shown to a code model. Unknown symbols are kept
+    conservatively because this lightweight indexer cannot evaluate a Unity define set.
+    """
+
+    frames: list[dict[str, bool]] = []
+    active = True
+    output: list[str] = []
+    directive = re.compile(r"^\s*#\s*(if|elif|else|endif)\b(?:\s+(.*?))?\s*$")
+    for line in content.splitlines(keepends=True):
+        match = directive.match(line.rstrip("\r\n"))
+        if match:
+            keyword = match.group(1)
+            expression = (match.group(2) or "").split("//", 1)[0].strip().casefold()
+            if keyword == "if":
+                known = expression in {"true", "false"}
+                condition = expression != "false"
+                frames.append(
+                    {
+                        "parent_active": active,
+                        "known": known,
+                        "condition": condition,
+                    }
+                )
+                active = active and (condition if known else True)
+            elif keyword == "else" and frames:
+                frame = frames[-1]
+                active = frame["parent_active"] and (
+                    not frame["condition"] if frame["known"] else True
+                )
+            elif keyword == "elif" and frames:
+                frame = frames[-1]
+                if frame["known"]:
+                    condition = expression != "false"
+                    frame["condition"] = frame["condition"] or condition
+                    active = frame["parent_active"] and condition
+                else:
+                    active = frame["parent_active"]
+            elif keyword == "endif" and frames:
+                frame = frames.pop()
+                active = frame["parent_active"]
+            output.append("\n" if line.endswith("\n") else "")
+            continue
+        output.append(line if active else ("\n" if line.endswith("\n") else ""))
+    return "".join(output)
 
 
 def compact_api_contract(
@@ -390,6 +457,7 @@ def _method(match: re.Match[str]) -> dict[str, Any]:
 
 def _property(match: re.Match[str]) -> dict[str, Any]:
     body = match.group("body")
+    writable = bool(re.search(r"(?<!private\s)(?<!protected\s)\b(?:set|init)\s*(?:;|=>|\{)", body))
     return {
         "kind": "property",
         "name": match.group("name"),
@@ -398,7 +466,7 @@ def _property(match: re.Match[str]) -> dict[str, Any]:
         ),
         "access": match.group("access"),
         "type": match.group("type"),
-        "writable": " set;" in body and "private set;" not in body and "protected set;" not in body,
+        "writable": writable,
     }
 
 
