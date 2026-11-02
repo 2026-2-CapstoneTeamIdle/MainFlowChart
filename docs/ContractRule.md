@@ -213,6 +213,21 @@ C# 컴파일, 전체 모듈 부착, Bootstrap 씬 조립까지 검사하고 로�
 - `UNITY_EDITOR_PATH`: 자동 탐색 대신 사용할 Unity 실행 파일 경로다.
 - `MAINFLOW_UNITY_VALIDATION_TIMEOUT_SECONDS`: Unity Batch Mode 제한 시간이며 기본값은 300초다.
 
+### Condition, Feature, 동적 Checklist 계약
+
+`analysis`의 정적 키워드 결과는 오프라인 안전망이다. AI가 활성화되면 Gemma가 사용자 Condition을
+구현 가능한 원자 기능으로 분해하고, 기능 보강 단계가 각 기능의 선행 상태·행위자·런타임 바인딩·
+결과·피드백·복구 흐름을 `requirement_dependency` Feature로 추가한다. 기존
+`FeatureRequirement` 필드는 변경하지 않는다.
+
+`validate_game`은 최종 `LogicAnalysis.features`의 Feature마다 Checklist를 정확히 하나씩 만들고,
+각 Checklist에 30개 기준을 생성한다. 따라서 전체 기준 수는 `Feature 수 × 30`이다. 각 기준은
+`DFC{Feature 순번}_{항목 순번}`, 관련 `feature_ids`, 준비, 동작, 기대 결과, 자동 증거를 갖는다.
+모든 항목은 해당 Checklist의 Feature ID를 반드시 포함한다. Qwen Coder는 Checklist마다 별도 Unity
+Test Framework PlayMode C# 파일을 만든다. 모든 DFC가 NUnit 보고서에 존재하며 Passed여야 한다.
+실패하면 테스트 파일이 아니라 게임 소스만 제한적으로 수정하고 Unity 컴파일 후 다시 실행한다.
+최대 Retry는 10회이며 최종 실패는 `validate_game` 실패다.
+
 ### `final_validation` 판정
 
 최종 단계는 `pending` 대신 `passed` 또는 `failed`를 기록한다. 게임·이미지·사운드의 선행 검증,

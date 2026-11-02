@@ -39,7 +39,7 @@ def validate_game_node(
     manager = ArtifactManager()
     try:
         request = cast(ParsedRequest, manager.read_json(state["parsed_request"]))
-        cast(LogicAnalysis, manager.read_json(state["logic_analysis"]))
+        logic_analysis = cast(LogicAnalysis, manager.read_json(state["logic_analysis"]))
         draft = cast(GameLogicDraft, manager.read_json(state["game_logic_draft"]))
     except (OSError, ValueError, TypeError, KeyError, UnicodeError) as error:
         result: GameValidationResult = {
@@ -241,6 +241,8 @@ def validate_game_node(
                         request,
                         allow_failed_diagnostic=False,
                     ),
+                    project_id=state["project_id"],
+                    logic_analysis=logic_analysis,
                 )
                 outcome.unity_log += checklist_outcome.log
                 for result_item in checklist_outcome.results:

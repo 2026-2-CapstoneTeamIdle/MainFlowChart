@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from game_pipeline.condition_feature_analysis import (
+    create_condition_feature_analyzer_from_environment,
+)
 from game_pipeline.design_catalog import normalize_game_spec
 from game_pipeline.genre_feature_enricher import (
     create_genre_feature_enricher_from_environment,
@@ -43,6 +46,42 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
     request: ParsedRequest = manager.read_json(state["parsed_request"])
     analysis: AnalysisResult = manager.read_json(state["analysis"])
     features = analysis["features"]
+    condition_report: dict[str, object] = {
+        "provider": "none",
+        "model_role": "condition_feature_analysis",
+        "detected_feature_count": len(features),
+        "explicit_feature_count": len(features),
+        "added_feature_count": 0,
+        "status": "disabled",
+    }
+    try:
+        condition_analyzer = create_condition_feature_analyzer_from_environment()
+        if condition_analyzer is not None:
+            log("사용자 Condition을 원자적인 구현 가능 기능으로 AI가 분해합니다.")
+            condition_analysis = condition_analyzer.analyze(
+                genre=request["genre"],
+                viewpoint=request["viewpoint"],
+                condition=request["condition"],
+                detected_features=features,
+            )
+            features = condition_analysis.features
+            condition_report = {**condition_analysis.report, "status": "passed"}
+            log(f"사용자 명시 기능 {len(features)}개를 설계 입력으로 확정했습니다.")
+    except Exception as error:  # noqa: BLE001 - deterministic parsing remains the fallback
+        condition_report = {
+            **condition_report,
+            "status": "failed",
+            "error": f"{type(error).__name__}: {error}",
+        }
+        log(f"Condition AI 파싱에 실패해 정적 파싱 결과를 사용합니다: {error}")
+
+    manager.write_json(
+        state["project_id"],
+        "data",
+        "condition_feature_analysis.json",
+        condition_report,
+        producer="logic_analysis",
+    )
     enrichment_report: dict[str, object] = {
         "provider": "none",
         "genre": request["genre"],

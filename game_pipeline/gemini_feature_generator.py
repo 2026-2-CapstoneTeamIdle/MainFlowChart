@@ -408,7 +408,13 @@ class LocalAIJsonClient:
     supports_feature_planning = True
 
     @classmethod
-    def from_environment(cls, runtime: str = "local") -> LocalAIJsonClient:
+    def from_environment(
+        cls,
+        runtime: str = "local",
+        *,
+        node_name: str | None = None,
+        default_model: str | None = None,
+    ) -> LocalAIJsonClient:
         normalized_runtime = runtime.strip().lower()
         if normalized_runtime in {"vast", "vastai", "vast.ai", "vllm"}:
             from VastAI.settings import load_vastai_settings
@@ -432,7 +438,16 @@ class LocalAIJsonClient:
         parsed_url = urllib.parse.urlparse(base_url)
         if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
             raise ValueError("LOCAL_LLM_BASE_URL must be an HTTP(S) URL")
-        model = os.environ.get("LOCAL_LLM_MODEL", DEFAULT_LOCAL_MODEL).strip()
+        node_model_name = (
+            "LLM_" + re.sub(r"[^A-Za-z0-9]+", "_", node_name).strip("_").upper() + "_MODEL"
+            if node_name
+            else ""
+        )
+        model = (
+            os.environ.get(node_model_name, "")
+            or default_model
+            or os.environ.get("LOCAL_LLM_MODEL", DEFAULT_LOCAL_MODEL)
+        ).strip()
         if not model:
             raise ValueError("LOCAL_LLM_MODEL must not be empty")
         timeout = int(os.environ.get("LLM_TIMEOUT_SECONDS", "300"))

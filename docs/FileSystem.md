@@ -15,6 +15,10 @@ workspace/                         # workspace/.gitignore로 내용 제외
    ├─ game/                        # 게임 코드, asset_requests, Unity 프로젝트, 통합 결과
    ├─ data/                        # 요청/중간 데이터와 artifact_manifest.json
    └─ validation/                  # 검증 기준서와 검증 결과
+      └─ feature_checklists/
+         ├─ original/              # 저장소의 30항목 기존 체크리스트 사본
+         ├─ generated/             # Feature별 하위 폴더와 전체 Checklist index
+         └─ checked/               # Retry별 NUnit 판정과 체크본
 ```
 
 `project_id` 형식은 `YYYYMMDD_NN`이다. `NN`은 해당 날짜에 생성된 프로젝트의 순번이며 두 자리 이상으로 표현한다. 예를 들어 2026년 9월 26일의 세 번째 프로젝트는 `20260926_03`이다. `ArtifactManager.create_project()`가 기존 폴더를 조회하고 다음 번호를 원자적으로 확보한다.
@@ -101,6 +105,7 @@ workspace/{project_id}/generated/images/references/custom_style.{png|jpg|jpeg}
 
 ```text
 workspace/{project_id}/data/analysis.json
+workspace/{project_id}/data/condition_feature_analysis.json
 workspace/{project_id}/data/logic_analysis.json
 workspace/{project_id}/game/asset_requests/image_asset_request.json
 workspace/{project_id}/game/asset_requests/sound_asset_request.json
@@ -113,6 +118,14 @@ workspace/{project_id}/validation/development/*.json
 `implementation_tasks.json`은 게임 구현의 작업 DAG와 최종 시도 횟수·상태·증거를 담는다.
 `validation/development/`의 번호가 붙은 스냅샷은 각 작업의 실행·재시도·성공 또는 실패 직후
 상태를 보존한다. 따라서 긴 생성 과정이 중단돼도 어느 단계에서 왜 멈췄는지 확인할 수 있다.
+
+`condition_feature_analysis.json`은 Condition에서 명시 기능을 원자적으로 분해한 결과를 기록한다.
+최종 Feature와 의존 Feature는 각각 하나의 30항목 Checklist를 가진다. 전체 index는
+`validation/feature_checklists/generated/checklist.json`과 `Checklist.md`에 저장하고, 실제 개별
+파일은 `generated/{feature_id}/checklist.json`, `Checklist.md`,
+`GeneratedFeatureChecklist_DFC*.cs`에 저장한다. C# 파일은 Unity 프로젝트의
+`Assets/Tests/PlayMode/`에도 복사된다. 전체 검증 항목 수는 `Feature 수 × 30`이며, 누락 또는
+Skip된 동적 기준은 통과로 간주하지 않는다.
 
 에셋 요청 JSON은 생성된 Unity 프로젝트의
 `Assets/GameTemplate/Generated/AssetRequests/`에도 같은 내용으로 포함된다. 이미지·사운드 Flow는

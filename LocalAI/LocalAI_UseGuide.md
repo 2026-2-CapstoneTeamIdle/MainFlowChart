@@ -1,11 +1,16 @@
 # LocalAI 사용 가이드
 
-통합 버전: 1.6.0. 기본 텍스트 모델은 Qwen2.5-Coder-7B-Instruct Q5_K_M(API 이름: qwen2.5-coder-7b-q5-k-m)이다.
-LocalAI v4.11.0 llama.cpp를 사용한다. 공식 텍스트 전용 GGUF는 약 5.44GB이며
-멀티모달 파일은 설치하지 않는다. 코더 모델은 context 16384, gpu_layers 99, 동시 추론 슬롯 1개,
+통합 버전: 1.7.0. 기본 preload는 Feature 분석용 Gemma 4 12B QAT Q4_0
+(API 이름: `gemma4-12b-it-qat-q4-0`)과 Qwen2.5-Coder-7B-Instruct Q5_K_M
+(API 이름: `qwen2.5-coder-7b-q5-k-m`)을 함께 등록한다.
+LocalAI v4.11.0 llama.cpp를 사용한다. Qwen GGUF는 약 5.44GB이고 Gemma 12B Q4 가중치는
+약 6.7GB이며 멀티모달 파일은 설치하지 않는다. 두 모델은 context 16384, gpu_layers 99,
+동시 추론 슬롯 1개,
 호스트 프롬프트 캐시 상한 1024MiB와
 동시 활성 backend 1개로 설정한다. 12GB GPU에서 모델 전체를 GPU에 올리되 Windows와
 Unity가 사용할 여유를 남기는 구성이다.
+Condition→Feature와 Feature→Checklist는 Gemma를 사용하고 Checklist→Unity Test C#은 Qwen
+Coder를 사용한다. 두 모델은 동시에 VRAM에 상주하지 않고 요청 역할이 바뀔 때 교체된다.
 자동 컨텍스트 축소는 끄므로 LocalAI 시작 로그의 effective runtime tuning에서
 context=16384인지 확인한다. 시각 검증 VLM은 context 8192를 유지한다.
 
@@ -41,6 +46,7 @@ docker compose -f compose.yaml -f LocalAI/compose.yaml logs -f Local-AIModel
 
 ```powershell
 uv run --locked python -m LocalAI.check_connection --model qwen2.5-coder-7b-q5-k-m
+uv run --locked python -m LocalAI.check_connection --model gemma4-12b-it-qat-q4-0
 ```
 
 Web UI: http://127.0.0.1:8080 / 호스트 API: http://127.0.0.1:8080/v1.
@@ -53,6 +59,31 @@ volume으로 복사한다. LocalAI는 이 준비 서비스가 성공한 뒤 시�
 이미지는 제외하고 Diffusers 구성요소만 저장한다. 따라서 최초 컨테이너 시작과 첫 요청은
 backend/모델 다운로드 때문에 오래 걸릴 수 있다. runtime 설정은
 `idle-capstone-local-ai-configuration` volume에 저장된다.
+
+## Feature 분석과 동적 Unity Checklist
+
+기본 `preload-feature-pipeline.yaml`은 두 역할 모델을 등록한다. 명시적으로 선택하려면 다음과 같이
+실행한다.
+
+```powershell
+$env:LOCALAI_PRELOAD_MODELS_CONFIG = "/configuration/preload-feature-pipeline.yaml"
+$env:MAINFLOW_FEATURE_PROVIDER = "local"
+$env:MAINFLOW_CONDITION_FEATURE_PROVIDER = "local"
+$env:MAINFLOW_GENRE_FEATURE_PROVIDER = "local"
+$env:LLM_CONDITION_FEATURE_ANALYSIS_MODEL = "gemma4-12b-it-qat-q4-0"
+$env:LLM_FEATURE_CHECKLIST_GENERATION_PROVIDER = "local"
+$env:LLM_FEATURE_CHECKLIST_GENERATION_MODEL = "gemma4-12b-it-qat-q4-0"
+$env:LLM_UNITY_CHECKLIST_TEST_GENERATION_PROVIDER = "local"
+$env:LLM_UNITY_CHECKLIST_TEST_GENERATION_MODEL = "qwen2.5-coder-7b-q5-k-m"
+docker compose -f compose.yaml -f LocalAI/compose.yaml up -d --force-recreate Local-AIModel
+```
+
+Gemma의 공식 파일 이름은 `gemma-4-12b-it-qat-q4_0.gguf`이며, 사용자가 적은 모델명 끝의
+불완전한 `-` 대신 위 API 별칭을 사용한다. 프로젝트 실행 후 생성물은
+`workspace/{project_id}/validation/feature_checklists/generated/{feature_id}/`에서 확인한다.
+Gemma와 Qwen 호출은 Feature별로 분리되며, 각 Feature는 Checklist 한 개와 30개 항목, Unity 테스트
+파일 한 개를 가진다. Unity Editor가 없거나 동적 C#이 3회의 생성 시도 안에 컴파일되지 않거나
+`Feature 수 × 30` 항목 중 하나라도 통과하지 못하면 게임 검증은 실패한다.
 
 ## Node 공통 이미지 생성
 

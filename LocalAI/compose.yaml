@@ -27,7 +27,7 @@ services:
     environment:
       MODELS_PATH: /models
       LOCALAI_MODELS_CONFIG_FILE: /configuration/sd-turbo.yaml
-      PRELOAD_MODELS_CONFIG: ${LOCALAI_PRELOAD_MODELS_CONFIG:-/configuration/preload-qwen-coder.yaml}
+      PRELOAD_MODELS_CONFIG: ${LOCALAI_PRELOAD_MODELS_CONFIG:-/configuration/preload-feature-pipeline.yaml}
       LOCALAI_MAX_ACTIVE_BACKENDS: "1"
       LOCALAI_SINGLE_ACTIVE_BACKEND: "true"
       LOCALAI_FORCE_BACKEND_SHUTDOWN: "true"
@@ -64,6 +64,10 @@ services:
         source: ./LocalAI/preload-visual.yaml
         target: /configuration/preload-visual.yaml
         read_only: true
+      - type: bind
+        source: ./LocalAI/preload-feature-pipeline.yaml
+        target: /configuration/preload-feature-pipeline.yaml
+        read_only: true
     ports:
       - "127.0.0.1:8080:8080"
     gpus: all
@@ -93,6 +97,13 @@ services:
       LLM_VISUAL_VALIDATION_MODEL: ${LLM_VISUAL_VALIDATION_MODEL:-qwen3-vl-4b-instruct-q4-k-m}
       LLM_VISUAL_VALIDATION_MAX_TOKENS: ${LLM_VISUAL_VALIDATION_MAX_TOKENS:-768}
       LLM_VISUAL_VALIDATION_RESPONSE_ATTEMPTS: ${LLM_VISUAL_VALIDATION_RESPONSE_ATTEMPTS:-2}
+      MAINFLOW_CONDITION_FEATURE_PROVIDER: ${MAINFLOW_CONDITION_FEATURE_PROVIDER:-local}
+      MAINFLOW_GENRE_FEATURE_PROVIDER: ${MAINFLOW_GENRE_FEATURE_PROVIDER:-local}
+      LLM_CONDITION_FEATURE_ANALYSIS_MODEL: ${LLM_CONDITION_FEATURE_ANALYSIS_MODEL:-gemma4-12b-it-qat-q4-0}
+      LLM_FEATURE_CHECKLIST_GENERATION_PROVIDER: ${LLM_FEATURE_CHECKLIST_GENERATION_PROVIDER:-local}
+      LLM_FEATURE_CHECKLIST_GENERATION_MODEL: ${LLM_FEATURE_CHECKLIST_GENERATION_MODEL:-gemma4-12b-it-qat-q4-0}
+      LLM_UNITY_CHECKLIST_TEST_GENERATION_PROVIDER: ${LLM_UNITY_CHECKLIST_TEST_GENERATION_PROVIDER:-local}
+      LLM_UNITY_CHECKLIST_TEST_GENERATION_MODEL: ${LLM_UNITY_CHECKLIST_TEST_GENERATION_MODEL:-qwen2.5-coder-7b-q5-k-m}
       LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-300}
     depends_on:
       Local-AIModel:

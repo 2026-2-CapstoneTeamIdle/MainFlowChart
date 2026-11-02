@@ -18,7 +18,8 @@ from game_pipeline.gemini_feature_generator import (
 )
 from mainflow.contracts import FeatureRequirement, GameGenre, Viewpoint
 
-MAX_INFERRED_FEATURES = 18
+MAX_INFERRED_FEATURES = 30
+DEFAULT_CONDITION_FEATURE_MODEL = "gemma4-12b-it-qat-q4-0"
 
 GENRE_FEATURE_ENRICHMENT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -316,7 +317,13 @@ def create_genre_feature_enricher_from_environment() -> GenreFeatureEnricher | N
     if provider == "openai":
         return GenreFeatureEnricher(OpenAIJsonClient.from_environment(), provider)
     if provider == "local":
-        return GenreFeatureEnricher(LocalAIJsonClient.from_environment(), provider)
+        return GenreFeatureEnricher(
+            LocalAIJsonClient.from_environment(
+                node_name="condition_feature_analysis",
+                default_model=DEFAULT_CONDITION_FEATURE_MODEL,
+            ),
+            provider,
+        )
     if provider == "gemini":
         return GenreFeatureEnricher(GeminiApiClient.from_environment(), provider)
     raise ValueError(
