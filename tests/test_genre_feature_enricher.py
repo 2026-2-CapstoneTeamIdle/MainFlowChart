@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from collections.abc import Mapping
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -25,13 +26,24 @@ from mainflow.nodes.parse_input import parse_input_node
 class FakeStructuredClient:
     def __init__(self, response: Mapping[str, Any]) -> None:
         self.response = response
-        self.prompt = ""
+        self.prompts: list[str] = []
         self.schema: Mapping[str, Any] = {}
 
     def generate_json(self, prompt: str, schema: Mapping[str, Any]) -> Mapping[str, Any]:
-        self.prompt = prompt
+        self.prompts.append(prompt)
         self.schema = schema
-        return self.response
+        response = deepcopy(self.response)
+        for feature in response.get("features", []):
+            feature.setdefault(
+                "checklist",
+                {
+                    "preconditions": ["Play Mode에서 필요한 actor와 초기 상태가 존재한다."],
+                    "steps": ["기능을 발생시키는 입력 또는 시간 경과를 실행한다."],
+                    "expected_results": [feature["acceptance_criteria"]],
+                    "failure_signals": ["요청한 상태 변화가 관찰되지 않는다."],
+                },
+            )
+        return response
 
 
 class GenreFeatureEnricherTest(unittest.TestCase):
@@ -132,16 +144,23 @@ class GenreFeatureEnricherTest(unittest.TestCase):
         self.assertEqual(result.features[1]["origin"], "requirement_dependency")
         self.assertEqual(result.features[1]["supports_feature_ids"], ["feature-01"])
         self.assertIn("Play Mode", result.features[1]["acceptance_criteria"])
+        self.assertTrue(result.features[1]["checklist"]["steps"])
         self.assertEqual(result.report["added_feature_count"], 3)
         self.assertEqual(result.report["dependency_feature_count"], 1)
         self.assertEqual(result.report["genre_feature_count"], 2)
-        self.assertEqual(len(result.report["rejected_features"]), 2)
+        self.assertGreaterEqual(len(result.report["rejected_features"]), 2)
+        self.assertEqual(result.report["request_count"], 2)
+        self.assertEqual(len(client.prompts), 2)
         self.assertIs(client.schema, GENRE_FEATURE_ENRICHMENT_SCHEMA)
-        self.assertIn("already_required_features", client.prompt)
-        self.assertIn("already_implemented_genre_baseline", client.prompt)
-        self.assertIn("playable game rather than a disconnected simulation", client.prompt)
-        self.assertIn("inspect EACH explicit user feature independently", client.prompt)
-        self.assertIn("observable before/after change", client.prompt)
+        self.assertTrue(all("already_required_features" in prompt for prompt in client.prompts))
+        self.assertTrue(
+            all("already_implemented_genre_baseline" in prompt for prompt in client.prompts)
+        )
+        self.assertIn("user_requirement_dependency", client.prompts[0])
+        self.assertIn("playable game rather than a disconnected simulation", client.prompts[1])
+        self.assertTrue(
+            all("observable before/after change" in prompt for prompt in client.prompts)
+        )
 
         plan = plan_feature_mechanics(result.features, "뱀서류")
         dependency = next(
@@ -182,6 +201,12 @@ class GenreFeatureEnricherTest(unittest.TestCase):
                     "origin": "genre_inferred",
                     "rationale": "피해 결과를 확인해야 한다.",
                     "acceptance_criteria": "Play Mode에서 HP가 항상 표시된다.",
+                    "checklist": {
+                        "preconditions": ["플레이어 체력이 양수로 초기화된다."],
+                        "steps": ["Play Mode를 시작하고 플레이어에게 피해를 준다."],
+                        "expected_results": ["HP UI가 감소한 현재 체력을 표시한다."],
+                        "failure_signals": ["피해 후에도 HP UI 값이 변하지 않는다."],
+                    },
                     "implementation_kind": "scene_binding",
                     "target_mechanics": ["health_damage"],
                 }
@@ -227,6 +252,18 @@ class GenreFeatureEnricherTest(unittest.TestCase):
                     if reference["relative_path"] == "data/genre_feature_enrichment.json"
                 )
                 report = manager.read_json(report_reference)
+                checklist_json_reference = next(
+                    reference
+                    for reference in manager.list_artifacts(state["project_id"])
+                    if reference["relative_path"] == "validation/inferred_feature_checklists.json"
+                )
+                checklist_markdown_reference = next(
+                    reference
+                    for reference in manager.list_artifacts(state["project_id"])
+                    if reference["relative_path"] == "validation/inferred_feature_checklists.md"
+                )
+                checklist_payload = manager.read_json(checklist_json_reference)
+                checklist_markdown = manager.read_text(checklist_markdown_reference)
 
         self.assertIn("상시 체력 HUD", [feature["name"] for feature in logic["features"]])
         self.assertIn(
@@ -235,6 +272,11 @@ class GenreFeatureEnricherTest(unittest.TestCase):
         )
         self.assertEqual(report["status"], "passed")
         self.assertEqual(report["added_feature_count"], 1)
+        self.assertEqual(
+            checklist_payload["checklists"][0]["feature_id"],
+            "genre-required-01",
+        )
+        self.assertIn("HP UI가 감소한 현재 체력", checklist_markdown)
 
 
 if __name__ == "__main__":

@@ -33,6 +33,7 @@ class GameDevelopmentLoopTest(unittest.TestCase):
         tasks = {task["task_id"]: task for task in plan["tasks"]}
 
         self.assertIn("generate-time-rewind", tasks)
+        self.assertEqual(tasks["generate-time-rewind"]["max_attempts"], 1)
         self.assertIn(
             "generate-time-rewind",
             tasks["unity-project-generation"]["dependencies"],
@@ -40,8 +41,12 @@ class GameDevelopmentLoopTest(unittest.TestCase):
 
     def test_executes_dag_and_records_retry_evidence(self) -> None:
         records: list[tuple[str, dict]] = []
+        plan = self._plan()
+        next(task for task in plan["tasks"] if task["task_id"] == "generate-time-rewind")[
+            "max_attempts"
+        ] = 2
         loop = GameDevelopmentLoop(
-            self._plan(),
+            plan,
             record=lambda name, plan: records.append((name, plan)),
         )
         loop.mark_passed("design-review", "seven design documents validated")
@@ -85,7 +90,11 @@ class GameDevelopmentLoopTest(unittest.TestCase):
             loop.run_task("unity-project-generation", lambda: "project")
 
     def test_marks_terminal_failure_after_attempt_budget(self) -> None:
-        loop = GameDevelopmentLoop(self._plan())
+        plan = self._plan()
+        next(task for task in plan["tasks"] if task["task_id"] == "generate-time-rewind")[
+            "max_attempts"
+        ] = 2
+        loop = GameDevelopmentLoop(plan)
         loop.mark_passed("design-review", "validated")
         loop.mark_passed("module-selection", "selected")
 

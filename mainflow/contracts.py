@@ -68,6 +68,14 @@ class GameFeature(TypedDict):
     supports_feature_ids: NotRequired[list[str]]
     dependency_role: NotRequired[str]
     acceptance_criteria: NotRequired[str]
+    checklist: NotRequired[FeatureChecklistSpec]
+
+
+class FeatureChecklistSpec(TypedDict):
+    preconditions: list[str]
+    steps: list[str]
+    expected_results: list[str]
+    failure_signals: list[str]
 
 
 class AssetRequirement(TypedDict):
@@ -479,6 +487,7 @@ class FeatureRequirement(TypedDict):
     origin: NotRequired[Literal["user", "genre_inferred", "requirement_dependency"]]
     rationale: NotRequired[str]
     acceptance_criteria: NotRequired[str]
+    checklist: NotRequired[FeatureChecklistSpec]
     supports_feature_ids: NotRequired[list[str]]
     dependency_role: NotRequired[
         Literal[

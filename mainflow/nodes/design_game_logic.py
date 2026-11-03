@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from copy import deepcopy
 from pathlib import Path
+from time import monotonic
 from typing import cast
 
 from game_pipeline import (
@@ -221,6 +222,13 @@ def design_game_logic_node(
         if design["unsupported_mechanics"]:
             log(f"기존 모듈에 없는 기능을 {feature_provider} 모델로 생성합니다.")
             feature_generator = create_feature_generator_from_environment()
+            feature_budget_seconds = int(
+                os.environ.get("MAINFLOW_FEATURE_GENERATION_BUDGET_SECONDS", "420")
+            )
+            if not 60 <= feature_budget_seconds <= 1_800:
+                raise ValueError(
+                    "MAINFLOW_FEATURE_GENERATION_BUDGET_SECONDS must be between 60 and 1800"
+                )
             attempt_sequence = 0
 
             def record_generation_attempt(data):
@@ -248,6 +256,12 @@ def design_game_logic_node(
                     module_id: str = module_id,
                     requirement: dict[str, dict[str, str]] = requirement,
                 ):
+                    feature_generator.set_deadline(
+                        min(
+                            development_loop.deadline_monotonic,
+                            monotonic() + feature_budget_seconds,
+                        )
+                    )
                     focused_design = deepcopy(design)
                     focused_design["unsupported_mechanics"] = [module_id]
                     return feature_generator.generate(focused_design, requirement)

@@ -6,6 +6,7 @@ repaired here so a Unity runtime failure is not incorrectly sent to the C# agent
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from itertools import pairwise
 
@@ -15,7 +16,7 @@ from mainflow.contracts import GameLogicDesign
 
 
 def repair_design(
-    design: GameLogicDesign, target: RepairTarget
+    design: GameLogicDesign, target: RepairTarget, evidence: str = ""
 ) -> tuple[GameLogicDesign, list[str]]:
     revised = deepcopy(design)
     bundle = revised["design_v2"]
@@ -41,6 +42,44 @@ def repair_design(
             if gap > level["max_horizontal_gap"]:
                 previous["width"] += gap - level["max_horizontal_gap"]
                 actions.append(f"extended {previous['platform_id']} to close route gap")
+
+        # A runtime no-progress failure is stronger evidence than the generic jump
+        # threshold. Bridge the actual gap around the stopped player even when it is
+        # nominally below max_horizontal_gap (the collider/body can still be too wide).
+        if "runtime.route_no_progress" in evidence.lower() and platforms:
+            match = re.search(
+                r"current=\(\s*(-?\d+(?:\.\d+)?)\s*,", evidence, re.IGNORECASE
+            ) or re.search(r"best_x\s*=\s*(-?\d+(?:\.\d+)?)", evidence, re.IGNORECASE)
+            stopped_x = float(match.group(1)) if match else None
+            gaps = []
+            for previous, current in pairwise(platforms):
+                previous_right = previous["x"] + previous["width"] / 2
+                current_left = current["x"] - current["width"] / 2
+                gap = current_left - previous_right
+                if gap > 0:
+                    midpoint = (previous_right + current_left) / 2
+                    gaps.append(
+                        (
+                            abs(midpoint - stopped_x) if stopped_x is not None else -gap,
+                            gap,
+                            previous,
+                        )
+                    )
+            if gaps:
+                _, gap, previous = min(gaps, key=lambda item: item[0])
+                previous["width"] += gap + 0.35
+                actions.append(
+                    f"bridged runtime route gap after {previous['platform_id']} by {gap + 0.35:.2f}"
+                )
+            else:
+                nearest = min(
+                    platforms,
+                    key=lambda item: abs(item["x"] - stopped_x) if stopped_x is not None else 0,
+                )
+                nearest["width"] += 0.75
+                actions.append(
+                    f"expanded {nearest['platform_id']} around runtime no-progress point"
+                )
 
     if target == "balance_plan":
         for stat in bundle["balance_plan"]["stats"]:

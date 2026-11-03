@@ -30,6 +30,17 @@ class GameDevelopmentLoop:
         self._validate_dependencies()
         self._persist("planned")
 
+    @property
+    def deadline_monotonic(self) -> float:
+        """Return the hard deadline shared by nested model and Unity operations."""
+
+        return self._started_at + self.plan["time_budget_seconds"]
+
+    def remaining_seconds(self) -> float:
+        """Return the remaining wall-clock budget without allowing a negative value."""
+
+        return max(0.0, self.deadline_monotonic - monotonic())
+
     def run_task(
         self,
         task_id: str,
@@ -104,7 +115,7 @@ class GameDevelopmentLoop:
             )
 
     def _check_time_budget(self) -> None:
-        if monotonic() - self._started_at > self.plan["time_budget_seconds"]:
+        if self.remaining_seconds() <= 0:
             raise TimeoutError("Game development time budget was exhausted")
 
     def _validate_dependencies(self) -> None:

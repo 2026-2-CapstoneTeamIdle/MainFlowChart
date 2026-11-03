@@ -351,13 +351,21 @@ def _normalize_features(value: object, defaults: list[GameFeature]) -> list[Game
                 raise ValueError("Each feature requires a non-empty feature_id")
             if not isinstance(description, str) or not description.strip():
                 raise ValueError("Each feature requires a non-empty description")
-            features.append(
-                {
-                    "feature_id": feature_id,
-                    "description": description,
-                    "required": bool(item.get("required", True)),
-                }
-            )
+            normalized: GameFeature = {
+                "feature_id": feature_id,
+                "description": description,
+                "required": bool(item.get("required", True)),
+            }
+            for key in (
+                "origin",
+                "supports_feature_ids",
+                "dependency_role",
+                "acceptance_criteria",
+                "checklist",
+            ):
+                if key in item:
+                    normalized[key] = deepcopy(item[key])  # type: ignore[literal-required]
+            features.append(normalized)
         else:
             raise TypeError("Each feature must be a string or object")
     if len({item["feature_id"] for item in features}) != len(features):

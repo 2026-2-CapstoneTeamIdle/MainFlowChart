@@ -385,7 +385,9 @@ class GameFailureIsolationTest(unittest.TestCase):
                 )
 
             self.assertGreaterEqual(len(set(attempted)), 2)
-            self.assertEqual(attempted.count(first_module[0]), 2)
+            # Source validation owns its bounded repair attempts. The development DAG must not
+            # restart the entire plan + generation sequence for the same failed feature.
+            self.assertEqual(attempted.count(first_module[0]), 1)
             self.assertGreater(len(failed_design["generated_modules"]), 0)
             task_statuses = {
                 task["task_id"]: task["status"]

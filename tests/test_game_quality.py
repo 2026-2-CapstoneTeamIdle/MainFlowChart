@@ -4,6 +4,7 @@ import json
 import unittest
 
 from game_pipeline import build_game_logic_design, normalize_game_spec
+from game_pipeline.design_repairer import repair_design
 from game_pipeline.game_failure_classifier import classify_failure
 from game_pipeline.game_quality import evaluate_game_quality, parse_playtest_metrics
 from game_pipeline.unity_project_validator import UnityValidationOutcome
@@ -110,6 +111,37 @@ class GameQualityTest(unittest.TestCase):
         self.assertEqual(classify_failure(binding)["target"], "binding")
         self.assertEqual(classify_failure(compile_error)["target"], "code")
         self.assertEqual(classify_failure(editor_binding_error)["target"], "binding")
+
+    def test_runtime_no_progress_bridges_gap_near_stopped_player(self) -> None:
+        design = build_game_logic_design(normalize_game_spec("플랫포머"))
+        platforms = sorted(
+            [
+                platform
+                for zone in design["design_v2"]["level_plan"]["zones"]
+                for platform in zone["platforms"]
+            ],
+            key=lambda item: item["x"],
+        )
+        previous_widths = {item["platform_id"]: item["width"] for item in platforms}
+        evidence = (
+            "runtime.route_no_progress: best_x=-12.12, "
+            "current=(-12.15,-2.37), velocity=(0,0), goal_x=63.90"
+        )
+
+        revised, actions = repair_design(design, "level_plan", evidence)
+
+        revised_platforms = [
+            platform
+            for zone in revised["design_v2"]["level_plan"]["zones"]
+            for platform in zone["platforms"]
+        ]
+        self.assertTrue(any("runtime route gap" in action for action in actions))
+        self.assertTrue(
+            any(
+                platform["width"] > previous_widths[platform["platform_id"]]
+                for platform in revised_platforms
+            )
+        )
 
 
 if __name__ == "__main__":

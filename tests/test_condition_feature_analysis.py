@@ -12,15 +12,15 @@ from mainflow.contracts import FeatureRequirement
 
 
 class FakeStructuredClient:
-    def __init__(self, response: Mapping[str, Any]) -> None:
-        self.response = response
-        self.prompt = ""
+    def __init__(self, response: Mapping[str, Any] | list[Mapping[str, Any]]) -> None:
+        self.responses = response if isinstance(response, list) else [response]
+        self.prompts: list[str] = []
         self.schema: Mapping[str, Any] = {}
 
     def generate_json(self, prompt: str, schema: Mapping[str, Any]) -> Mapping[str, Any]:
-        self.prompt = prompt
+        self.prompts.append(prompt)
         self.schema = schema
-        return self.response
+        return self.responses[len(self.prompts) - 1]
 
 
 class ConditionFeatureAnalysisTest(unittest.TestCase):
@@ -74,7 +74,50 @@ class ConditionFeatureAnalysisTest(unittest.TestCase):
         self.assertEqual(result.features[1]["origin"], "user")
         self.assertIn("Play Mode", result.features[1]["acceptance_criteria"])
         self.assertIs(client.schema, CONDITION_FEATURE_SCHEMA)
-        self.assertIn("Decompose EVERY", client.prompt)
+        self.assertIn("Decompose EVERY", client.prompts[0])
+
+    def test_splits_multi_sentence_condition_into_bounded_requests(self) -> None:
+        client = FakeStructuredClient(
+            [
+                {
+                    "features": [
+                        {
+                            "name": "가시 피해",
+                            "description": "플레이어가 가시에 닿으면 체력이 감소한다.",
+                            "source_text": "가시에 닿으면 체력이 감소한다",
+                            "acceptance_criteria": "가시 접촉 전후 플레이어 체력이 감소한다.",
+                            "implementation_kind": "configure_existing",
+                        }
+                    ]
+                },
+                {
+                    "features": [
+                        {
+                            "name": "보석 수집 완료",
+                            "description": "모든 보석을 모으면 목표 지점이 활성화된다.",
+                            "source_text": "보석을 모두 모으면 목표가 열린다",
+                            "acceptance_criteria": "마지막 보석 수집 후 목표 오브젝트가 활성화된다.",
+                            "implementation_kind": "scene_binding",
+                        }
+                    ]
+                },
+            ]
+        )
+
+        result = ConditionFeatureAnalyzer(client, "test").analyze(
+            genre="플랫포머",
+            viewpoint="사이드뷰",
+            condition="가시에 닿으면 체력이 감소한다. 보석을 모두 모으면 목표가 열린다.",
+            detected_features=[],
+        )
+
+        self.assertEqual(len(client.prompts), 2)
+        self.assertEqual(result.report["request_count"], 2)
+        self.assertEqual(
+            [feature["name"] for feature in result.features], ["가시 피해", "보석 수집 완료"]
+        )
+        self.assertIn('"segment_index":1', client.prompts[0])
+        self.assertIn('"segment_index":2', client.prompts[1])
 
 
 if __name__ == "__main__":

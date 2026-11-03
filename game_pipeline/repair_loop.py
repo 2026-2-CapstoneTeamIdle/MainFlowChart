@@ -136,11 +136,16 @@ def validate_and_repair(
                     f"Unity {target} validation failed without design v2 repair data: "
                     f"{outcome.issues}"
                 )
-            revised, actions = repair_design(design, target)
+            revised, actions = repair_design(design, target, classification["evidence"])
             record(
                 f"attempt_{attempt}_design_repair",
                 {"target": target, "actions": actions},
             )
+            if not actions:
+                raise RuntimeError(
+                    f"Unity {target} validation failed, but deterministic repair produced "
+                    f"no changes: {outcome.issues}"
+                )
         # Preserve the failed project for inspection; never recursively delete user data.
         backup = _available_backup(root, attempt)
         _rename_with_retry(root, backup)

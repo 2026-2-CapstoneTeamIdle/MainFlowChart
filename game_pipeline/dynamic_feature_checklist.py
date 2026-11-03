@@ -21,6 +21,8 @@ from game_pipeline.gemini_feature_generator import (
 from mainflow.contracts import FeatureRequirement, LogicAnalysis
 
 CHECKLIST_ITEM_COUNT = 30
+CHECKLIST_BATCH_SIZE = 10
+CHECKLIST_BATCH_COUNT = CHECKLIST_ITEM_COUNT // CHECKLIST_BATCH_SIZE
 DEFAULT_CHECKLIST_MODEL = "gemma4-12b-it-qat-q4-0"
 DEFAULT_TEST_CODE_MODEL = "qwen2.5-coder-7b-q5-k-m"
 GENERATED_TEST_DIRECTORY = Path("Assets/Tests/PlayMode")
@@ -32,8 +34,8 @@ CHECKLIST_SCHEMA: dict[str, Any] = {
     "properties": {
         "criteria": {
             "type": "array",
-            "minItems": CHECKLIST_ITEM_COUNT,
-            "maxItems": CHECKLIST_ITEM_COUNT,
+            "minItems": CHECKLIST_BATCH_SIZE,
+            "maxItems": CHECKLIST_BATCH_SIZE,
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -166,7 +168,7 @@ class ProjectFeatureChecklist:
 
 
 class DynamicFeatureChecklistGenerator:
-    """Call the instruction model once per feature to create its own checklist."""
+    """Create each feature checklist through bounded ten-item structured requests."""
 
     def __init__(self, client: StructuredJsonClient, provider: str) -> None:
         self.client = client
@@ -185,32 +187,52 @@ class DynamicFeatureChecklistGenerator:
         known_feature_ids = {feature["feature_id"] for feature in features}
         feature_checklists: list[FeatureChecklist] = []
         for feature_index, feature in enumerate(features, start=1):
-            response = self.client.generate_json(
-                self._prompt(logic_analysis, feature, source_root),
-                CHECKLIST_SCHEMA,
-            )
-            raw_criteria = response.get("criteria")
-            if not isinstance(raw_criteria, list) or len(raw_criteria) != CHECKLIST_ITEM_COUNT:
-                raise ValueError(
-                    f"Feature {feature['feature_id']} checklist must contain exactly "
-                    f"{CHECKLIST_ITEM_COUNT} items"
-                )
             criteria: list[ChecklistCriterion] = []
-            for criterion_index, item in enumerate(raw_criteria, start=1):
-                if not isinstance(item, Mapping):
-                    raise TypeError("Generated checklist items must be objects")
-                criteria.append(
-                    _validate_criterion(
+            criterion_fingerprints: set[str] = set()
+            for batch_index in range(CHECKLIST_BATCH_COUNT):
+                response = self.client.generate_json(
+                    self._prompt(
+                        logic_analysis,
+                        feature,
+                        source_root,
+                        batch_index=batch_index,
+                        previous_criteria=criteria,
+                    ),
+                    CHECKLIST_SCHEMA,
+                )
+                raw_criteria = response.get("criteria")
+                if not isinstance(raw_criteria, list) or len(raw_criteria) != CHECKLIST_BATCH_SIZE:
+                    raise ValueError(
+                        f"Feature {feature['feature_id']} checklist batch {batch_index + 1} "
+                        f"must contain exactly {CHECKLIST_BATCH_SIZE} items"
+                    )
+                for local_index, item in enumerate(raw_criteria, start=1):
+                    if not isinstance(item, Mapping):
+                        raise TypeError("Generated checklist items must be objects")
+                    criterion_index = batch_index * CHECKLIST_BATCH_SIZE + local_index
+                    criterion = _validate_criterion(
                         feature_index,
                         criterion_index,
                         item,
                         known_feature_ids,
                         feature["feature_id"],
                     )
+                    fingerprint = _criterion_fingerprint(criterion)
+                    if fingerprint in criterion_fingerprints:
+                        raise ValueError(
+                            f"Feature {feature['feature_id']} checklist contains a duplicate "
+                            f"criterion in batch {batch_index + 1}"
+                        )
+                    criterion_fingerprints.add(fingerprint)
+                    criteria.append(criterion)
+            if len(criteria) != CHECKLIST_ITEM_COUNT:
+                raise ValueError(
+                    f"Feature {feature['feature_id']} checklist must contain exactly "
+                    f"{CHECKLIST_ITEM_COUNT} items after batching"
                 )
             feature_checklists.append(
                 FeatureChecklist(
-                    checklist_version="1.1.0",
+                    checklist_version="1.2.0",
                     checklist_id=f"checklist-{feature['feature_id']}",
                     project_id=project_id,
                     feature_id=feature["feature_id"],
@@ -222,7 +244,7 @@ class DynamicFeatureChecklistGenerator:
                 )
             )
         return ProjectFeatureChecklist(
-            checklist_version="1.1.0",
+            checklist_version="1.2.0",
             project_id=project_id,
             model_role=f"feature_checklist_generation:{self.provider}",
             feature_checklists=tuple(feature_checklists),
@@ -233,6 +255,9 @@ class DynamicFeatureChecklistGenerator:
         logic_analysis: LogicAnalysis,
         target_feature: FeatureRequirement,
         source_root: Path,
+        *,
+        batch_index: int,
+        previous_criteria: list[ChecklistCriterion],
     ) -> str:
         features = [
             {
@@ -255,10 +280,26 @@ class DynamicFeatureChecklistGenerator:
             ),
             "related_features": features,
             "existing_checklist_catalog": _existing_checklist_catalog(source_root),
+            "batch": {
+                "index": batch_index + 1,
+                "count": CHECKLIST_BATCH_COUNT,
+                "item_count": CHECKLIST_BATCH_SIZE,
+                "focus": _checklist_batch_focus(batch_index),
+            },
+            "previous_criteria": [
+                {
+                    "title": criterion.title,
+                    "category": criterion.category,
+                    "expected": criterion.expected,
+                }
+                for criterion in previous_criteria
+            ],
         }
         return (
-            "You are a Unity QA lead. Create ONE checklist containing EXACTLY 30 concise, "
-            "non-overlapping automated PlayMode acceptance checks for target_feature only. Every "
+            f"You are a Unity QA lead. Create batch {batch_index + 1} of "
+            f"{CHECKLIST_BATCH_COUNT} containing EXACTLY {CHECKLIST_BATCH_SIZE} concise, "
+            "non-overlapping automated PlayMode acceptance checks for target_feature only. The "
+            f"host will combine all batches into one {CHECKLIST_ITEM_COUNT}-item checklist. Every "
             "criterion must include target_feature.feature_id in feature_ids. Related feature ids "
             "may additionally appear only when checking a real dependency or integration. Cover "
             "the target feature's initialization, required objects/data, runtime binding, trigger, "
@@ -268,7 +309,9 @@ class DynamicFeatureChecklistGenerator:
             "executable by Unity Test Framework without a human, screenshot judgment, network "
             "request, external service, or arbitrary delay. State exact setup, action, expected "
             "result, and machine-readable evidence. Do not test unrelated features merely to fill "
-            "the count. Use only supplied feature ids. Return strict JSON only.\n\n"
+            "the count. Do not repeat any previous_criteria title, expected behavior, or equivalent "
+            "scenario. Follow batch.focus and use only supplied feature ids. Return strict JSON "
+            "only.\n\n"
             f"INPUT={json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
         )
 
@@ -408,7 +451,7 @@ def load_generated_checklist(workspace_root: Path) -> ProjectFeatureChecklist | 
     if not feature_checklists:
         raise ValueError("Stored generated checklist contains no feature checklists")
     return ProjectFeatureChecklist(
-        checklist_version=str(payload.get("checklist_version", "1.1.0")),
+        checklist_version=str(payload.get("checklist_version", "1.2.0")),
         project_id=str(payload.get("project_id", workspace_root.name)),
         model_role=str(payload.get("model_role", "stored")),
         feature_checklists=feature_checklists,
@@ -438,7 +481,7 @@ def _feature_checklist_from_dict(payload: object, default_project_id: str) -> Fe
     if len(criteria) != CHECKLIST_ITEM_COUNT:
         raise ValueError("Stored feature checklist contains invalid criteria")
     return FeatureChecklist(
-        checklist_version=str(payload.get("checklist_version", "1.1.0")),
+        checklist_version=str(payload.get("checklist_version", "1.2.0")),
         checklist_id=str(payload["checklist_id"]),
         project_id=str(payload.get("project_id", default_project_id)),
         feature_id=str(payload["feature_id"]),
@@ -466,6 +509,22 @@ def _structured_client(
     if provider == "gemini":
         return GeminiApiClient.from_environment()
     raise ValueError(f"Unsupported structured checklist provider: {provider}")
+
+
+def _checklist_batch_focus(batch_index: int) -> list[str]:
+    focuses = (
+        ["structure", "binding", "initialization", "runtime trigger", "state transition"],
+        ["interaction", "edge cases", "integration", "feedback", "boundary values"],
+        ["recovery", "restart", "repetition", "regression", "end-to-end consequence"],
+    )
+    if not 0 <= batch_index < len(focuses):
+        raise ValueError("Checklist batch index is out of range")
+    return focuses[batch_index]
+
+
+def _criterion_fingerprint(criterion: ChecklistCriterion) -> str:
+    value = f"{criterion.title} {criterion.action} {criterion.expected}".casefold()
+    return re.sub(r"[^0-9a-z가-힣]+", "", value)
 
 
 def _validate_criterion(

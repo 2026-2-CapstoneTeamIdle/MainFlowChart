@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections.abc import Mapping
 from typing import Any, Literal, cast
 
@@ -20,6 +21,7 @@ from game_pipeline.runtime_invariants import runtime_invariants_for_genre
 from mainflow.contracts import DesignV2Bundle, GameSpec
 
 DesignProvider = Literal["deterministic", "openai", "local", "gemini"]
+DEFAULT_DESIGN_V2_MODEL = "gemma4-12b-it-qat-q4-0"
 STAGE_ORDER = (
     "game_design",
     "system_design",
@@ -117,11 +119,21 @@ class StagedDesignV2Planner:
         )
         implementation_index = build_generation_contract(selected_module_ids)
         result = cast(DesignV2Bundle, {})
+        customization_retries = int(
+            os.environ.get(
+                "MAINFLOW_DESIGN_V2_CUSTOMIZATION_RETRIES",
+                "0" if self.provider == "local" else "1",
+            )
+        )
+        if not 0 <= customization_retries <= 1:
+            raise ValueError("MAINFLOW_DESIGN_V2_CUSTOMIZATION_RETRIES must be 0 or 1")
         for stage in STAGE_ORDER:
             baseline = fallback[stage]  # type: ignore[literal-required]
             context = {name: result[name] for name in STAGE_ORDER if name in result}
             attempts = 0
             changed_paths: list[str] = []
+            started_at = time.monotonic()
+            print(f"[FLOW] design v2 단계 시작: {stage}")
             try:
                 response = self.client.generate_json(
                     self._prompt(
@@ -138,7 +150,7 @@ class StagedDesignV2Planner:
                 attempts = 1
                 self._validate_stage_response(stage, response, baseline, fallback, result)
                 changed_paths = _changed_design_paths(response, baseline)
-                if len(changed_paths) < MIN_CUSTOMIZED_LEAVES:
+                if len(changed_paths) < MIN_CUSTOMIZED_LEAVES and customization_retries > 0:
                     response = self.client.generate_json(
                         self._customization_prompt(
                             stage,
@@ -160,9 +172,17 @@ class StagedDesignV2Planner:
                         f"{stage} copied the safety baseline instead of specializing the design"
                     )
                 result[stage] = response  # type: ignore[literal-required]
-            except Exception:  # noqa: BLE001 - each optional LLM stage has a safe fallback
+                print(
+                    f"[FLOW] design v2 단계 완료: {stage} ({time.monotonic() - started_at:.1f}초)"
+                )
+            except Exception as error:  # noqa: BLE001 - optional stage has a safe fallback
                 result[stage] = baseline  # type: ignore[literal-required]
                 self.fallback_stages.append(stage)
+                print(
+                    f"[FLOW] design v2 단계 fallback: {stage} "
+                    f"({time.monotonic() - started_at:.1f}초, "
+                    f"{type(error).__name__}: {error})"
+                )
             self.customization_reports.append(
                 {
                     "stage": stage,
@@ -174,6 +194,8 @@ class StagedDesignV2Planner:
             )
 
         if game_spec["genre"] == "Platformer":
+            revision_started_at = time.monotonic()
+            print(f"[FLOW] design v2 단계 시작: {REVISION_STAGE}")
             try:
                 revised_level = self.client.generate_json(
                     self._revision_prompt(
@@ -189,8 +211,17 @@ class StagedDesignV2Planner:
                 candidate = {**result, "level_plan": revised_level}
                 validate_design_v2(cast(DesignV2Bundle, candidate))
                 result["level_plan"] = revised_level  # type: ignore[typeddict-item]
-            except Exception:  # noqa: BLE001 - retain the last validated level plan
+                print(
+                    f"[FLOW] design v2 단계 완료: {REVISION_STAGE} "
+                    f"({time.monotonic() - revision_started_at:.1f}초)"
+                )
+            except Exception as error:  # noqa: BLE001 - retain last validated plan
                 self.fallback_stages.append(REVISION_STAGE)
+                print(
+                    f"[FLOW] design v2 단계 fallback: {REVISION_STAGE} "
+                    f"({time.monotonic() - revision_started_at:.1f}초, "
+                    f"{type(error).__name__}: {error})"
+                )
         validate_design_v2(result)
         return result
 
@@ -321,7 +352,13 @@ def create_design_v2_planner_from_environment() -> StagedDesignV2Planner | None:
     if provider == "openai":
         return StagedDesignV2Planner(OpenAIJsonClient.from_environment(), "openai")
     if provider == "local":
-        return StagedDesignV2Planner(LocalAIJsonClient.from_environment(), "local")
+        return StagedDesignV2Planner(
+            LocalAIJsonClient.from_environment(
+                node_name="design_v2",
+                default_model=DEFAULT_DESIGN_V2_MODEL,
+            ),
+            "local",
+        )
     if provider in {"vast", "vastai", "vast.ai", "vllm"}:
         return StagedDesignV2Planner(LocalAIJsonClient.from_environment("vastai"), "vastai")
     if provider == "gemini":

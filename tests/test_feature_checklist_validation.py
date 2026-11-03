@@ -3,6 +3,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from game_pipeline.feature_checklist_validation import (
     ChecklistResult,
@@ -116,6 +117,101 @@ class FeatureChecklistValidationTest(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 ai._parse_plan(payload, root)
+
+    def test_inferred_feature_checklist_is_preserved_as_original_and_checked_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source_root = root / "docs"
+            source_root.mkdir()
+            workspace = root / "workspace"
+            workspace.mkdir()
+            feature = {
+                "feature_id": "requirement-dependency-01",
+                "name": "접촉 피해 연결",
+                "description": "적 접촉이 플레이어 체력을 감소시킨다.",
+                "source_text": "사용자 요구 의존 기능 추론",
+                "origin": "requirement_dependency",
+                "rationale": "생존 게임의 접촉 결과가 필요하다.",
+                "acceptance_criteria": "접촉 전후 플레이어 체력이 감소한다.",
+                "supports_feature_ids": ["feature-01"],
+                "checklist": {
+                    "preconditions": ["플레이어와 적의 Collider2D가 활성화된다."],
+                    "steps": ["적을 플레이어와 접촉시킨다."],
+                    "expected_results": ["플레이어 체력이 감소한다."],
+                    "failure_signals": ["접촉 후 체력이 변하지 않는다."],
+                },
+            }
+
+            FeatureChecklistWorkflow._copy_checklist_sources(
+                source_root,
+                workspace,
+                feature_requirements=[feature],  # type: ignore[list-item]
+            )
+            FeatureChecklistWorkflow._write_records(workspace, [], source_root)
+
+            originals = workspace / "validation/feature_checklists/original"
+            generated = next(originals.glob("[[]Generated Validator Checklist[]]*.md"))
+            checked = (
+                workspace / "validation/feature_checklists/checked" / f"{generated.stem}_체크본.md"
+            )
+            self.assertIn("플레이어 체력이 감소", generated.read_text(encoding="utf-8"))
+            self.assertTrue(checked.is_file())
+            self.assertIn("상태: pending", checked.read_text(encoding="utf-8"))
+
+    def test_dynamic_generation_failure_falls_back_to_static_unity_tests(self) -> None:
+        class FailingGenerator:
+            def generate(self, **_kwargs):
+                raise RuntimeError("simulated local checklist truncation")
+
+        logic_analysis = {
+            "contract_version": "1.0.0",
+            "logic_analysis_id": "logic-test",
+            "genre": "플랫포머",
+            "viewpoint": "사이드뷰",
+            "mood_style": "Fantasy",
+            "core_loop": "목표에 도달한다.",
+            "features": [
+                {
+                    "feature_id": "feature-01",
+                    "name": "점프",
+                    "description": "플레이어가 점프한다.",
+                    "source_text": "점프 게임",
+                }
+            ],
+            "criteria": [],
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            workspace = root / "workspace"
+            project = workspace / "game/unity_project"
+            project.mkdir(parents=True)
+            workflow = FeatureChecklistWorkflow(
+                unity_editor="Unity.exe",
+                timeout_seconds=30,
+                max_retries=0,
+                checklist_generator_factory=FailingGenerator,
+            )
+            static_result = ChecklistResult("FC05", "점프", "passed", "Passed", "Tests.FC05_Jump")
+            with patch.object(workflow, "_run_tests", return_value=([static_result], "log")):
+                outcome = workflow.run(
+                    project_root=project,
+                    workspace_root=workspace,
+                    source_root=root / "docs",
+                    compile_validation=lambda _root: None,
+                    project_id="test-project",
+                    logic_analysis=logic_analysis,  # type: ignore[arg-type]
+                )
+
+            self.assertEqual(outcome.status, "passed")
+            self.assertEqual(outcome.results[0].feature_id, "DYNAMIC_CHECKLIST")
+            self.assertEqual(outcome.results[0].status, "skipped")
+            self.assertIn("static", outcome.log.lower())
+            records = json.loads(
+                (workspace / "validation/feature_checklists/checked/results.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(records["attempts"][0]["checklist_source"], "static_fallback")
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, cast
 
@@ -393,6 +393,37 @@ class GeminiApiClient:
         return cast(Mapping[str, Any], result)
 
 
+def _extract_json_object(content: str) -> str:
+    """Extract one balanced JSON object while respecting quoted braces."""
+
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=re.IGNORECASE)
+    start = text.find("{")
+    if start < 0:
+        raise ValueError("response contains no JSON object")
+    depth = 0
+    quoted = False
+    escaped = False
+    for index, character in enumerate(text[start:], start=start):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\" and quoted:
+            escaped = True
+            continue
+        if character == '"':
+            quoted = not quoted
+            continue
+        if quoted:
+            continue
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    raise ValueError("response contains an incomplete JSON object")
+
+
 @dataclass(frozen=True)
 class LocalAIJsonClient:
     """OpenAI-compatible structured-output client for the local LocalAI server."""
@@ -405,6 +436,8 @@ class LocalAIJsonClient:
     max_output_tokens: int = 8192
     context_window_tokens: int = 16384
     reasoning_effort: str | None = None
+    structured_attempts: int = 3
+    request_label: str = "local_json"
     supports_feature_planning = True
 
     @classmethod
@@ -450,8 +483,35 @@ class LocalAIJsonClient:
         ).strip()
         if not model:
             raise ValueError("LOCAL_LLM_MODEL must not be empty")
-        timeout = int(os.environ.get("LLM_TIMEOUT_SECONDS", "300"))
-        max_output_tokens = int(os.environ.get("MAINFLOW_LOCAL_MAX_OUTPUT_TOKENS", "8192"))
+        normalized_node = re.sub(r"[^A-Za-z0-9]+", "_", node_name or "").strip("_").upper()
+        planning_defaults = {
+            "CONDITION_FEATURE_ANALYSIS": (180, 1024, 1),
+            "GENRE_FEATURE_ENRICHMENT": (180, 2048, 1),
+            "DESIGN_V2": (300, 4096, 1),
+            "BLUEPRINT": (180, 2048, 1),
+            "FEATURE_CHECKLIST_GENERATION": (240, 3072, 1),
+            "UNITY_CHECKLIST_TEST_GENERATION": (600, 8192, 1),
+            # Code generation has its own validation retries below. Keeping transport-level
+            # retries to one prevents one slow 7B response from multiplying across both layers.
+            "FEATURE_CODE_GENERATION": (180, 8192, 1),
+        }
+        timeout, max_output_tokens, structured_attempts = planning_defaults.get(
+            normalized_node,
+            (
+                int(os.environ.get("LLM_TIMEOUT_SECONDS", "300")),
+                int(os.environ.get("MAINFLOW_LOCAL_MAX_OUTPUT_TOKENS", "8192")),
+                int(os.environ.get("MAINFLOW_LOCAL_STRUCTURED_ATTEMPTS", "3")),
+            ),
+        )
+        if normalized_node:
+            role_prefix = f"LLM_{normalized_node}_"
+            timeout = int(os.environ.get(f"{role_prefix}TIMEOUT_SECONDS", str(timeout)))
+            max_output_tokens = int(
+                os.environ.get(f"{role_prefix}MAX_OUTPUT_TOKENS", str(max_output_tokens))
+            )
+            structured_attempts = int(
+                os.environ.get(f"{role_prefix}STRUCTURED_ATTEMPTS", str(structured_attempts))
+            )
         context_window_tokens = int(os.environ.get("LOCAL_LLM_CONTEXT_TOKENS", "16384"))
         reasoning_effort = os.environ.get("LOCAL_LLM_REASONING_EFFORT", "").strip().lower()
         if reasoning_effort and reasoning_effort not in {"none", "low", "medium", "high"}:
@@ -464,14 +524,19 @@ class LocalAIJsonClient:
             raise ValueError(
                 "LOCAL_LLM_CONTEXT_TOKENS must leave at least 1024 input tokens after output"
             )
+        if not 1 <= structured_attempts <= 5:
+            raise ValueError("LocalAI structured attempts must be between 1 and 5")
         return cls(
             base_url=base_url.rstrip("/"),
             model=model,
             api_key=os.environ.get("LOCAL_LLM_API_KEY") or None,
             timeout_seconds=timeout,
+            max_attempts=1 if normalized_node in planning_defaults else 2,
             max_output_tokens=max_output_tokens,
             context_window_tokens=context_window_tokens,
             reasoning_effort=reasoning_effort or None,
+            structured_attempts=structured_attempts,
+            request_label=node_name or "local_json",
         )
 
     def generate_json(self, prompt: str, schema: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -490,42 +555,118 @@ class LocalAIJsonClient:
                 "LocalAI model context_size together."
             )
         response_token_budget = min(requested_response_tokens, available_response_tokens)
-        payload = {
-            "model": self.model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt + "\n\nReturn only the JSON object required by the schema.",
-                }
-            ],
-            "temperature": 0.1,
-            "max_tokens": response_token_budget,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "generated_game_modules",
-                    "strict": True,
-                    "schema": schema,
-                },
-            },
-        }
-        if self.reasoning_effort:
-            payload["reasoning_effort"] = self.reasoning_effort
+        structured_mode = os.environ.get("LOCAL_LLM_STRUCTURED_MODE", "").strip().lower()
+        if structured_mode not in {"", "json_schema", "json_object"}:
+            raise ValueError("LOCAL_LLM_STRUCTURED_MODE must be 'json_schema' or 'json_object'")
+        # LocalAI's grammar-backed strict schema frequently makes Gemma emit until the
+        # token limit. Gemma is more reliable with a schema in the prompt and JSON mode.
+        use_json_object = structured_mode == "json_object" or (
+            not structured_mode and self.model.lower().startswith(("gemma4", "gemma-4"))
+        )
+        response_attempts = self.structured_attempts
+
+        base_content = prompt + "\n\nReturn only one complete JSON object."
+        if use_json_object:
+            base_content += "\nJSON_SCHEMA=" + schema_text
+        messages: list[dict[str, str]] = [{"role": "user", "content": base_content}]
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        request = urllib.request.Request(
-            f"{self.base_url}/chat/completions",
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
-        response_body = ""
+        last_error: StructuredOutputError | None = None
+        for response_attempt in range(response_attempts):
+            print(
+                f"[LLM] {self.request_label} 요청 "
+                f"{response_attempt + 1}/{response_attempts} 시작 "
+                f"(model={self.model}, max_output={response_token_budget}, "
+                f"timeout={self.timeout_seconds}s)"
+            )
+            payload: dict[str, Any] = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": 0.1,
+                "max_tokens": response_token_budget,
+                "response_format": (
+                    {"type": "json_object"}
+                    if use_json_object
+                    else {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "generated_game_modules",
+                            "strict": True,
+                            "schema": schema,
+                        },
+                    }
+                ),
+            }
+            if self.reasoning_effort:
+                payload["reasoning_effort"] = self.reasoning_effort
+            request = urllib.request.Request(
+                f"{self.base_url}/chat/completions",
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            response_body = self._request_with_retry(request)
+            content = ""
+            try:
+                response_payload = json.loads(response_body)
+                choice = response_payload["choices"][0]
+                content = choice["message"]["content"]
+                if not isinstance(content, str) or not content.strip():
+                    raise StructuredOutputError("LocalAI returned an empty structured response")
+                try:
+                    result = json.loads(_extract_json_object(content))
+                except (json.JSONDecodeError, ValueError) as error:
+                    if choice.get("finish_reason") == "length":
+                        raise StructuredOutputError(
+                            "LocalAI structured output reached the token limit before "
+                            "completing a JSON object"
+                        ) from error
+                    raise
+                if not isinstance(result, dict):
+                    raise StructuredOutputError("LocalAI structured output must be a JSON object")
+                if choice.get("finish_reason") == "length":
+                    print(
+                        f"[LLM] {self.request_label} 토큰 한도에 도달했지만 앞부분의 "
+                        "완전한 JSON 객체를 복구했습니다."
+                    )
+                print(f"[LLM] {self.request_label} 응답 완료")
+                return cast(Mapping[str, Any], result)
+            except StructuredOutputError as error:
+                last_error = error
+            except json.JSONDecodeError as error:
+                last_error = StructuredOutputError(
+                    f"LocalAI returned invalid structured JSON: {content[:500]}"
+                )
+                last_error.__cause__ = error
+            except (KeyError, IndexError, TypeError, ValueError) as error:
+                last_error = StructuredOutputError(
+                    f"LocalAI returned no valid structured output: {response_body[:500]}"
+                )
+                last_error.__cause__ = error
+
+            if response_attempt + 1 < response_attempts:
+                print(
+                    f"[LLM] {self.request_label} 구조화 응답 실패: {last_error}. 축약 재요청합니다."
+                )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "The previous response was incomplete or invalid. Return the "
+                            "smallest complete JSON object matching the schema. Use concise "
+                            "strings, close every array/object, and include no explanation."
+                        ),
+                    }
+                )
+        assert last_error is not None
+        raise last_error
+
+    def _request_with_retry(self, request: urllib.request.Request) -> str:
         for attempt in range(self.max_attempts):
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                    response_body = response.read().decode("utf-8")
-                break
+                    return response.read().decode("utf-8")
             except urllib.error.HTTPError as error:
                 retryable = error.code == 429 or 500 <= error.code < 600
                 if not retryable or attempt + 1 >= self.max_attempts:
@@ -541,53 +682,20 @@ class LocalAIJsonClient:
                         "LLM_TIMEOUT_SECONDS."
                     ) from error
                 time.sleep(0.5 * (attempt + 1))
-
-        response_payload: Any = None
-        choice: Any = None
-        content: Any = None
-        try:
-            response_payload = json.loads(response_body)
-            choice = response_payload["choices"][0]
-            if choice.get("finish_reason") == "length":
-                raise StructuredOutputError(
-                    "LocalAI structured output reached the token limit. Increase "
-                    "MAINFLOW_LOCAL_MAX_OUTPUT_TOKENS."
-                )
-            content = choice["message"]["content"]
-            if not isinstance(content, str) or not content.strip():
-                raise StructuredOutputError("LocalAI returned an empty structured response")
-            normalized_content = content.strip()
-            if normalized_content.startswith("```"):
-                normalized_content = re.sub(
-                    r"^```(?:json)?\s*|\s*```$",
-                    "",
-                    normalized_content,
-                    flags=re.IGNORECASE,
-                ).strip()
-            result = json.loads(normalized_content)
-        except RuntimeError:
-            raise
-        except json.JSONDecodeError as error:
-            preview = content[:500] if isinstance(content, str) else response_body[:500]
-            finish_reason = choice.get("finish_reason") if isinstance(choice, Mapping) else None
-            usage = response_payload.get("usage") if isinstance(response_payload, Mapping) else None
-            raise StructuredOutputError(
-                "LocalAI returned invalid structured JSON "
-                f"(finish_reason={finish_reason!r}, usage={usage!r}): {preview}"
-            ) from error
-        except (KeyError, IndexError, TypeError) as error:
-            raise StructuredOutputError(
-                f"LocalAI returned no valid structured output: {response_body[:500]}"
-            ) from error
-        if not isinstance(result, dict):
-            raise StructuredOutputError("LocalAI structured output must be a JSON object")
-        return cast(Mapping[str, Any], result)
+        raise AssertionError("unreachable")
 
     def _response_token_budget(self, schema: Mapping[str, Any]) -> int:
         """Reserve output according to stage instead of starving short planning requests."""
 
         properties = schema.get("properties", {})
         if isinstance(properties, Mapping) and "implementation_plan" in properties:
+            return min(self.max_output_tokens, 1024)
+        if self.request_label == "design_v2":
+            schema_size = len(json.dumps(schema, ensure_ascii=False, separators=(",", ":")))
+            if schema_size >= 2200:
+                return min(self.max_output_tokens, 4096)
+            if schema_size >= 1400:
+                return min(self.max_output_tokens, 2048)
             return min(self.max_output_tokens, 1024)
         return self.max_output_tokens
 
@@ -616,14 +724,21 @@ def create_feature_generator_from_environment() -> GeminiFeatureGenerator:
     """Select OpenAI, Gemini, or LocalAI while sharing source validation."""
 
     provider = resolve_feature_provider_from_environment()
+    attempts = {
+        "plan_attempts": int(os.environ.get("MAINFLOW_FEATURE_PLAN_ATTEMPTS", "2")),
+        "source_attempts": int(os.environ.get("MAINFLOW_FEATURE_SOURCE_ATTEMPTS", "2")),
+    }
     if provider == "openai":
-        return GeminiFeatureGenerator(OpenAIJsonClient.from_environment())
+        return GeminiFeatureGenerator(OpenAIJsonClient.from_environment(), **attempts)
     if provider == "gemini":
-        return GeminiFeatureGenerator.from_environment()
+        return GeminiFeatureGenerator(GeminiApiClient.from_environment(), **attempts)
     if provider == "local":
-        return GeminiFeatureGenerator(LocalAIJsonClient.from_environment())
+        return GeminiFeatureGenerator(
+            LocalAIJsonClient.from_environment(node_name="feature_code_generation"),
+            **attempts,
+        )
     if provider in {"vast", "vastai", "vast.ai", "vllm"}:
-        return GeminiFeatureGenerator(LocalAIJsonClient.from_environment("vastai"))
+        return GeminiFeatureGenerator(LocalAIJsonClient.from_environment("vastai"), **attempts)
     raise ValueError("MAINFLOW_FEATURE_PROVIDER must be 'openai', 'gemini', 'local', or 'vastai'")
 
 
@@ -840,9 +955,44 @@ class GeminiFeatureGenerator:
         client: StructuredJsonClient,
         *,
         attempt_recorder: Callable[[Mapping[str, Any]], None] | None = None,
+        plan_attempts: int = 3,
+        source_attempts: int = 3,
     ) -> None:
+        if not 1 <= plan_attempts <= 3:
+            raise ValueError("Feature implementation plan attempts must be between 1 and 3")
+        if not 1 <= source_attempts <= 3:
+            raise ValueError("Feature source attempts must be between 1 and 3")
         self.client = client
         self.attempt_recorder = attempt_recorder
+        self.plan_attempts = plan_attempts
+        self.source_attempts = source_attempts
+        self._deadline_monotonic: float | None = None
+
+    def set_deadline(self, deadline_monotonic: float | None) -> None:
+        """Apply a hard wall-clock deadline to subsequent nested model requests."""
+
+        self._deadline_monotonic = deadline_monotonic
+
+    def _generate_json(
+        self,
+        prompt: str,
+        schema: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Generate JSON while capping one request to the remaining feature budget."""
+
+        client = self.client
+        if self._deadline_monotonic is not None:
+            remaining = self._deadline_monotonic - time.monotonic()
+            if remaining <= 1:
+                raise TimeoutError("Feature generation time budget was exhausted")
+            request_timeout = max(1, math.ceil(remaining))
+            if isinstance(client, (OpenAIJsonClient, GeminiApiClient, LocalAIJsonClient)):
+                client = replace(
+                    client,
+                    timeout_seconds=min(client.timeout_seconds, request_timeout),
+                    max_attempts=1,
+                )
+        return client.generate_json(prompt, schema)
 
     def _record_attempt(
         self,
@@ -1263,7 +1413,11 @@ namespace TeamIdle.GameTemplate.Generated
 
     @classmethod
     def from_environment(cls) -> GeminiFeatureGenerator:
-        return cls(GeminiApiClient.from_environment())
+        return cls(
+            GeminiApiClient.from_environment(),
+            plan_attempts=int(os.environ.get("MAINFLOW_FEATURE_PLAN_ATTEMPTS", "2")),
+            source_attempts=int(os.environ.get("MAINFLOW_FEATURE_SOURCE_ATTEMPTS", "2")),
+        )
 
     def generate(
         self,
@@ -1314,10 +1468,10 @@ namespace TeamIdle.GameTemplate.Generated
 
         prompt = self._build_implementation_plan_prompt(design, module_id, requirement)
         current_prompt = prompt
-        for attempt in range(3):
+        for attempt in range(self.plan_attempts):
             raw: Mapping[str, Any] | None = None
             try:
-                raw = self.client.generate_json(
+                raw = self._generate_json(
                     current_prompt,
                     FEATURE_IMPLEMENTATION_PLAN_SCHEMA,
                 )
@@ -1339,7 +1493,7 @@ namespace TeamIdle.GameTemplate.Generated
                     raw=raw,
                     error=error,
                 )
-                if attempt == 2:
+                if attempt + 1 >= self.plan_attempts:
                     raise
                 current_prompt = (
                     prompt
@@ -1355,6 +1509,16 @@ namespace TeamIdle.GameTemplate.Generated
                         separators=(",", ":"),
                     )
                 )
+            except TimeoutError as error:
+                self._record_attempt(
+                    stage="implementation_plan",
+                    module_id=module_id,
+                    attempt=attempt + 1,
+                    status="failed",
+                    raw=raw,
+                    error=error,
+                )
+                raise
         raise AssertionError("unreachable")
 
     @staticmethod
@@ -1508,11 +1672,19 @@ Context:
         """Generate one module and make retries revise the concrete failed candidate."""
 
         current_prompt = prompt
-        for attempt in range(3):
+        failure_signatures: set[str] = set()
+        for attempt in range(self.source_attempts):
             raw: Mapping[str, Any] | None = None
             try:
-                raw = self.client.generate_json(current_prompt, GENERATED_MODULE_SCHEMA)
-                modules = self._parse_response(raw, [module_id], requirements)
+                raw = self._generate_json(current_prompt, GENERATED_MODULE_SCHEMA)
+                modules = self._parse_response(
+                    raw,
+                    [module_id],
+                    requirements,
+                    generated_type_apis=(
+                        self._prior_generated_type_apis(design) if design is not None else None
+                    ),
+                )
                 unresolved = [
                     identifier
                     for identifier in sorted(required_resolved_identifiers or set())
@@ -1549,7 +1721,22 @@ Context:
                     raw=raw,
                     error=error,
                 )
-                if attempt == 2:
+                failure_signature = hashlib.sha256(
+                    json.dumps(
+                        {"candidate": raw, "error": str(error)},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        default=str,
+                    ).encode("utf-8")
+                ).hexdigest()
+                if failure_signature in failure_signatures:
+                    print(
+                        f"[LLM] {module_id}가 동일한 잘못된 후보와 오류를 반복해 "
+                        "남은 재시도를 중단합니다."
+                    )
+                    raise error
+                failure_signatures.add(failure_signature)
+                if attempt + 1 >= self.source_attempts:
                     raise
                 feedback: dict[str, Any] = {
                     "attempt": attempt + 1,
@@ -1639,6 +1826,16 @@ Context:
                         + "\n\nVALIDATION FEEDBACK\n"
                         + json.dumps(feedback, ensure_ascii=False, separators=(",", ":"))
                     )
+            except TimeoutError as error:
+                self._record_attempt(
+                    stage="source_code",
+                    module_id=module_id,
+                    attempt=attempt + 1,
+                    status="failed",
+                    raw=raw,
+                    error=error,
+                )
+                raise
         raise AssertionError("unreachable")
 
     @staticmethod
@@ -1697,7 +1894,28 @@ Context:
             if not isinstance(object_id, str):
                 continue
             normalized_id = re.sub(r"[^a-z0-9]", "", object_id.lower())
-            if normalized_id and normalized_id not in normalized_source:
+            parent = item.get("parent")
+            covered_by_host_binding = (
+                parent == "player" and "bindingcontextplayer" in normalized_source
+            ) or (
+                parent == "ui"
+                and any(
+                    marker in normalized_source
+                    for marker in (
+                        "bindingcontextui",
+                        "unityengineui",
+                        "text",
+                        "slider",
+                        "image",
+                        "button",
+                    )
+                )
+            )
+            if (
+                normalized_id
+                and normalized_id not in normalized_source
+                and not covered_by_host_binding
+            ):
                 missing.append(object_id)
         if missing:
             raise ValueError(
@@ -1709,20 +1927,31 @@ Context:
         raw: Mapping[str, Any],
         unsupported: list[str],
         requirements: Mapping[str, Mapping[str, str]],
+        *,
+        generated_type_apis: Mapping[str, set[str]] | None = None,
     ) -> list[GeneratedGameModule]:
         raw_modules = raw.get("generated_modules")
         if not isinstance(raw_modules, list):
             raise ValueError("Gemini output requires generated_modules")
         modules = [
-            self._validate_module(item, requirements)
+            self._validate_module(
+                item,
+                requirements,
+                generated_type_apis=generated_type_apis,
+            )
             for item in raw_modules
             if isinstance(item, Mapping)
         ]
         if len(modules) != len(raw_modules):
             raise ValueError("Every generated_modules item must be an object")
+        unique_modules: dict[str, GeneratedGameModule] = {}
+        for module in modules:
+            previous = unique_modules.get(module["module_id"])
+            if previous is not None and previous["source_sha256"] != module["source_sha256"]:
+                raise ValueError("Gemini returned conflicting duplicate module IDs")
+            unique_modules[module["module_id"]] = module
+        modules = list(unique_modules.values())
         generated_ids = [module["module_id"] for module in modules]
-        if len(generated_ids) != len(set(generated_ids)):
-            raise ValueError("Gemini returned duplicate module IDs")
         if set(generated_ids) != set(unsupported):
             raise ValueError("Gemini must generate exactly one module per unsupported mechanic")
         return modules
@@ -1863,10 +2092,58 @@ Context:
             )
         return result
 
+    @staticmethod
+    def _prior_generated_type_apis(design: GameLogicDesign) -> dict[str, set[str]]:
+        """Index public APIs exposed by siblings generated earlier in the same run.
+
+        The repository index only contains template sources. Later generated features are allowed
+        to depend on an earlier sibling, so its concrete type and public surface must participate
+        in the same static API validation instead of being reported as an invented project API.
+        Unity compilation remains authoritative for signatures and overload compatibility.
+        """
+
+        result: dict[str, set[str]] = {}
+        for module in design.get("generated_modules", []):
+            class_name = str(module.get("class_name", "")).strip()
+            source = str(module.get("source_code", ""))
+            if not CLASS_NAME_PATTERN.fullmatch(class_name) or not source:
+                continue
+
+            members = {
+                match.group(1)
+                for match in re.finditer(
+                    r"\bpublic[ \t]+(?:(?:static|override|virtual|new|async)[ \t]+)*"
+                    r"[A-Za-z_][A-Za-z0-9_.]*(?:<[^;\r\n{}()]+>)?\??(?:\[\])?[ \t]+"
+                    r"([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(",
+                    source,
+                )
+            }
+            members.update(
+                match.group(1)
+                for match in re.finditer(
+                    r"\bpublic[ \t]+(?:(?:static|override|virtual|new)[ \t]+)*"
+                    r"[A-Za-z_][A-Za-z0-9_.]*(?:<[^;\r\n{}()]+>)?\??(?:\[\])?[ \t]+"
+                    r"([A-Za-z_][A-Za-z0-9_]*)[ \t]*(?:=>|\{)",
+                    source,
+                )
+            )
+            members.update(
+                match.group(1)
+                for match in re.finditer(
+                    r"\bpublic\s+event\s+[A-Za-z_][A-Za-z0-9_.<>,?\[\]\s]*\s+"
+                    r"([A-Za-z_][A-Za-z0-9_]*)\s*;",
+                    source,
+                )
+            )
+            result[class_name] = members
+        return result
+
     def _validate_module(
         self,
         raw: Mapping[str, Any],
         requirements: Mapping[str, Mapping[str, str]],
+        *,
+        generated_type_apis: Mapping[str, set[str]] | None = None,
     ) -> GeneratedGameModule:
         fields = {
             name: raw.get(name)
@@ -1896,6 +2173,11 @@ Context:
         if not CLASS_NAME_PATTERN.fullmatch(class_name):
             raise ValueError(f"Invalid generated C# class name: {class_name}")
         source = self._normalize_transform_find_assignments(source)
+        source = re.sub(
+            r"\bbindingContext\s*\.\s*Player\s*\.\s*position\b",
+            "bindingContext.Player.transform.position",
+            source,
+        )
         source = self._normalize_custom_tag_checks(source)
         source = self._normalize_asset_registry_prefab_lookups(source)
         source = self._normalize_null_prefab_instantiation(source)
@@ -1924,7 +2206,11 @@ Context:
                 f"Generated source for {module_id} is missing namespace imports: "
                 f"{sorted(set(missing_namespaces))}"
             )
-        self._validate_project_api_members(source, module_id)
+        self._validate_project_api_members(
+            source,
+            module_id,
+            additional_type_apis=generated_type_apis,
+        )
         self._validate_unity_api_members(source, module_id)
         self._validate_binding_lifecycle(source, module_id)
         self._validate_unity_value_type_mutations(source, module_id)
@@ -2061,14 +2347,28 @@ Context:
                 f"Generated source for {module_id} disables required behavior: {found_placeholders}"
             )
 
+        feature_description = str(requirement.get("feature_description", "")).casefold()
         requirement_text = " ".join(
             str(requirement.get(key, ""))
             for key in ("feature_description", "must_preserve", "acceptance_criteria")
         ).casefold()
-        rules: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+        rules: tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], ...] = (
             (
                 "damage application",
-                ("피해", "대미지", "데미지", "damage"),
+                feature_description,
+                (
+                    "피해를 주",
+                    "피해를 입",
+                    "피해를 받",
+                    "체력이 닳",
+                    "체력을 감소",
+                    "대미지",
+                    "데미지",
+                    "deal damage",
+                    "take damage",
+                    "apply damage",
+                    "damages",
+                ),
                 (
                     r"\b(?:apply|take|deal)?damage\s*\(",
                     r"\.\s*(?:damage|applydamage|takedamage)\s*\(",
@@ -2077,11 +2377,13 @@ Context:
             ),
             (
                 "runtime object creation",
+                requirement_text,
                 ("떨어뜨", "드롭", "생성", "소환", "등장", "spawn", "drop"),
                 (r"\bnew\s+gameobject\s*\(", r"\binstantiate\s*\("),
             ),
             (
                 "collection or pickup interaction",
+                requirement_text,
                 ("수집", "주워", "획득", "collect", "pickup"),
                 (
                     r"ontrigger(?:enter|stay)2d\s*\(",
@@ -2091,17 +2393,23 @@ Context:
             ),
             (
                 "continuous rotation",
+                requirement_text,
                 ("회전", "orbit", "rotate"),
                 (
                     r"\.\s*rotate\s*\(",
                     r"quaternion\s*\.\s*euler\s*\(",
                     r"mathf\s*\.\s*(?:sin|cos)\s*\(",
+                    # A later feature may configure an actor owned by an earlier generated
+                    # module. Calling that sibling's public configuration API is observable
+                    # delegation, so the later module must not duplicate the orbit loop.
+                    r"\.\s*(?:configure|set|apply|upgrade)[A-Za-z0-9_]*\s*\("
+                    r"[^;]*(?:rotation|orbit|speed)[^;]*\)",
                 ),
             ),
         )
         missing: list[str] = []
-        for label, keywords, patterns in rules:
-            if not any(keyword in requirement_text for keyword in keywords):
+        for label, trigger_text, keywords, patterns in rules:
+            if not any(keyword in trigger_text for keyword in keywords):
                 continue
             if not any(re.search(pattern, source, re.IGNORECASE) for pattern in patterns):
                 missing.append(label)
@@ -2347,10 +2655,20 @@ Context:
         return cls._PROJECT_TYPE_APIS
 
     @classmethod
-    def _validate_project_api_members(cls, source: str, module_id: str) -> None:
+    def _validate_project_api_members(
+        cls,
+        source: str,
+        module_id: str,
+        *,
+        additional_type_apis: Mapping[str, set[str]] | None = None,
+    ) -> None:
         """Reject member calls absent from the deterministic C# project index."""
 
-        type_apis = cls._project_type_apis()
+        type_apis = {
+            type_name: set(members) for type_name, members in cls._project_type_apis().items()
+        }
+        for type_name, members in (additional_type_apis or {}).items():
+            type_apis[type_name] = set(members)
         component_members = {
             "enabled",
             "gameObject",

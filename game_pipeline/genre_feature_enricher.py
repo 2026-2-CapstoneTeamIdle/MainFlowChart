@@ -19,6 +19,8 @@ from game_pipeline.gemini_feature_generator import (
 from mainflow.contracts import FeatureRequirement, GameGenre, Viewpoint
 
 MAX_INFERRED_FEATURES = 30
+MAX_INFERRED_FEATURES_PER_REQUEST = 8
+FEATURES_PER_DEPENDENCY_REQUEST = 3
 DEFAULT_CONDITION_FEATURE_MODEL = "gemma4-12b-it-qat-q4-0"
 
 GENRE_FEATURE_ENRICHMENT_SCHEMA: dict[str, Any] = {
@@ -28,7 +30,7 @@ GENRE_FEATURE_ENRICHMENT_SCHEMA: dict[str, Any] = {
     "properties": {
         "features": {
             "type": "array",
-            "maxItems": MAX_INFERRED_FEATURES,
+            "maxItems": MAX_INFERRED_FEATURES_PER_REQUEST,
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -37,6 +39,7 @@ GENRE_FEATURE_ENRICHMENT_SCHEMA: dict[str, Any] = {
                     "description",
                     "rationale",
                     "acceptance_criteria",
+                    "checklist",
                     "closure_kind",
                     "supports_feature_ids",
                     "dependency_role",
@@ -48,6 +51,42 @@ GENRE_FEATURE_ENRICHMENT_SCHEMA: dict[str, Any] = {
                     "description": {"type": "string"},
                     "rationale": {"type": "string"},
                     "acceptance_criteria": {"type": "string"},
+                    "checklist": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": [
+                            "preconditions",
+                            "steps",
+                            "expected_results",
+                            "failure_signals",
+                        ],
+                        "properties": {
+                            "preconditions": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 6,
+                                "items": {"type": "string"},
+                            },
+                            "steps": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 8,
+                                "items": {"type": "string"},
+                            },
+                            "expected_results": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 8,
+                                "items": {"type": "string"},
+                            },
+                            "failure_signals": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 8,
+                                "items": {"type": "string"},
+                            },
+                        },
+                    },
                     "closure_kind": {
                         "type": "string",
                         "enum": [
@@ -119,20 +158,17 @@ class GenreFeatureEnricher:
         baseline_contract: Mapping[str, object] | None = None,
     ) -> GenreFeatureEnrichment:
         baseline_contract = baseline_contract or {}
-        response = self.client.generate_json(
-            self._prompt(
-                genre=genre,
-                viewpoint=viewpoint,
-                user_condition=user_condition,
-                core_loop=core_loop,
-                existing_features=existing_features,
-                baseline_contract=baseline_contract,
-            ),
-            GENRE_FEATURE_ENRICHMENT_SCHEMA,
-        )
-        raw_features = response.get("features")
-        if not isinstance(raw_features, list):
-            raise TypeError("Genre feature enrichment must return a features array")
+        requests: list[tuple[str, set[str], list[FeatureRequirement]]] = []
+        for index in range(0, len(existing_features), FEATURES_PER_DEPENDENCY_REQUEST):
+            target_features = existing_features[index : index + FEATURES_PER_DEPENDENCY_REQUEST]
+            requests.append(
+                (
+                    "user_requirement_dependency",
+                    {feature["feature_id"] for feature in target_features},
+                    target_features,
+                )
+            )
+        requests.append(("genre_core_requirement", set(), existing_features))
 
         known = {
             _feature_fingerprint(feature["name"], feature["description"])
@@ -142,71 +178,97 @@ class GenreFeatureEnricher:
         existing_feature_ids = {feature["feature_id"] for feature in existing_features}
         accepted: list[dict[str, Any]] = []
         rejected: list[dict[str, Any]] = []
-        for item in raw_features[:MAX_INFERRED_FEATURES]:
-            if not isinstance(item, Mapping):
-                continue
-            try:
-                suggestion = _validated_suggestion(item, existing_feature_ids)
-            except ValueError as error:
-                rejected.append(
+        for scope, target_feature_ids, target_features in requests:
+            response = self.client.generate_json(
+                self._prompt(
+                    genre=genre,
+                    viewpoint=viewpoint,
+                    user_condition=user_condition,
+                    core_loop=core_loop,
+                    existing_features=existing_features,
+                    target_features=target_features,
+                    closure_scope=scope,
+                    baseline_contract=baseline_contract,
+                ),
+                GENRE_FEATURE_ENRICHMENT_SCHEMA,
+            )
+            raw_features = response.get("features")
+            if not isinstance(raw_features, list):
+                raise TypeError("Genre feature enrichment must return a features array")
+            for item in raw_features[:MAX_INFERRED_FEATURES_PER_REQUEST]:
+                if len(inferred) >= MAX_INFERRED_FEATURES:
+                    break
+                if not isinstance(item, Mapping):
+                    continue
+                try:
+                    suggestion = _validated_suggestion(item, existing_feature_ids)
+                except ValueError as error:
+                    rejected.append(
+                        {
+                            "name": str(item.get("name", "invalid"))[:60],
+                            "description": str(item.get("description", ""))[:320],
+                            "rationale": str(item.get("rationale", ""))[:320],
+                            "acceptance_criteria": str(item.get("acceptance_criteria", ""))[:420],
+                            "rejection": str(error),
+                        }
+                    )
+                    continue
+                if suggestion["closure_kind"] != scope or (
+                    scope == "user_requirement_dependency"
+                    and not set(suggestion["supports_feature_ids"]) & target_feature_ids
+                ):
+                    rejected.append({**suggestion, "rejection": "wrong_request_scope"})
+                    continue
+                if suggestion["implementation_kind"] != "generate_code":
+                    available_mechanics = {
+                        str(value)
+                        for value in baseline_contract.get("mechanics", [])
+                        if isinstance(value, str)
+                    }
+                    suggestion["target_mechanics"] = [
+                        mechanic
+                        for mechanic in suggestion["target_mechanics"]
+                        if mechanic in available_mechanics
+                    ]
+                fingerprint = _feature_fingerprint(suggestion["name"], suggestion["description"])
+                if (
+                    fingerprint in known
+                    or any(
+                        _semantically_overlaps(suggestion, feature)
+                        for feature in [*existing_features, *inferred]
+                    )
+                    or (
+                        suggestion["closure_kind"] == "genre_core_requirement"
+                        and _covered_by_baseline(suggestion, baseline_contract)
+                    )
+                ):
+                    rejected.append({**suggestion, "rejection": "duplicate_or_already_covered"})
+                    continue
+                known.add(fingerprint)
+                inferred_index = len(inferred) + 1
+                is_dependency = suggestion["closure_kind"] == "user_requirement_dependency"
+                id_prefix = "requirement-dependency" if is_dependency else "genre-required"
+                inferred.append(
                     {
-                        "name": str(item.get("name", "invalid"))[:60],
-                        "description": str(item.get("description", ""))[:320],
-                        "rationale": str(item.get("rationale", ""))[:320],
-                        "acceptance_criteria": str(item.get("acceptance_criteria", ""))[:420],
-                        "rejection": str(error),
+                        "feature_id": f"{id_prefix}-{inferred_index:02d}",
+                        "name": suggestion["name"],
+                        "description": suggestion["description"],
+                        "source_text": (
+                            f"{'사용자 요구 의존 기능' if is_dependency else '장르 필수 기능'} 추론: "
+                            f"{suggestion['rationale']} "
+                            f"검증 기준: {suggestion['acceptance_criteria']}"
+                        ),
+                        "origin": ("requirement_dependency" if is_dependency else "genre_inferred"),
+                        "rationale": suggestion["rationale"],
+                        "acceptance_criteria": suggestion["acceptance_criteria"],
+                        "checklist": suggestion["checklist"],
+                        "supports_feature_ids": suggestion["supports_feature_ids"],
+                        "dependency_role": suggestion["dependency_role"],
+                        "implementation_kind": suggestion["implementation_kind"],
+                        "target_mechanics": suggestion["target_mechanics"],
                     }
                 )
-                continue
-            if suggestion["implementation_kind"] != "generate_code":
-                available_mechanics = {
-                    str(value)
-                    for value in baseline_contract.get("mechanics", [])
-                    if isinstance(value, str)
-                }
-                suggestion["target_mechanics"] = [
-                    mechanic
-                    for mechanic in suggestion["target_mechanics"]
-                    if mechanic in available_mechanics
-                ]
-            fingerprint = _feature_fingerprint(suggestion["name"], suggestion["description"])
-            if (
-                fingerprint in known
-                or any(
-                    _semantically_overlaps(suggestion, feature)
-                    for feature in [*existing_features, *inferred]
-                )
-                or (
-                    suggestion["closure_kind"] == "genre_core_requirement"
-                    and _covered_by_baseline(suggestion, baseline_contract)
-                )
-            ):
-                rejected.append({**suggestion, "rejection": "duplicate_or_already_covered"})
-                continue
-            known.add(fingerprint)
-            index = len(inferred) + 1
-            is_dependency = suggestion["closure_kind"] == "user_requirement_dependency"
-            id_prefix = "requirement-dependency" if is_dependency else "genre-required"
-            inferred.append(
-                {
-                    "feature_id": f"{id_prefix}-{index:02d}",
-                    "name": suggestion["name"],
-                    "description": suggestion["description"],
-                    "source_text": (
-                        f"{'사용자 요구 의존 기능' if is_dependency else '장르 필수 기능'} 추론: "
-                        f"{suggestion['rationale']} "
-                        f"검증 기준: {suggestion['acceptance_criteria']}"
-                    ),
-                    "origin": "requirement_dependency" if is_dependency else "genre_inferred",
-                    "rationale": suggestion["rationale"],
-                    "acceptance_criteria": suggestion["acceptance_criteria"],
-                    "supports_feature_ids": suggestion["supports_feature_ids"],
-                    "dependency_role": suggestion["dependency_role"],
-                    "implementation_kind": suggestion["implementation_kind"],
-                    "target_mechanics": suggestion["target_mechanics"],
-                }
-            )
-            accepted.append(suggestion)
+                accepted.append(suggestion)
 
         return GenreFeatureEnrichment(
             features=[*existing_features, *inferred],
@@ -224,6 +286,7 @@ class GenreFeatureEnricher:
                     for feature in existing_features
                 ],
                 "added_feature_count": len(inferred),
+                "request_count": len(requests),
                 "dependency_feature_count": sum(
                     feature.get("origin") == "requirement_dependency" for feature in inferred
                 ),
@@ -243,6 +306,8 @@ class GenreFeatureEnricher:
         user_condition: str,
         core_loop: str,
         existing_features: list[FeatureRequirement],
+        target_features: list[FeatureRequirement],
+        closure_scope: str,
         baseline_contract: Mapping[str, object],
     ) -> str:
         payload = {
@@ -259,26 +324,40 @@ class GenreFeatureEnricher:
                 }
                 for feature in existing_features
             ],
+            "target_features_for_this_request": [
+                {
+                    "feature_id": feature["feature_id"],
+                    "name": feature["name"],
+                    "description": feature["description"],
+                }
+                for feature in target_features
+            ],
+            "closure_scope": closure_scope,
             "already_implemented_genre_baseline": baseline_contract,
         }
+        scope_instruction = (
+            "Inspect each target feature independently and derive only the minimum functional "
+            "closure needed to make that exact feature work end to end. Mark every result as "
+            "user_requirement_dependency and reference at least one target feature id. Reason "
+            "through prerequisite state, required actors or data, runtime binding and trigger, "
+            "observable consequence, player feedback, and failure or recovery flow."
+            if closure_scope == "user_requirement_dependency"
+            else "Infer only the additional features this genre unconditionally needs to become "
+            "a playable game rather than a disconnected simulation. Mark every result as "
+            "genre_core_requirement, use dependency_role genre_core, and leave "
+            "supports_feature_ids empty. Cover missing control, valid initial state, challenge, "
+            "survival or resource feedback, progression, and reachable win/loss/restart flow."
+        )
         return (
             "You are a senior game systems designer performing requirement closure before "
-            "detailed Unity design. Produce TWO kinds of missing requirements. First, inspect EACH "
-            "explicit user feature independently and derive the minimum functional closure needed "
-            "to make that exact feature work end to end. Mark these as "
-            "user_requirement_dependency and list the supported input feature ids. For each user "
-            "feature, reason through: prerequisite state, required actors or data, runtime binding "
-            "and trigger, observable interaction consequence, player-facing feedback, and failure "
-            "or recovery flow. Do not merely paraphrase the requested behavior. For example, an "
+            "detailed Unity design. This is one bounded request in a multi-request analysis. "
+            "Produce only the closure_kind named by closure_scope and return no more than "
+            f"{MAX_INFERRED_FEATURES_PER_REQUEST} features. {scope_instruction} "
+            "Do not merely paraphrase the requested behavior. For example, an "
             "orbiting weapon request needs a damageable enemy, collision-to-damage connection, "
             "enemy death consequence, visible hit feedback, and any promised reward delivery; an "
             "upgrade request needs selectable choices wired to the actual runtime stat plus an "
-            "observable before/after change. Second, infer additional features this genre "
-            "unconditionally needs to become a playable game rather than a disconnected simulation "
-            "and mark those as genre_core_requirement. Include missing dependencies for player "
-            "control, valid initial state, challenge actors, interaction consequences, survival or "
-            "resource state, continuous visible HUD feedback, progression or rewards, and reachable "
-            "win/loss/restart flow when essential. A requested mechanic must have every prerequisite "
+            "observable before/after change. A requested mechanic must have every prerequisite "
             "and observable consequence needed to work. "
             "The implemented genre baseline is existing capability, not a wishlist: do not "
             "regenerate it. Add only behavioral closure absent from both the explicit "
@@ -286,7 +365,12 @@ class GenreFeatureEnricher:
             "Do not add optional polish, lore, "
             "monetization, networking, achievements, or unrelated scope. Each description must be "
             "one concrete executable behavior, and each acceptance criterion must be observable in "
-            "Unity Play Mode. Classify implementation_kind carefully: reuse_module selects a "
+            "Unity Play Mode. For every inferred feature, write a concrete checklist that can be "
+            "followed after Unity compilation: preconditions establish the actor and initial state, "
+            "steps describe input or elapsed-time actions, expected_results contain observable "
+            "state/UI/scene changes, and failure_signals identify disconnected or no-op behavior. "
+            "Do not use vague entries such as 'works correctly'. Classify implementation_kind "
+            "carefully: reuse_module selects a "
             "listed baseline mechanic, configure_existing changes its data/tuning, scene_binding "
             "connects existing systems to scene or UI, design_constraint belongs in design data, "
             "validation_only is an invariant/test, and generate_code is reserved for genuinely "
@@ -319,7 +403,7 @@ def create_genre_feature_enricher_from_environment() -> GenreFeatureEnricher | N
     if provider == "local":
         return GenreFeatureEnricher(
             LocalAIJsonClient.from_environment(
-                node_name="condition_feature_analysis",
+                node_name="genre_feature_enrichment",
                 default_model=DEFAULT_CONDITION_FEATURE_MODEL,
             ),
             provider,
@@ -362,6 +446,20 @@ def _validated_suggestion(
     ):
         raise ValueError("Inferred genre feature target_mechanics must be a string array")
     result["implementation_kind"] = implementation_kind
+    raw_checklist = item.get("checklist")
+    if not isinstance(raw_checklist, Mapping):
+        raise ValueError("Inferred feature checklist must be an object")
+    checklist: dict[str, list[str]] = {}
+    for key in ("preconditions", "steps", "expected_results", "failure_signals"):
+        values = raw_checklist.get(key)
+        if (
+            not isinstance(values, list)
+            or not values
+            or any(not isinstance(value, str) or not value.strip() for value in values)
+        ):
+            raise ValueError(f"Inferred feature checklist {key} must be a non-empty string array")
+        checklist[key] = list(dict.fromkeys(value.strip() for value in values))
+    result["checklist"] = checklist
     result["target_mechanics"] = list(
         dict.fromkeys(value.strip() for value in raw_targets if value.strip())
     )

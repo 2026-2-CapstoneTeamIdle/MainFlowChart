@@ -45,7 +45,10 @@ def build_implementation_tasks(
                     f"{module_id} compiles against the repository-owned Unity API contract",
                     "the generated module binds to a scene object and exposes observable behavior",
                 ],
-                max_attempts=2,
+                # GeminiFeatureGenerator already performs bounded, feedback-driven source
+                # revision. Re-running the whole task repeated the implementation plan and all
+                # source attempts, turning one bad local-model response into 20+ minutes of work.
+                max_attempts=1,
             )
         )
 

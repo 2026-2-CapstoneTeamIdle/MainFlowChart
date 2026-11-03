@@ -68,6 +68,10 @@ backend/모델 다운로드 때문에 오래 걸릴 수 있다. runtime 설정�
 ```powershell
 $env:LOCALAI_PRELOAD_MODELS_CONFIG = "/configuration/preload-feature-pipeline.yaml"
 $env:MAINFLOW_FEATURE_PROVIDER = "local"
+$env:MAINFLOW_DESIGN_V2_PROVIDER = "local"
+$env:LLM_DESIGN_V2_MODEL = "gemma4-12b-it-qat-q4-0"
+$env:MAINFLOW_BLUEPRINT_PROVIDER = "local"
+$env:LLM_BLUEPRINT_MODEL = "gemma4-12b-it-qat-q4-0"
 $env:MAINFLOW_CONDITION_FEATURE_PROVIDER = "local"
 $env:MAINFLOW_GENRE_FEATURE_PROVIDER = "local"
 $env:LLM_CONDITION_FEATURE_ANALYSIS_MODEL = "gemma4-12b-it-qat-q4-0"
@@ -81,8 +85,10 @@ docker compose -f compose.yaml -f LocalAI/compose.yaml up -d --force-recreate Lo
 Gemma의 공식 파일 이름은 `gemma-4-12b-it-qat-q4_0.gguf`이며, 사용자가 적은 모델명 끝의
 불완전한 `-` 대신 위 API 별칭을 사용한다. 프로젝트 실행 후 생성물은
 `workspace/{project_id}/validation/feature_checklists/generated/{feature_id}/`에서 확인한다.
-Gemma와 Qwen 호출은 Feature별로 분리되며, 각 Feature는 Checklist 한 개와 30개 항목, Unity 테스트
-파일 한 개를 가진다. Unity Editor가 없거나 동적 C#이 3회의 생성 시도 안에 컴파일되지 않거나
+Condition은 문장 단위의 최대 6개 기능 요청으로 분리되고, 장르 보강은 기능 의존성과 장르 핵심
+요청으로 나뉜다. Checklist 30개 항목도 Gemma에 10개씩 3회 요청한 뒤 중복을 검사해 합친다.
+각 Feature는 Checklist 한 개와 30개 항목, Unity 테스트 파일 한 개를 가진다. Unity Editor가 없거나
+동적 C#이 3회의 생성 시도 안에 컴파일되지 않거나
 `Feature 수 × 30` 항목 중 하나라도 통과하지 못하면 게임 검증은 실패한다.
 
 ## Node 공통 이미지 생성
@@ -154,6 +160,23 @@ $env:LOCAL_LLM_MODEL = "qwen2.5-coder-7b-q5-k-m"
 $env:LLM_TIMEOUT_SECONDS = "300"
 $env:LOCAL_LLM_CONTEXT_TOKENS = "16384"
 $env:MAINFLOW_LOCAL_MAX_OUTPUT_TOKENS = "8192"
+$env:MAINFLOW_LOCAL_STRUCTURED_ATTEMPTS = "3"
+$env:MAINFLOW_FEATURE_PLAN_ATTEMPTS = "2"
+$env:MAINFLOW_FEATURE_SOURCE_ATTEMPTS = "2"
+$env:MAINFLOW_FEATURE_GENERATION_BUDGET_SECONDS = "420"
+$env:LLM_FEATURE_CODE_GENERATION_STRUCTURED_ATTEMPTS = "1"
+$env:LLM_FEATURE_CODE_GENERATION_TIMEOUT_SECONDS = "180"
+$env:LLM_CONDITION_FEATURE_ANALYSIS_MAX_OUTPUT_TOKENS = "1024"
+$env:LLM_CONDITION_FEATURE_ANALYSIS_STRUCTURED_ATTEMPTS = "1"
+$env:LLM_GENRE_FEATURE_ENRICHMENT_MAX_OUTPUT_TOKENS = "2048"
+$env:LLM_GENRE_FEATURE_ENRICHMENT_STRUCTURED_ATTEMPTS = "1"
+$env:LLM_DESIGN_V2_MAX_OUTPUT_TOKENS = "4096"
+$env:LLM_DESIGN_V2_STRUCTURED_ATTEMPTS = "1"
+$env:MAINFLOW_DESIGN_V2_CUSTOMIZATION_RETRIES = "0"
+$env:LLM_FEATURE_CHECKLIST_GENERATION_MAX_OUTPUT_TOKENS = "3072"
+$env:LLM_FEATURE_CHECKLIST_GENERATION_STRUCTURED_ATTEMPTS = "1"
+$env:LLM_UNITY_CHECKLIST_TEST_GENERATION_MAX_OUTPUT_TOKENS = "8192"
+$env:LLM_UNITY_CHECKLIST_TEST_GENERATION_STRUCTURED_ATTEMPTS = "1"
 uv run --locked python -m mainflow.run_flow --image-style "Pixel Art" --mood-style "Fantasy" --genre "플랫포머" --viewpoint "사이드뷰" --condition "벽을 타고 올라갈 수 있는 게임"
 ```
 

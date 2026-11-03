@@ -79,6 +79,19 @@ class BlueprintPlannerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "required content archetype"):
             GameBlueprintPlanner(client, "local").generate(self.spec, self.intent)
 
+    def test_cosmetic_names_are_normalized_instead_of_rejecting_blueprint(self) -> None:
+        payload = copy.deepcopy(self.fallback)
+        for field in ("blueprint_version", "blueprint_id", "source", "title"):
+            del payload[field]
+        payload["entities"][0]["display_name"] = ""
+        payload["entities"][1]["display_name"] = "x" * 80
+        client = FakeStructuredJsonClient(payload)
+
+        result = GameBlueprintPlanner(client, "local").generate(self.spec, self.intent)
+
+        self.assertTrue(result["entities"][0]["display_name"])
+        self.assertEqual(len(result["entities"][1]["display_name"]), 48)
+
     def test_default_provider_is_offline_deterministic(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             self.assertIsNone(create_blueprint_planner_from_environment())
@@ -89,7 +102,7 @@ class BlueprintPlannerTest(unittest.TestCase):
             {
                 "MAINFLOW_BLUEPRINT_PROVIDER": "local",
                 "LOCAL_LLM_BASE_URL": "http://local-ai:8080/v1",
-                "LOCAL_LLM_MODEL": "planner-test-model",
+                "LLM_BLUEPRINT_MODEL": "planner-test-model",
             },
             clear=True,
         ):

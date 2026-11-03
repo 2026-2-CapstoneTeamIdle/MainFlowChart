@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from game_pipeline.dynamic_feature_checklist import (
+    CHECKLIST_BATCH_COUNT,
+    CHECKLIST_BATCH_SIZE,
     CHECKLIST_ITEM_COUNT,
     DynamicFeatureChecklistGenerator,
     UnityChecklistTestGenerator,
@@ -26,6 +28,11 @@ class FakeStructuredClient:
 
     def generate_json(self, prompt: str, _schema: Mapping[str, Any]) -> Mapping[str, Any]:
         self.prompts.append(prompt)
+        criteria = self.response.get("criteria")
+        if isinstance(criteria, list) and len(criteria) == CHECKLIST_ITEM_COUNT:
+            batch_index = (len(self.prompts) - 1) % CHECKLIST_BATCH_COUNT
+            start = batch_index * CHECKLIST_BATCH_SIZE
+            return {**self.response, "criteria": criteria[start : start + CHECKLIST_BATCH_SIZE]}
         return self.response
 
 
@@ -91,7 +98,10 @@ class DynamicFeatureChecklistTest(unittest.TestCase):
             logic_analysis=_logic_analysis(),
             source_root=Path("missing"),
         )
-        self.assertEqual(len(checklist_client.prompts), 2)
+        self.assertEqual(len(checklist_client.prompts), 2 * CHECKLIST_BATCH_COUNT)
+        self.assertTrue(all("EXACTLY 10" in prompt for prompt in checklist_client.prompts))
+        self.assertIn('"index":1', checklist_client.prompts[0])
+        self.assertIn('"index":3', checklist_client.prompts[2])
         self.assertEqual(len(checklist.feature_checklists), 2)
         self.assertEqual(len(checklist.criteria), 60)
         self.assertTrue(all(len(item.criteria) == 30 for item in checklist.feature_checklists))

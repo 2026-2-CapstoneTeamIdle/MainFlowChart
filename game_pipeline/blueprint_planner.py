@@ -26,6 +26,7 @@ from mainflow.contracts import (
 )
 
 BlueprintProvider = Literal["deterministic", "openai", "local", "gemini"]
+DEFAULT_BLUEPRINT_MODEL = "gemma4-12b-it-qat-q4-0"
 _HEX_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
 
@@ -241,7 +242,13 @@ def create_blueprint_planner_from_environment() -> GameBlueprintPlanner | None:
     if provider == "openai":
         return GameBlueprintPlanner(OpenAIJsonClient.from_environment(), "openai")
     if provider == "local":
-        return GameBlueprintPlanner(LocalAIJsonClient.from_environment(), "local")
+        return GameBlueprintPlanner(
+            LocalAIJsonClient.from_environment(
+                node_name="blueprint",
+                default_model=DEFAULT_BLUEPRINT_MODEL,
+            ),
+            "local",
+        )
     if provider in {"vast", "vastai", "vast.ai", "vllm"}:
         return GameBlueprintPlanner(LocalAIJsonClient.from_environment("vastai"), "vastai")
     if provider == "gemini":
@@ -278,11 +285,14 @@ def _entities(value: Any) -> list[BlueprintEntity]:
     for item in value:
         if not isinstance(item, Mapping):
             raise ValueError("entity must be an object")
+        entity_id = _identifier(item.get("entity_id"), "entity_id")
         tags = _strings(item.get("behavior_tags"), minimum=0, maximum=6, label="behavior_tags")
         result.append(
             {
-                "entity_id": _identifier(item.get("entity_id"), "entity_id"),
-                "display_name": _text(item.get("display_name"), "display_name", 1, 48),
+                "entity_id": entity_id,
+                "display_name": _bounded_text(
+                    item.get("display_name"), entity_id.replace("_", " "), 48
+                ),
                 "archetype": _identifier(item.get("archetype"), "entity archetype"),
                 "position_x": _number(item.get("position_x"), "position_x", -24, 24),
                 "position_y": _number(item.get("position_y"), "position_y", -14, 14),
@@ -304,14 +314,19 @@ def _progression(value: Any) -> list[BlueprintProgressionOption]:
     for item in value:
         if not isinstance(item, Mapping):
             raise ValueError("progression option must be an object")
+        option_id = _identifier(item.get("option_id"), "option_id")
         rarity = item.get("rarity")
         if rarity not in {"common", "rare", "epic", "legendary"}:
             raise ValueError("progression rarity is invalid")
         result.append(
             {
-                "option_id": _identifier(item.get("option_id"), "option_id"),
-                "display_name": _text(item.get("display_name"), "option display_name", 1, 48),
-                "description": _text(item.get("description"), "option description", 1, 100),
+                "option_id": option_id,
+                "display_name": _bounded_text(
+                    item.get("display_name"), option_id.replace("_", " "), 48
+                ),
+                "description": _bounded_text(
+                    item.get("description"), option_id.replace("_", " "), 100
+                ),
                 "rarity": cast(Literal["common", "rare", "epic", "legendary"], rarity),
             }
         )
@@ -322,6 +337,13 @@ def _strings(value: Any, *, minimum: int, maximum: int, label: str) -> list[str]
     if not isinstance(value, list) or not minimum <= len(value) <= maximum:
         raise ValueError(f"{label} must contain {minimum} to {maximum} entries")
     return [_text(item, label, 1, 48) for item in value]
+
+
+def _bounded_text(value: Any, fallback: str, maximum: int) -> str:
+    """Normalize cosmetic model prose instead of discarding an otherwise valid plan."""
+
+    text = value.strip() if isinstance(value, str) else ""
+    return (text or fallback)[:maximum]
 
 
 def _text(value: Any, label: str, minimum: int, maximum: int) -> str:

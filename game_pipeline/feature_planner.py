@@ -68,6 +68,7 @@ def plan_feature_mechanics(
             "supports_feature_ids",
             "dependency_role",
             "acceptance_criteria",
+            "checklist",
         ):
             if key in feature:
                 game_feature[key] = feature[key]  # type: ignore[literal-required]

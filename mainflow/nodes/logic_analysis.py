@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from game_pipeline.condition_feature_analysis import (
     create_condition_feature_analyzer_from_environment,
 )
@@ -147,6 +149,24 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
         enrichment_report,
         producer="logic_analysis",
     )
+    inferred_checklists = _build_inferred_feature_checklists(features)
+    manager.write_json(
+        state["project_id"],
+        "validation",
+        "inferred_feature_checklists.json",
+        {
+            "contract_version": CONTRACT_VERSION,
+            "checklists": inferred_checklists,
+        },
+        producer="logic_analysis",
+    )
+    manager.write_text(
+        state["project_id"],
+        "validation",
+        "inferred_feature_checklists.md",
+        _render_inferred_feature_checklists(inferred_checklists),
+        producer="logic_analysis",
+    )
     criteria: list[ValidationCriterion] = [
         {
             "criterion_id": f"logic-{feature['feature_id']}",
@@ -194,3 +214,74 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
             producer="logic_analysis",
         )
     }
+
+
+def _build_inferred_feature_checklists(
+    features: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    checklists: list[dict[str, Any]] = []
+    for feature in features:
+        origin = feature.get("origin", "user")
+        checklist = feature.get("checklist")
+        if origin not in {"genre_inferred", "requirement_dependency"} or not isinstance(
+            checklist, dict
+        ):
+            continue
+        checklists.append(
+            {
+                "checklist_id": f"IFC-{feature['feature_id']}",
+                "feature_id": feature["feature_id"],
+                "feature_name": feature["name"],
+                "origin": origin,
+                "description": feature["description"],
+                "rationale": feature.get("rationale", ""),
+                "acceptance_criteria": feature.get("acceptance_criteria", ""),
+                "supports_feature_ids": feature.get("supports_feature_ids", []),
+                "preconditions": checklist.get("preconditions", []),
+                "steps": checklist.get("steps", []),
+                "expected_results": checklist.get("expected_results", []),
+                "failure_signals": checklist.get("failure_signals", []),
+            }
+        )
+    return checklists
+
+
+def _render_inferred_feature_checklists(checklists: list[dict[str, Any]]) -> str:
+    lines = ["# AI 추론 기반 기능 체크리스트", ""]
+    if not checklists:
+        lines.extend(["> 이번 실행에서 추가된 기반 기능이 없습니다.", ""])
+        return "\n".join(lines)
+    lines.extend(
+        [
+            "> 사용자 입력 기능의 의존 기능과 장르 필수 기능을 생성한 직후 작성한 원본입니다.",
+            "> 컴파일 이후 Feature 검증 단계에서 체크본과 검증 기록을 별도로 남깁니다.",
+            "",
+        ]
+    )
+    for item in checklists:
+        lines.extend(
+            [
+                f"## {item['checklist_id']} · {item['feature_name']}",
+                "",
+                f"- Feature ID: `{item['feature_id']}`",
+                f"- 출처: `{item['origin']}`",
+                f"- 설명: {item['description']}",
+                f"- 생성 근거: {item['rationale']}",
+                f"- 최종 통과 기준: {item['acceptance_criteria']}",
+            ]
+        )
+        if item["supports_feature_ids"]:
+            lines.append(
+                "- 지원하는 사용자 기능: "
+                + ", ".join(f"`{value}`" for value in item["supports_feature_ids"])
+            )
+        for title, key in (
+            ("사전 조건", "preconditions"),
+            ("검증 절차", "steps"),
+            ("기대 결과", "expected_results"),
+            ("실패 신호", "failure_signals"),
+        ):
+            lines.extend(["", f"### {title}", ""])
+            lines.extend(f"- [ ] {value}" for value in item[key])
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"

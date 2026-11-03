@@ -119,12 +119,14 @@ workspace/{project_id}/validation/development/*.json
 `validation/development/`의 번호가 붙은 스냅샷은 각 작업의 실행·재시도·성공 또는 실패 직후
 상태를 보존한다. 따라서 긴 생성 과정이 중단돼도 어느 단계에서 왜 멈췄는지 확인할 수 있다.
 
-`condition_feature_analysis.json`은 Condition에서 명시 기능을 원자적으로 분해한 결과를 기록한다.
+`condition_feature_analysis.json`은 Condition을 작은 문장 구간으로 나누어 명시 기능을 원자적으로
+분해한 결과와 요청 횟수를 기록한다.
 최종 Feature와 의존 Feature는 각각 하나의 30항목 Checklist를 가진다. 전체 index는
 `validation/feature_checklists/generated/checklist.json`과 `Checklist.md`에 저장하고, 실제 개별
 파일은 `generated/{feature_id}/checklist.json`, `Checklist.md`,
 `GeneratedFeatureChecklist_DFC*.cs`에 저장한다. C# 파일은 Unity 프로젝트의
-`Assets/Tests/PlayMode/`에도 복사된다. 전체 검증 항목 수는 `Feature 수 × 30`이며, 누락 또는
+`Assets/Tests/PlayMode/`에도 복사된다. Checklist 항목은 Gemma가 10개씩 3회 생성한 뒤 하나로
+병합한다. 전체 검증 항목 수는 `Feature 수 × 30`이며, 누락 또는
 Skip된 동적 기준은 통과로 간주하지 않는다.
 
 에셋 요청 JSON은 생성된 Unity 프로젝트의

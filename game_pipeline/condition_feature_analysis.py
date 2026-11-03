@@ -20,6 +20,7 @@ from mainflow.contracts import FeatureRequirement, GameGenre, Viewpoint
 
 DEFAULT_CONDITION_FEATURE_MODEL = "gemma4-12b-it-qat-q4-0"
 MAX_EXPLICIT_FEATURES = 20
+MAX_FEATURES_PER_REQUEST = 6
 
 CONDITION_FEATURE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -29,7 +30,7 @@ CONDITION_FEATURE_SCHEMA: dict[str, Any] = {
         "features": {
             "type": "array",
             "minItems": 1,
-            "maxItems": MAX_EXPLICIT_FEATURES,
+            "maxItems": MAX_FEATURES_PER_REQUEST,
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -83,14 +84,6 @@ class ConditionFeatureAnalyzer:
         condition: str,
         detected_features: list[FeatureRequirement],
     ) -> ConditionFeatureAnalysis:
-        response = self.client.generate_json(
-            self._prompt(genre, viewpoint, condition, detected_features),
-            CONDITION_FEATURE_SCHEMA,
-        )
-        raw_features = response.get("features")
-        if not isinstance(raw_features, list):
-            raise TypeError("Condition feature analysis must return a features array")
-
         known_features = [
             feature for feature in detected_features if feature["name"] != "사용자 지정 조건"
         ]
@@ -99,33 +92,52 @@ class ConditionFeatureAnalyzer:
         }
         accepted: list[FeatureRequirement] = []
         rejected: list[dict[str, str]] = []
-        for item in raw_features[:MAX_EXPLICIT_FEATURES]:
-            if not isinstance(item, Mapping):
-                continue
-            try:
-                validated = _validate_feature(item, condition)
-            except ValueError as error:
-                rejected.append({"reason": str(error), "value": str(dict(item))[:500]})
-                continue
-            fingerprint = _fingerprint(validated["name"], validated["description"])
-            if fingerprint in fingerprints or any(
-                _overlaps(validated, feature) for feature in [*known_features, *accepted]
-            ):
-                rejected.append({"reason": "duplicate", "value": validated["name"]})
-                continue
-            fingerprints.add(fingerprint)
-            accepted.append(
-                {
-                    "feature_id": f"user-feature-{len(accepted) + 1:02d}",
-                    "name": validated["name"],
-                    "description": validated["description"],
-                    "source_text": validated["source_text"],
-                    "origin": "user",
-                    "rationale": "사용자 Condition에서 명시적으로 추출한 기능",
-                    "acceptance_criteria": validated["acceptance_criteria"],
-                    "implementation_kind": validated["implementation_kind"],
-                }
+        condition_segments = _split_condition(condition)
+        for segment_index, segment in enumerate(condition_segments, start=1):
+            response = self.client.generate_json(
+                self._prompt(
+                    genre,
+                    viewpoint,
+                    condition,
+                    segment,
+                    segment_index,
+                    len(condition_segments),
+                    detected_features,
+                ),
+                CONDITION_FEATURE_SCHEMA,
             )
+            raw_features = response.get("features")
+            if not isinstance(raw_features, list):
+                raise TypeError("Condition feature analysis must return a features array")
+            for item in raw_features[:MAX_FEATURES_PER_REQUEST]:
+                if len(accepted) >= MAX_EXPLICIT_FEATURES:
+                    break
+                if not isinstance(item, Mapping):
+                    continue
+                try:
+                    validated = _validate_feature(item, condition)
+                except ValueError as error:
+                    rejected.append({"reason": str(error), "value": str(dict(item))[:500]})
+                    continue
+                fingerprint = _fingerprint(validated["name"], validated["description"])
+                if fingerprint in fingerprints or any(
+                    _overlaps(validated, feature) for feature in [*known_features, *accepted]
+                ):
+                    rejected.append({"reason": "duplicate", "value": validated["name"]})
+                    continue
+                fingerprints.add(fingerprint)
+                accepted.append(
+                    {
+                        "feature_id": f"user-feature-{len(accepted) + 1:02d}",
+                        "name": validated["name"],
+                        "description": validated["description"],
+                        "source_text": validated["source_text"],
+                        "origin": "user",
+                        "rationale": "사용자 Condition에서 명시적으로 추출한 기능",
+                        "acceptance_criteria": validated["acceptance_criteria"],
+                        "implementation_kind": validated["implementation_kind"],
+                    }
+                )
 
         features = [*known_features, *accepted]
         if not features:
@@ -138,6 +150,8 @@ class ConditionFeatureAnalyzer:
                 "detected_feature_count": len(detected_features),
                 "explicit_feature_count": len(features),
                 "added_feature_count": len(accepted),
+                "request_count": len(condition_segments),
+                "request_segments": condition_segments,
                 "features": [
                     {
                         "feature_id": feature["feature_id"],
@@ -154,17 +168,24 @@ class ConditionFeatureAnalyzer:
     def _prompt(
         genre: GameGenre,
         viewpoint: Viewpoint,
-        condition: str,
+        full_condition: str,
+        condition_segment: str,
+        segment_index: int,
+        segment_count: int,
         detected_features: list[FeatureRequirement],
     ) -> str:
         payload = {
             "genre": genre,
             "viewpoint": viewpoint,
-            "condition": condition,
+            "full_condition": full_condition,
+            "condition_segment": condition_segment,
+            "segment_index": segment_index,
+            "segment_count": segment_count,
             "deterministically_detected_features": detected_features,
         }
         return (
-            "You are the requirements parser for a Unity game generator. Decompose EVERY "
+            "You are the requirements parser for a Unity game generator. Analyze only "
+            "condition_segment while using full_condition for context. Decompose EVERY "
             "explicitly requested behavior, object, interaction, rule, success condition, and "
             "failure condition in the user's condition into atomic implementable features. Do "
             "not add prerequisites or genre defaults in this stage; a separate closure stage "
@@ -172,11 +193,46 @@ class ConditionFeatureAnalyzer:
             "feature must describe one runtime behavior and have an observable Unity Play Mode "
             "acceptance criterion. Preserve concrete qualifiers such as all items, patrol, "
             "checkpoint, unlock-on-button, destination, input key, direction count, and resource "
-            "cost. Choose generate_code only when the behavior is not represented by a detected "
+            f"cost. Return no more than {MAX_FEATURES_PER_REQUEST} atomic features for this "
+            "segment. Choose generate_code only when the behavior is not represented by a detected "
             "feature; use scene_binding/configure_existing when wiring or data is sufficient. "
             "Return strict JSON only.\n\n"
             f"INPUT={json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
         )
+
+
+def _split_condition(condition: str) -> list[str]:
+    """Split long user input into bounded semantic requests without losing original text."""
+
+    sentences = [
+        value.strip(" \t\r\n.,!?。！？")
+        for value in re.split(r"(?<=[.!?。！？])\s+|[\r\n]+", condition)
+        if value.strip(" \t\r\n.,!?。！？")
+    ]
+    if not sentences:
+        return [condition.strip()]
+    segments: list[str] = []
+    for sentence in sentences:
+        if len(sentence) <= 240:
+            segments.append(sentence)
+            continue
+        clauses = [
+            clause.strip() for clause in re.split(r"\s*[,;；]\s*", sentence) if clause.strip()
+        ]
+        if len(clauses) == 1:
+            segments.extend(sentence[index : index + 240] for index in range(0, len(sentence), 240))
+            continue
+        current = ""
+        for clause in clauses:
+            candidate = f"{current}, {clause}" if current else clause
+            if current and len(candidate) > 240:
+                segments.append(current)
+                current = clause
+            else:
+                current = candidate
+        if current:
+            segments.append(current)
+    return segments
 
 
 def create_condition_feature_analyzer_from_environment() -> ConditionFeatureAnalyzer | None:

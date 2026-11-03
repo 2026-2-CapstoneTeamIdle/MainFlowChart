@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import copy
+import os
 import unittest
 from collections.abc import Mapping
 from typing import Any
+from unittest.mock import patch
 
 from game_pipeline.design_catalog import normalize_game_spec
 from game_pipeline.design_v2 import build_design_v2, validate_design_v2
-from game_pipeline.design_v2_planner import REVISION_STAGE, STAGE_ORDER, StagedDesignV2Planner
+from game_pipeline.design_v2_planner import (
+    REVISION_STAGE,
+    STAGE_ORDER,
+    StagedDesignV2Planner,
+    create_design_v2_planner_from_environment,
+)
+from game_pipeline.gemini_feature_generator import LocalAIJsonClient
 
 
 class QueuedStructuredClient:
@@ -56,6 +64,23 @@ class StagedDesignV2PlannerTest(unittest.TestCase):
         else:
             self.fail(f"unsupported test stage: {stage}")
         return response
+
+    def test_local_provider_uses_gemma_role_model(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "MAINFLOW_DESIGN_V2_PROVIDER": "local",
+                "LOCAL_LLM_BASE_URL": "http://local-ai:8080/v1",
+                "LOCAL_LLM_MODEL": "qwen-coder",
+                "LLM_DESIGN_V2_MODEL": "gemma4-12b-it-qat-q4-0",
+            },
+            clear=True,
+        ):
+            planner = create_design_v2_planner_from_environment()
+
+        self.assertIsNotNone(planner)
+        self.assertIsInstance(planner.client, LocalAIJsonClient)  # type: ignore[union-attr]
+        self.assertEqual(planner.client.model, "gemma4-12b-it-qat-q4-0")  # type: ignore[union-attr]
 
     def test_generates_seven_documents_then_revises_platformer_level(self) -> None:
         payloads = [self.customized_stage(stage) for stage in STAGE_ORDER]
@@ -123,7 +148,8 @@ class StagedDesignV2PlannerTest(unittest.TestCase):
         client = QueuedStructuredClient(payloads)
         planner = StagedDesignV2Planner(client, "local")
 
-        result = planner.generate(self.spec, self.intent)
+        with patch.dict(os.environ, {"MAINFLOW_DESIGN_V2_CUSTOMIZATION_RETRIES": "1"}):
+            result = planner.generate(self.spec, self.intent)
 
         self.assertEqual(result["game_design"]["title"], "바람 절벽의 대시")
         self.assertEqual(len(client.prompts), 9)
@@ -141,7 +167,8 @@ class StagedDesignV2PlannerTest(unittest.TestCase):
         payloads.append(self.customized_stage("level_plan"))
         planner = StagedDesignV2Planner(QueuedStructuredClient(payloads), "local")
 
-        result = planner.generate(self.spec, self.intent)
+        with patch.dict(os.environ, {"MAINFLOW_DESIGN_V2_CUSTOMIZATION_RETRIES": "1"}):
+            result = planner.generate(self.spec, self.intent)
 
         self.assertEqual(result["game_design"], self.baseline["game_design"])
         self.assertEqual(planner.fallback_stages, ["game_design"])

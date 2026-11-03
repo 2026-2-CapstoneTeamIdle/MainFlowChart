@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from game_pipeline.dynamic_feature_checklist import (
+    GENERATED_TEST_DIRECTORY,
     FeatureChecklist,
     ProjectFeatureChecklist,
     create_checklist_generator_from_environment,
@@ -26,7 +28,7 @@ from game_pipeline.dynamic_feature_checklist import (
     persist_generated_feature_test,
 )
 from game_pipeline.gemini_feature_generator import resolve_feature_provider_from_environment
-from mainflow.contracts import LogicAnalysis
+from mainflow.contracts import FeatureRequirement, LogicAnalysis
 from MCP.llm_config import LLMSettings
 from MCP.llm_providers import create_llm_provider
 from MCP.llm_types import LLMConversationMessage, LLMProvider
@@ -328,24 +330,61 @@ class FeatureChecklistWorkflow:
         compile_validation: Callable[[Path], Any],
         project_id: str | None = None,
         logic_analysis: LogicAnalysis | None = None,
+        feature_requirements: list[FeatureRequirement] | None = None,
     ) -> FeatureChecklistOutcome:
-        self._copy_checklist_sources(source_root, workspace_root)
+        self._copy_checklist_sources(
+            source_root,
+            workspace_root,
+            feature_requirements=feature_requirements,
+        )
         history: list[dict[str, Any]] = []
         combined_log = ""
         final_results: list[ChecklistResult] = []
         checklist = load_generated_checklist(workspace_root)
+        dynamic_generation_error = ""
         if logic_analysis is not None:
-            checklist, generation_log = self._generate_dynamic_tests(
-                project_id=project_id or workspace_root.name,
-                logic_analysis=logic_analysis,
-                project_root=project_root,
-                workspace_root=workspace_root,
-                source_root=source_root,
-                compile_validation=compile_validation,
-            )
-            combined_log += generation_log
+            try:
+                checklist, generation_log = self._generate_dynamic_tests(
+                    project_id=project_id or workspace_root.name,
+                    logic_analysis=logic_analysis,
+                    project_root=project_root,
+                    workspace_root=workspace_root,
+                    source_root=source_root,
+                    compile_validation=compile_validation,
+                )
+                combined_log += generation_log
+            except Exception as error:  # noqa: BLE001 - static catalog is the safe fallback
+                dynamic_generation_error = f"{type(error).__name__}: {error}"
+                checklist = None
+                generated_test_root = project_root / GENERATED_TEST_DIRECTORY
+                if generated_test_root.is_dir():
+                    for generated_test in generated_test_root.glob(
+                        "GeneratedFeatureChecklist_*.cs*"
+                    ):
+                        generated_test.unlink(missing_ok=True)
+                combined_log += (
+                    "\n--- DYNAMIC CHECKLIST FALLBACK ---\n"
+                    f"{dynamic_generation_error}\n"
+                    "The repository-owned static Unity checklist suite will run instead.\n"
+                )
+                print(
+                    "[FLOW] 동적 Feature 체크리스트 생성에 실패해 저장소의 정적 "
+                    f"Unity 체크리스트로 대체합니다: {error}"
+                )
         for attempt in range(self.max_retries + 1):
             results, run_log = self._run_tests(project_root, checklist)
+            if dynamic_generation_error:
+                results.insert(
+                    0,
+                    ChecklistResult(
+                        "DYNAMIC_CHECKLIST",
+                        "동적 Feature 체크리스트",
+                        "skipped",
+                        "AI 생성 실패로 저장소 정적 체크리스트를 실행했습니다: "
+                        + dynamic_generation_error,
+                        "feature_checklist.static_fallback",
+                    ),
+                )
             combined_log += f"\n--- FEATURE CHECKLIST ATTEMPT {attempt} ---\n{run_log}"
             final_results = results
             failures = [item for item in results if item.status in {"failed", "error"}]
@@ -355,6 +394,8 @@ class FeatureChecklistWorkflow:
                     "timestamp": datetime.now(UTC).isoformat(),
                     "results": [item.__dict__ for item in results],
                     "failed_features": sorted({item.feature_name for item in failures}),
+                    "dynamic_generation_error": dynamic_generation_error,
+                    "checklist_source": "static_fallback" if checklist is None else "dynamic",
                 }
             )
             self._write_records(workspace_root, history, source_root)
@@ -656,7 +697,12 @@ class FeatureChecklistWorkflow:
         return results
 
     @staticmethod
-    def _copy_checklist_sources(source_root: Path, workspace_root: Path) -> None:
+    def _copy_checklist_sources(
+        source_root: Path,
+        workspace_root: Path,
+        *,
+        feature_requirements: list[FeatureRequirement] | None = None,
+    ) -> None:
         originals = workspace_root / "validation" / "feature_checklists" / "original"
         originals.mkdir(parents=True, exist_ok=True)
         if source_root.is_dir():
@@ -666,6 +712,24 @@ class FeatureChecklistWorkflow:
                 target = originals / source.name
                 if not target.exists():
                     shutil.copy2(source, target)
+        for feature in feature_requirements or []:
+            if feature.get("origin") not in {"genre_inferred", "requirement_dependency"}:
+                continue
+            checklist = feature.get("checklist")
+            if not checklist:
+                continue
+            safe_name = "".join(
+                character if character.isalnum() or character in {"-", "_"} else "_"
+                for character in feature["name"]
+            ).strip("_")
+            target = originals / (
+                f"[Generated Validator Checklist] {feature['feature_id']}_{safe_name}.md"
+            )
+            if not target.exists():
+                target.write_text(
+                    FeatureChecklistWorkflow._render_generated_checklist(feature),
+                    encoding="utf-8",
+                )
 
     @staticmethod
     def _write_records(
@@ -680,16 +744,17 @@ class FeatureChecklistWorkflow:
             json.dumps({"attempts": history}, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-        if source_root.is_dir():
+        originals = validation_root / "original"
+        if originals.is_dir():
             latest = history[-1].get("results", []) if history else []
-            for source in sorted(source_root.glob("*Validator Checklist*.docx")):
+            for source in sorted(originals.glob("*Validator Checklist*.docx")):
                 FeatureChecklistWorkflow._write_checked_docx(source, checked_root, latest)
-            for source in sorted(source_root.glob("*Validator Checklist*.md")):
+            for source in sorted(originals.glob("*Validator Checklist*.md")):
                 FeatureChecklistWorkflow._write_checked_markdown(source, checked_root, latest)
         lines = ["# Feature 검증 기록", ""]
-        has_sources = source_root.is_dir() and (
-            bool(list(source_root.glob("*Validator Checklist*.docx")))
-            or bool(list(source_root.glob("*Validator Checklist*.md")))
+        has_sources = originals.is_dir() and (
+            bool(list(originals.glob("*Validator Checklist*.docx")))
+            or bool(list(originals.glob("*Validator Checklist*.md")))
         )
         if not has_sources:
             lines.extend(
@@ -775,9 +840,44 @@ class FeatureChecklistWorkflow:
             if candidate.removeprefix("FC") in source.stem:
                 feature_id = candidate
                 break
+        if feature_id is None and source.name.startswith("[Generated Validator Checklist]"):
+            metadata = source.read_text(encoding="utf-8")
+            match = re.search(r"^- Feature ID: `([^`]+)`", metadata, re.MULTILINE)
+            feature_id = match.group(1) if match else None
         relevant = [item for item in results if item.get("feature_id") == feature_id]
-        status = relevant[0]["status"] if relevant else "skipped"
+        status = relevant[0]["status"] if relevant else "pending"
         content = source.read_text(encoding="utf-8")
-        detail = relevant[0]["message"] if relevant else "이번 요청에 포함되지 않은 기능"
+        detail = (
+            relevant[0]["message"]
+            if relevant
+            else "체크리스트는 작성되었으며 동적 기능 검증 결과를 기다리는 중"
+        )
         content += f"\n\n## 자동 검증 결과\n\n- 상태: {status}\n- 근거: {detail}\n"
         (checked_root / f"{source.stem}_체크본.md").write_text(content, encoding="utf-8")
+
+    @staticmethod
+    def _render_generated_checklist(feature: FeatureRequirement) -> str:
+        checklist = feature["checklist"]
+        lines = [
+            f"# [Generated Validator Checklist] {feature['name']}",
+            "",
+            f"- Feature ID: `{feature['feature_id']}`",
+            f"- 출처: `{feature.get('origin', 'genre_inferred')}`",
+            f"- 설명: {feature['description']}",
+            f"- 생성 근거: {feature.get('rationale', '')}",
+            f"- 최종 통과 기준: {feature.get('acceptance_criteria', '')}",
+        ]
+        if feature.get("supports_feature_ids"):
+            lines.append(
+                "- 지원하는 사용자 기능: "
+                + ", ".join(f"`{value}`" for value in feature["supports_feature_ids"])
+            )
+        for title, key in (
+            ("사전 조건", "preconditions"),
+            ("검증 절차", "steps"),
+            ("기대 결과", "expected_results"),
+            ("실패 신호", "failure_signals"),
+        ):
+            lines.extend(["", f"## {title}", ""])
+            lines.extend(f"- [ ] {value}" for value in checklist[key])
+        return "\n".join(lines).rstrip() + "\n"

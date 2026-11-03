@@ -243,6 +243,7 @@ def validate_game_node(
                     ),
                     project_id=state["project_id"],
                     logic_analysis=logic_analysis,
+                    feature_requirements=logic_analysis["features"],
                 )
                 outcome.unity_log += checklist_outcome.log
                 for result_item in checklist_outcome.results:

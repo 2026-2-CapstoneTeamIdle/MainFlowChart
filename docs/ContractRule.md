@@ -126,8 +126,9 @@ Unity 조립기에 전달한다. Blueprint에는 장면 크기·배경 색, 콘�
 경로·수집물·위험물·목표 위치를 다시 조립하고, 타워 디펜스는 적 경로를, 뱀서류는 맵 반경과
 특전 풀을 Blueprint에 맞게 바꾼다.
 
-기본 제공자는 `deterministic`이며 외부 모델 호출 없이 항상 실행된다. `MAINFLOW_BLUEPRINT_PROVIDER`
-를 `local` 또는 `gemini`로 설정하면 해당 모델이 Blueprint만 제안한다. 제안은 JSON Schema와
+LocalAI 실행 구성의 기본 제공자는 `local`이며 역할별 모델
+`LLM_BLUEPRINT_MODEL=gemma4-12b-it-qat-q4-0`을 사용한다. LocalAI를 사용하지 않는 오프라인 실행은
+`MAINFLOW_BLUEPRINT_PROVIDER=deterministic`으로 비활성화할 수 있다. 제안은 JSON Schema와
 필수 콘텐츠·엔티티 검증을 통과해야 하며, 실패·시간 초과 시에는 전체 파이프라인을 중단하지 않고
 기본 Blueprint를 유지한다. 모델은 C# 코드, 파일 경로, Unity 패키지를 생성할 수 없다.
 
@@ -216,12 +217,15 @@ C# 컴파일, 전체 모듈 부착, Bootstrap 씬 조립까지 검사하고 로�
 ### Condition, Feature, 동적 Checklist 계약
 
 `analysis`의 정적 키워드 결과는 오프라인 안전망이다. AI가 활성화되면 Gemma가 사용자 Condition을
-구현 가능한 원자 기능으로 분해하고, 기능 보강 단계가 각 기능의 선행 상태·행위자·런타임 바인딩·
+문장 또는 240자 이하 구간으로 나누고 요청당 최대 6개의 구현 가능한 원자 기능으로 분해한다.
+기능 보강도 사용자 기능 3개 이하의 의존성 요청과 장르 핵심 요청으로 분리한다. 각 요청은 최대
+8개 기능만 반환한다. 기능 보강 단계는 각 기능의 선행 상태·행위자·런타임 바인딩·
 결과·피드백·복구 흐름을 `requirement_dependency` Feature로 추가한다. 기존
 `FeatureRequirement` 필드는 변경하지 않는다.
 
 `validate_game`은 최종 `LogicAnalysis.features`의 Feature마다 Checklist를 정확히 하나씩 만들고,
-각 Checklist에 30개 기준을 생성한다. 따라서 전체 기준 수는 `Feature 수 × 30`이다. 각 기준은
+각 Checklist에 30개 기준을 생성한다. Gemma에는 30개를 한 번에 요구하지 않고 10개씩 3회 요청한
+뒤 중복을 검사하여 합친다. 따라서 전체 기준 수는 `Feature 수 × 30`이다. 각 기준은
 `DFC{Feature 순번}_{항목 순번}`, 관련 `feature_ids`, 준비, 동작, 기대 결과, 자동 증거를 갖는다.
 모든 항목은 해당 Checklist의 Feature ID를 반드시 포함한다. Qwen Coder는 Checklist마다 별도 Unity
 Test Framework PlayMode C# 파일을 만든다. 모든 DFC가 NUnit 보고서에 존재하며 Passed여야 한다.
