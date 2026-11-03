@@ -61,6 +61,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the workspace directory (default: ./workspace).",
     )
     parser.add_argument(
+        "--result-file",
+        type=Path,
+        help="Write the complete final result JSON to this file.",
+    )
+    parser.add_argument(
+        "--quiet-result",
+        action="store_true",
+        help="Do not print the complete final result JSON to stdout (requires --result-file).",
+    )
+    parser.add_argument(
         "--game-test",
         action="store_true",
         help=(
@@ -138,6 +148,8 @@ def main() -> int:
     configure_console_encoding()
     parser = build_parser()
     arguments = parser.parse_args()
+    if arguments.quiet_result and arguments.result_file is None:
+        parser.error("--quiet-result requires --result-file")
     if arguments.game_test and arguments.visual_validation is False:
         parser.error("--game-test cannot be combined with --skip-visual-validation")
     if arguments.workspace:
@@ -170,7 +182,7 @@ def main() -> int:
             "visual_validation": visual_validation,
             "final_state": final_state,
         }
-        print(json.dumps(output, ensure_ascii=False, indent=2))
+        emit_result(output, arguments.result_file, quiet=arguments.quiet_result)
         if game_validation.get("status") != "passed":
             print(
                 "Game test failed during compilation or feature checklist validation.",
@@ -209,7 +221,7 @@ def main() -> int:
         "game_validator_ai": game_validator_ai,
         "final_state": final_state,
     }
-    print(json.dumps(output, ensure_ascii=False, indent=2))
+    emit_result(output, arguments.result_file, quiet=arguments.quiet_result)
     if final_validation.get("status") != "passed":
         print(
             "Game did not pass final validation. Do not distribute this project; "
@@ -225,6 +237,20 @@ def main() -> int:
         )
         return 1
     return 0
+
+
+def emit_result(output: dict[str, Any], result_file: Path | None, *, quiet: bool) -> None:
+    """Persist the full machine result while keeping CLI output backward-compatible."""
+
+    serialized = json.dumps(output, ensure_ascii=False, indent=2) + "\n"
+    if result_file is not None:
+        destination = result_file.resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        temporary.write_text(serialized, encoding="utf-8")
+        os.replace(temporary, destination)
+    if not quiet:
+        print(serialized, end="")
 
 
 if __name__ == "__main__":

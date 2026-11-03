@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+import json
+import os
+from pathlib import Path
+from typing import Any, cast
 
 from game_pipeline.condition_feature_analysis import (
     create_condition_feature_analyzer_from_environment,
@@ -47,14 +50,15 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
     manager = ArtifactManager()
     request: ParsedRequest = manager.read_json(state["parsed_request"])
     analysis: AnalysisResult = manager.read_json(state["analysis"])
-    features = analysis["features"]
+    approved_logic = _load_approved_logic_analysis(manager, request)
+    features = approved_logic["features"] if approved_logic is not None else analysis["features"]
     condition_report: dict[str, object] = {
         "provider": "none",
         "model_role": "condition_feature_analysis",
         "detected_feature_count": len(features),
         "explicit_feature_count": len(features),
         "added_feature_count": 0,
-        "status": "disabled",
+        "status": "approved_preview" if approved_logic is not None else "disabled",
     }
     try:
         condition_analyzer = create_condition_feature_analyzer_from_environment()
@@ -109,7 +113,7 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
         "genre_feature_count": 0,
         "added_features": [],
         "rejected_features": [],
-        "status": "disabled",
+        "status": "approved_preview" if approved_logic is not None else "disabled",
     }
     try:
         enricher = create_genre_feature_enricher_from_environment()
@@ -226,6 +230,45 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
             producer="logic_analysis",
         )
     }
+
+
+def _load_approved_logic_analysis(
+    manager: ArtifactManager,
+    request: ParsedRequest,
+) -> LogicAnalysis | None:
+    """Load a LocalWeb-approved preview without allowing paths outside the workspace."""
+
+    configured = os.environ.get("MAINFLOW_APPROVED_LOGIC_ANALYSIS", "").strip()
+    if not configured:
+        return None
+    source = Path(configured).resolve()
+    try:
+        source.relative_to(manager.workspace_root)
+    except ValueError as error:
+        raise ValueError("Approved logic analysis must be inside MAINFLOW_WORKSPACE") from error
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise TypeError("Approved logic analysis must be one JSON object")
+    for key in ("genre", "viewpoint", "mood_style"):
+        if payload.get(key) != request[key]:
+            raise ValueError(f"Approved logic analysis {key} does not match the current request")
+    raw_features = payload.get("features")
+    if not isinstance(raw_features, list) or not raw_features:
+        raise ValueError("Approved logic analysis must contain at least one Feature")
+    if len(raw_features) > 100:
+        raise ValueError("Approved logic analysis contains too many Features")
+    seen: set[str] = set()
+    for feature in raw_features:
+        if not isinstance(feature, dict):
+            raise TypeError("Every approved Feature must be an object")
+        for key in ("feature_id", "name", "description", "source_text"):
+            if not isinstance(feature.get(key), str) or not feature[key].strip():
+                raise ValueError(f"Approved Feature has an invalid {key}")
+        feature_id = feature["feature_id"]
+        if feature_id in seen:
+            raise ValueError(f"Approved Feature ID is duplicated: {feature_id}")
+        seen.add(feature_id)
+    return cast(LogicAnalysis, payload)
 
 
 def _build_inferred_feature_checklists(

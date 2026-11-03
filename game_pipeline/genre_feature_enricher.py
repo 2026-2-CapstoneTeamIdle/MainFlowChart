@@ -421,7 +421,12 @@ def create_genre_feature_enricher_from_environment() -> GenreFeatureEnricher | N
         return None
     provider = configured or resolve_feature_provider_from_environment()
     if provider == "openai":
-        return GenreFeatureEnricher(OpenAIJsonClient.from_environment(), provider)
+        return GenreFeatureEnricher(
+            OpenAIJsonClient.from_environment(
+                node_name="genre_feature_enrichment",
+            ),
+            provider,
+        )
     if provider == "local":
         return GenreFeatureEnricher(
             LocalAIJsonClient.from_environment(
@@ -431,7 +436,12 @@ def create_genre_feature_enricher_from_environment() -> GenreFeatureEnricher | N
             provider,
         )
     if provider == "gemini":
-        return GenreFeatureEnricher(GeminiApiClient.from_environment(), provider)
+        return GenreFeatureEnricher(
+            GeminiApiClient.from_environment(
+                node_name="genre_feature_enrichment",
+            ),
+            provider,
+        )
     raise ValueError(
         "MAINFLOW_GENRE_FEATURE_PROVIDER must be 'openai', 'local', 'gemini', or 'off'"
     )

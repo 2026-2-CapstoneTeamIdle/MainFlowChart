@@ -32,6 +32,8 @@ from mainflow.nodes._common import log
 from MCP import ImageGenerationOptions, ImageRunResult, run_node_llm
 
 VISUAL_TARGET_AI_ENV = "MAINFLOW_VISUAL_TARGET_AI"
+VISUAL_TARGET_PROVIDER_ENV = "LLM_VISUAL_TARGET_IMAGE_PROVIDER"
+VISUAL_TARGET_MODEL_ENV = "LLM_VISUAL_TARGET_IMAGE_MODEL"
 VISUAL_TARGET_SIZE_ENV = "MAINFLOW_VISUAL_TARGET_SIZE"
 VISUAL_TARGET_STEPS_ENV = "MAINFLOW_VISUAL_TARGET_STEPS"
 DEFAULT_VISUAL_TARGET_AI = "sd_turbo"
@@ -47,6 +49,15 @@ class RunNodeLLMVisualTargetGenerator:
 
     def generate(self, request: ParsedRequest, logic: LogicAnalysis) -> bytes:
         prompt = build_visual_target_prompt(request, logic)
+        named_ai = os.environ.get(VISUAL_TARGET_AI_ENV, DEFAULT_VISUAL_TARGET_AI).strip()
+        model_arguments = (
+            {"ai": named_ai}
+            if named_ai
+            else {
+                "provider": os.environ.get(VISUAL_TARGET_PROVIDER_ENV, "local"),
+                "model": os.environ.get(VISUAL_TARGET_MODEL_ENV, "sd-turbo"),
+            }
+        )
         result = asyncio.run(
             run_node_llm(
                 prompt,
@@ -54,7 +65,7 @@ class RunNodeLLMVisualTargetGenerator:
                     "Create one coherent gameplay reference image for visual validation only. "
                     "Do not create reusable sprites, textures, logos, captions, or a device frame."
                 ),
-                ai=os.environ.get(VISUAL_TARGET_AI_ENV, DEFAULT_VISUAL_TARGET_AI),
+                **model_arguments,
                 output="image",
                 image_options=ImageGenerationOptions(
                     size=os.environ.get(VISUAL_TARGET_SIZE_ENV, DEFAULT_VISUAL_TARGET_SIZE),

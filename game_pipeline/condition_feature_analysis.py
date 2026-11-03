@@ -269,9 +269,19 @@ def create_condition_feature_analyzer_from_environment() -> ConditionFeatureAnal
         )
         return ConditionFeatureAnalyzer(client, provider)
     if provider == "openai":
-        return ConditionFeatureAnalyzer(OpenAIJsonClient.from_environment(), provider)
+        return ConditionFeatureAnalyzer(
+            OpenAIJsonClient.from_environment(
+                node_name="condition_feature_analysis",
+            ),
+            provider,
+        )
     if provider == "gemini":
-        return ConditionFeatureAnalyzer(GeminiApiClient.from_environment(), provider)
+        return ConditionFeatureAnalyzer(
+            GeminiApiClient.from_environment(
+                node_name="condition_feature_analysis",
+            ),
+            provider,
+        )
     raise ValueError(
         "MAINFLOW_CONDITION_FEATURE_PROVIDER must be 'openai', 'local', 'gemini', or 'off'"
     )
