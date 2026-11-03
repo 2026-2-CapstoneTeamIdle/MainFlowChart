@@ -3,40 +3,255 @@ const statusText = document.querySelector("#status-text");
 const requestForm = document.querySelector("#request-form");
 const imageStyle = document.querySelector("#image-style");
 const customImage = document.querySelector("#custom-image");
+const modelGrid = document.querySelector("#model-grid");
+const featurePanel = document.querySelector("#feature-panel");
+const featureList = document.querySelector("#feature-list");
+const featureCount = document.querySelector("#feature-count");
+const workflowLog = document.querySelector("#workflow-log");
+const phaseBadge = document.querySelector("#phase-badge");
+const jobState = document.querySelector("#job-state");
+const toast = document.querySelector("#toast");
+
+const providerLabels = { local: "LocalAI", openai: "OpenAI API", gemini: "Gemini API", vastai: "Vast.ai", placeholder: "Placeholder", procedural: "Procedural", elevenlabs: "ElevenLabs API" };
+let currentJobId = null;
+let pollTimer = null;
+
+function showToast(message, error = false) {
+  toast.textContent = message;
+  toast.className = `toast toast--visible${error ? " toast--error" : ""}`;
+  window.setTimeout(() => { toast.className = "toast"; }, 3500);
+}
 
 function updateCustomImageState() {
   const customSelected = imageStyle.value === "Custom";
   customImage.disabled = !customSelected;
-  if (!customSelected) {
-    customImage.value = "";
+  if (!customSelected) customImage.value = "";
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    headers: { "Content-Type": "application/json", Accept: "application/json", ...(options.headers || {}) },
+    ...options,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.detail || `요청 실패 (${response.status})`);
+  return payload;
+}
+
+function renderCatalog(payload) {
+  modelGrid.replaceChildren();
+  payload.roles.forEach((role) => {
+    const card = document.createElement("article");
+    card.className = "model-card";
+    card.dataset.role = role.id;
+    card.innerHTML = `
+      <div class="model-card__heading"><strong>${escapeHtml(role.label)}</strong><span>${escapeHtml(role.id)}</span></div>
+      <p>${escapeHtml(role.description)}</p>
+      <div class="model-controls">
+        <label>Provider<select class="provider-select"></select></label>
+        <label>Model<span class="model-control"></span></label>
+      </div>`;
+    const providerSelect = card.querySelector(".provider-select");
+    role.providers.forEach((provider) => providerSelect.add(new Option(providerLabels[provider] || provider, provider)));
+    providerSelect.value = role.selection.provider;
+    providerSelect.addEventListener("change", () => renderModelControl(card, role));
+    modelGrid.append(card);
+    renderModelControl(card, role, role.selection.model);
+  });
+  Object.entries(payload.api_keys).forEach(([provider, state]) => {
+    const node = document.querySelector(`#${provider}-key-state`);
+    node.textContent = state.configured ? "등록됨" : "미등록";
+    node.className = `key-state ${state.configured ? "key-state--ready" : ""}`;
+  });
+}
+
+function renderModelControl(card, role, selectedModel = "") {
+  const provider = card.querySelector(".provider-select").value;
+  const host = card.querySelector(".model-control");
+  host.replaceChildren();
+  if (provider === "local") {
+    const select = document.createElement("select");
+    select.className = "model-select";
+    role.local_models.forEach((model) => select.add(new Option(model, model)));
+    select.value = role.local_models.includes(selectedModel) ? selectedModel : role.local_models[0];
+    host.append(select);
+  } else if (["placeholder", "procedural"].includes(provider)) {
+    const input = document.createElement("input");
+    input.className = "model-input";
+    input.value = provider;
+    input.readOnly = true;
+    host.append(input);
+  } else {
+    const input = document.createElement("input");
+    input.className = "model-input";
+    input.placeholder = provider === "openai" ? "예: gpt-6.1-sol" : provider === "gemini" ? "예: gemini-3-flash-preview" : "서빙 중인 모델 ID";
+    input.value = selectedModel && !role.local_models.includes(selectedModel) ? selectedModel : provider === "elevenlabs" ? "auto" : "";
+    input.required = true;
+    host.append(input);
+  }
+}
+
+function collectModelSettings() {
+  const roles = {};
+  document.querySelectorAll(".model-card").forEach((card) => {
+    const provider = card.querySelector(".provider-select").value;
+    const modelNode = card.querySelector(".model-select, .model-input");
+    if (!modelNode.value.trim()) throw new Error(`${card.dataset.role} 모델명을 입력하세요.`);
+    roles[card.dataset.role] = { provider, model: modelNode.value.trim() };
+  });
+  const apiKeys = {};
+  ["openai", "gemini", "vastai", "elevenlabs"].forEach((provider) => {
+    const value = document.querySelector(`#${provider}-key`).value.trim();
+    if (value) apiKeys[provider] = value;
+  });
+  return { roles, api_keys: apiKeys };
+}
+
+async function saveModels({ quiet = false } = {}) {
+  const payload = await api("/api/config/models", { method: "PUT", body: JSON.stringify(collectModelSettings()) });
+  ["openai", "gemini", "vastai", "elevenlabs"].forEach((provider) => { document.querySelector(`#${provider}-key`).value = ""; });
+  renderCatalog(payload);
+  if (!quiet) showToast("AI 설정을 저장했습니다.");
+}
+
+async function fileToPayload(file) {
+  if (!file) return null;
+  if (file.size > 10 * 1024 * 1024) throw new Error("Custom 이미지는 10 MiB 이하여야 합니다.");
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return { name: file.name, media_type: file.type, data_base64: btoa(binary) };
+}
+
+async function startJob(mode) {
+  if (!requestForm.reportValidity()) return;
+  setRunButtons(true);
+  try {
+    await saveModels({ quiet: true });
+    const form = new FormData(requestForm);
+    const payload = {
+      mode,
+      image_style: form.get("image_style"), mood_style: form.get("mood_style"),
+      genre: form.get("genre"), viewpoint: form.get("viewpoint"),
+      condition: form.get("condition"),
+      custom_image: await fileToPayload(customImage.files[0]),
+    };
+    const job = await api("/api/jobs", { method: "POST", body: JSON.stringify(payload) });
+    currentJobId = job.job_id;
+    featurePanel.classList.add("is-hidden");
+    phaseBadge.textContent = "Feature 분석 중";
+    workflowLog.textContent = "";
+    renderJob(job);
+    startPolling();
+  } catch (error) {
+    showToast(error.message, true);
+    setRunButtons(false);
+  }
+}
+
+function startPolling() {
+  window.clearInterval(pollTimer);
+  pollTimer = window.setInterval(refreshJob, 1000);
+  refreshJob();
+}
+
+async function refreshJob() {
+  if (!currentJobId) return;
+  try {
+    const job = await api(`/api/jobs/${currentJobId}`);
+    renderJob(job);
+    if (["completed", "failed"].includes(job.status)) window.clearInterval(pollTimer);
+  } catch (error) {
+    window.clearInterval(pollTimer);
+    showToast(error.message, true);
+  }
+}
+
+function renderJob(job) {
+  const stateLabels = {
+    analyzing_features: "Feature 분석 중", awaiting_confirmation: "사용자 승인 대기",
+    running: "게임 생성 중", completed: "완료", failed: "실패",
+  };
+  const label = stateLabels[job.status] || job.status;
+  jobState.textContent = label;
+  phaseBadge.textContent = label;
+  workflowLog.textContent = job.logs.length ? job.logs.join("\n") : "프로세스를 시작하는 중입니다...";
+  workflowLog.scrollTop = workflowLog.scrollHeight;
+  if (job.status === "awaiting_confirmation") {
+    renderFeatures(job.features);
+    featurePanel.classList.remove("is-hidden");
+  } else {
+    featurePanel.classList.add("is-hidden");
+  }
+  setRunButtons(!["completed", "failed"].includes(job.status));
+  document.querySelector("#confirm-button").disabled = job.status !== "awaiting_confirmation";
+  document.querySelector("#reject-button").disabled = job.status !== "awaiting_confirmation";
+  if (job.status === "failed" && job.error) showToast(job.error, true);
+}
+
+function renderFeatures(features) {
+  featureCount.textContent = `${features.length}개`;
+  featureList.replaceChildren();
+  features.forEach((feature) => {
+    const item = document.createElement("article");
+    item.className = "feature-card";
+    item.innerHTML = `
+      <div><span class="origin origin--${escapeHtml(feature.origin)}">${originLabel(feature.origin)}</span><code>${escapeHtml(feature.feature_id)}</code></div>
+      <h3>${escapeHtml(feature.name)}</h3><p>${escapeHtml(feature.description)}</p>
+      ${feature.rationale ? `<small>${escapeHtml(feature.rationale)}</small>` : ""}`;
+    featureList.append(item);
+  });
+}
+
+async function decide(action) {
+  if (!currentJobId) return;
+  document.querySelector("#confirm-button").disabled = true;
+  document.querySelector("#reject-button").disabled = true;
+  try {
+    const job = await api(`/api/jobs/${currentJobId}/${action}`, { method: "POST", body: "{}" });
+    renderJob(job);
+    startPolling();
+  } catch (error) { showToast(error.message, true); }
+}
+
+function setRunButtons(disabled) {
+  document.querySelector("#generate-button").disabled = disabled;
+  document.querySelector("#test-generate-button").disabled = disabled;
+}
+
+function originLabel(origin) {
+  return { user: "사용자 요청", requirement_dependency: "요청 의존", genre_inferred: "장르 필수" }[origin] || origin;
+}
+
+function escapeHtml(value) {
+  const node = document.createElement("div");
+  node.textContent = String(value ?? "");
+  return node.innerHTML;
+}
+
+async function initialize() {
+  updateCustomImageState();
+  try {
+    const [health, models] = await Promise.all([api("/api/health"), api("/api/config/models")]);
+    statusDot.className = "status-dot status-dot--ready";
+    statusText.textContent = health.workflow === "connected" ? "로컬 서버 · Workflow 연결됨" : "로컬 서버 정상";
+    renderCatalog(models);
+  } catch (error) {
+    statusDot.className = "status-dot status-dot--error";
+    statusText.textContent = "로컬 서버 상태를 확인할 수 없습니다.";
+    showToast(error.message, true);
   }
 }
 
 imageStyle.addEventListener("change", updateCustomImageState);
 requestForm.addEventListener("submit", (event) => event.preventDefault());
-updateCustomImageState();
-
-async function checkServerHealth() {
-  try {
-    const response = await fetch("/api/health", {
-      headers: { Accept: "application/json" },
-    });
-
-    if (!response.ok) {
-      throw new Error(`health check failed: ${response.status}`);
-    }
-
-    const health = await response.json();
-    statusDot.className = "status-dot status-dot--ready";
-    statusText.textContent =
-      health.workflow === "not_connected"
-        ? "로컬 서버 정상 · Workflow 연결 전"
-        : "로컬 서버 정상";
-  } catch (error) {
-    statusDot.className = "status-dot status-dot--error";
-    statusText.textContent = "로컬 서버 상태를 확인할 수 없습니다.";
-    console.error(error);
-  }
-}
-
-checkServerHealth();
+document.querySelector("#save-models").addEventListener("click", () => saveModels().catch((error) => showToast(error.message, true)));
+document.querySelector("#generate-button").addEventListener("click", () => startJob("generate"));
+document.querySelector("#test-generate-button").addEventListener("click", () => startJob("test-generate"));
+document.querySelector("#confirm-button").addEventListener("click", () => decide("confirm"));
+document.querySelector("#reject-button").addEventListener("click", () => decide("reject"));
+initialize();

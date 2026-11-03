@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+from pathlib import Path
+from typing import cast
+
+import pytest
+
+from mainflow.ArtifactManager import ArtifactManager
+from mainflow.contracts import LogicAnalysis, WorkflowState
+from mainflow.nodes import analysis_node, logic_analysis_node, parse_input_node, user_input_node
+from mainflow.preview_features import main as preview_main
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+LOCAL_WEB_ROOT = REPOSITORY_ROOT / "CI" / "CD" / "LocalWeb"
+
+
+def _load_service_module():
+    sys.path.insert(0, str(LOCAL_WEB_ROOT))
+    spec = importlib.util.spec_from_file_location(
+        "mainflow_local_web_service",
+        LOCAL_WEB_ROOT / "service.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _request_payload() -> dict[str, str]:
+    return {
+        "image_style": "Pixel Art",
+        "mood_style": "Fantasy",
+        "genre": "플랫포머",
+        "viewpoint": "사이드뷰",
+        "condition": "플레이어가 좌우로 이동하고 점프한 뒤 목적지에 도달한다.",
+    }
+
+
+def test_settings_store_never_returns_api_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    service = _load_service_module()
+    state_root = tmp_path / ".localweb"
+    monkeypatch.setattr(service, "LOCAL_WEB_STATE_ROOT", state_root)
+    monkeypatch.setattr(service, "SETTINGS_PATH", state_root / "settings.json")
+    monkeypatch.setattr(service, "SECRETS_PATH", state_root / "secrets.env")
+
+    store = service.LocalWebSettingsStore()
+    roles = store.load_roles()
+    roles["condition_feature_analysis"] = service.RoleSelection(
+        provider="openai",
+        model="gpt-6.1-sol",
+    )
+    store.save(
+        service.ModelSettingsUpdate(
+            roles=roles,
+            api_keys={"openai": "test-secret-key"},
+        )
+    )
+
+    public_payload = store.public_catalog()
+    assert public_payload["api_keys"]["openai"] == {"configured": True}
+    assert "test-secret-key" not in json.dumps(public_payload)
+    assert store.process_environment()["OPENAI_API_KEY"] == "test-secret-key"
+    assert "test-secret-key" not in (state_root / "settings.json").read_text(encoding="utf-8")
+
+
+def test_preview_and_confirmed_logic_use_identical_features(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    workspace = tmp_path / "workspace"
+    request_file = tmp_path / "request.json"
+    output_file = tmp_path / "preview.json"
+    request_file.write_text(
+        json.dumps(_request_payload(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MAINFLOW_CONDITION_FEATURE_PROVIDER", "off")
+    monkeypatch.setenv("MAINFLOW_GENRE_FEATURE_PROVIDER", "off")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "preview_features",
+            "--request-file",
+            str(request_file),
+            "--workspace",
+            str(workspace),
+            "--output-file",
+            str(output_file),
+        ],
+    )
+
+    assert preview_main() == 0
+    preview = json.loads(output_file.read_text(encoding="utf-8"))
+    approved_logic = json.loads(Path(preview["logic_analysis_path"]).read_text(encoding="utf-8"))
+
+    monkeypatch.setenv("MAINFLOW_WORKSPACE", str(workspace))
+    monkeypatch.setenv("MAINFLOW_APPROVED_LOGIC_ANALYSIS", preview["logic_analysis_path"])
+    state = cast(WorkflowState, dict(_request_payload()))
+    for node in (user_input_node, parse_input_node, analysis_node, logic_analysis_node):
+        state.update(node(state))
+    actual = cast(LogicAnalysis, ArtifactManager().read_json(state["logic_analysis"]))
+
+    assert actual["features"] == approved_logic["features"]
+    condition_report = ArtifactManager().read_project_file(
+        state["project_id"],
+        "data/condition_feature_analysis.json",
+    )
+    assert json.loads(condition_report)["status"] == "approved_preview"
+
+
+def test_generation_request_rejects_custom_style_without_file():
+    service = _load_service_module()
+    with pytest.raises(ValueError, match="Custom image style"):
+        service.GenerationRequest(
+            mode="generate",
+            image_style="Custom",
+            mood_style="Fantasy",
+            genre="플랫포머",
+            viewpoint="사이드뷰",
+            condition="점프 게임",
+        )

@@ -350,7 +350,10 @@ def create_design_v2_planner_from_environment() -> StagedDesignV2Planner | None:
     if provider == "deterministic":
         return None
     if provider == "openai":
-        return StagedDesignV2Planner(OpenAIJsonClient.from_environment(), "openai")
+        return StagedDesignV2Planner(
+            OpenAIJsonClient.from_environment(node_name="design_v2"),
+            "openai",
+        )
     if provider == "local":
         return StagedDesignV2Planner(
             LocalAIJsonClient.from_environment(
@@ -362,7 +365,10 @@ def create_design_v2_planner_from_environment() -> StagedDesignV2Planner | None:
     if provider in {"vast", "vastai", "vast.ai", "vllm"}:
         return StagedDesignV2Planner(LocalAIJsonClient.from_environment("vastai"), "vastai")
     if provider == "gemini":
-        return StagedDesignV2Planner(GeminiApiClient.from_environment(), "gemini")
+        return StagedDesignV2Planner(
+            GeminiApiClient.from_environment(node_name="design_v2"),
+            "gemini",
+        )
     raise ValueError(f"Unsupported MAINFLOW_DESIGN_V2_PROVIDER: {provider}")
 
 

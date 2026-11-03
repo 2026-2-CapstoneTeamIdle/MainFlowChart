@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+import json
+import os
+from pathlib import Path
+from typing import Any, cast
 
 from game_pipeline.condition_feature_analysis import (
     create_condition_feature_analyzer_from_environment,
@@ -47,35 +50,39 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
     manager = ArtifactManager()
     request: ParsedRequest = manager.read_json(state["parsed_request"])
     analysis: AnalysisResult = manager.read_json(state["analysis"])
-    features = analysis["features"]
+    approved_logic = _load_approved_logic_analysis(manager, request)
+    features = approved_logic["features"] if approved_logic is not None else analysis["features"]
     condition_report: dict[str, object] = {
         "provider": "none",
         "model_role": "condition_feature_analysis",
         "detected_feature_count": len(features),
         "explicit_feature_count": len(features),
         "added_feature_count": 0,
-        "status": "disabled",
+        "status": "approved_preview" if approved_logic is not None else "disabled",
     }
-    try:
-        condition_analyzer = create_condition_feature_analyzer_from_environment()
-        if condition_analyzer is not None:
-            log("사용자 Condition을 원자적인 구현 가능 기능으로 AI가 분해합니다.")
-            condition_analysis = condition_analyzer.analyze(
-                genre=request["genre"],
-                viewpoint=request["viewpoint"],
-                condition=request["condition"],
-                detected_features=features,
-            )
-            features = condition_analysis.features
-            condition_report = {**condition_analysis.report, "status": "passed"}
-            log(f"사용자 명시 기능 {len(features)}개를 설계 입력으로 확정했습니다.")
-    except Exception as error:  # noqa: BLE001 - deterministic parsing remains the fallback
-        condition_report = {
-            **condition_report,
-            "status": "failed",
-            "error": f"{type(error).__name__}: {error}",
-        }
-        log(f"Condition AI 파싱에 실패해 정적 파싱 결과를 사용합니다: {error}")
+    if approved_logic is not None:
+        log(f"웹 화면에서 승인한 Feature {len(features)}개를 변경 없이 사용합니다.")
+    else:
+        try:
+            condition_analyzer = create_condition_feature_analyzer_from_environment()
+            if condition_analyzer is not None:
+                log("사용자 Condition을 원자적인 구현 가능 기능으로 AI가 분해합니다.")
+                condition_analysis = condition_analyzer.analyze(
+                    genre=request["genre"],
+                    viewpoint=request["viewpoint"],
+                    condition=request["condition"],
+                    detected_features=features,
+                )
+                features = condition_analysis.features
+                condition_report = {**condition_analysis.report, "status": "passed"}
+                log(f"사용자 명시 기능 {len(features)}개를 설계 입력으로 확정했습니다.")
+        except Exception as error:  # noqa: BLE001 - deterministic parsing remains the fallback
+            condition_report = {
+                **condition_report,
+                "status": "failed",
+                "error": f"{type(error).__name__}: {error}",
+            }
+            log(f"Condition AI 파싱에 실패해 정적 파싱 결과를 사용합니다: {error}")
 
     manager.write_json(
         state["project_id"],
@@ -102,45 +109,48 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
         "genre_feature_count": 0,
         "added_features": [],
         "rejected_features": [],
-        "status": "disabled",
+        "status": "approved_preview" if approved_logic is not None else "disabled",
     }
-    try:
-        enricher = create_genre_feature_enricher_from_environment()
-        if enricher is not None:
-            log("명시된 기능을 바탕으로 장르 필수 기능을 AI가 보강합니다.")
-            baseline = normalize_game_spec(request["genre"], {"viewpoint": request["viewpoint"]})
-            enrichment = enricher.enrich(
-                genre=request["genre"],
-                viewpoint=request["viewpoint"],
-                user_condition=request["condition"],
-                core_loop=CORE_LOOPS[request["genre"]],
-                existing_features=features,
-                baseline_contract={
-                    "features": [feature["description"] for feature in baseline["features"]],
-                    "mechanics": baseline["mechanics"],
-                    "controls": baseline["controls"],
-                    "win_conditions": baseline["win_conditions"],
-                    "lose_conditions": baseline["lose_conditions"],
-                },
-            )
-            features = enrichment.features
-            enrichment_report = {**enrichment.report, "status": "passed"}
-            added_count = enrichment.report["added_feature_count"]
-            dependency_count = enrichment.report.get("dependency_feature_count", 0)
-            genre_count = enrichment.report.get(
-                "genre_feature_count", added_count - dependency_count
-            )
-            log(
-                f"사용자 요구 의존 기능 {dependency_count}개와 장르 필수 기능 "
-                f"{genre_count}개(총 {added_count}개)를 설계 입력에 추가했습니다."
-            )
-    except Exception as error:  # noqa: BLE001 - enrichment must not discard user requirements
-        enrichment_report = {
-            **enrichment_report,
-            "status": "failed",
-            "error": f"{type(error).__name__}: {error}",
-        }
-        log(f"장르 필수 기능 보강에 실패해 사용자 기능만 사용합니다: {error}")
+    if approved_logic is None:
+        try:
+            enricher = create_genre_feature_enricher_from_environment()
+            if enricher is not None:
+                log("명시된 기능을 바탕으로 장르 필수 기능을 AI가 보강합니다.")
+                baseline = normalize_game_spec(
+                    request["genre"], {"viewpoint": request["viewpoint"]}
+                )
+                enrichment = enricher.enrich(
+                    genre=request["genre"],
+                    viewpoint=request["viewpoint"],
+                    user_condition=request["condition"],
+                    core_loop=CORE_LOOPS[request["genre"]],
+                    existing_features=features,
+                    baseline_contract={
+                        "features": [feature["description"] for feature in baseline["features"]],
+                        "mechanics": baseline["mechanics"],
+                        "controls": baseline["controls"],
+                        "win_conditions": baseline["win_conditions"],
+                        "lose_conditions": baseline["lose_conditions"],
+                    },
+                )
+                features = enrichment.features
+                enrichment_report = {**enrichment.report, "status": "passed"}
+                added_count = enrichment.report["added_feature_count"]
+                dependency_count = enrichment.report.get("dependency_feature_count", 0)
+                genre_count = enrichment.report.get(
+                    "genre_feature_count", added_count - dependency_count
+                )
+                log(
+                    f"사용자 요구 의존 기능 {dependency_count}개와 장르 필수 기능 "
+                    f"{genre_count}개(총 {added_count}개)를 설계 입력에 추가했습니다."
+                )
+        except Exception as error:  # noqa: BLE001 - enrichment preserves user requirements
+            enrichment_report = {
+                **enrichment_report,
+                "status": "failed",
+                "error": f"{type(error).__name__}: {error}",
+            }
+            log(f"장르 필수 기능 보강에 실패해 사용자 기능만 사용합니다: {error}")
 
     manager.write_json(
         state["project_id"],
@@ -214,6 +224,45 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
             producer="logic_analysis",
         )
     }
+
+
+def _load_approved_logic_analysis(
+    manager: ArtifactManager,
+    request: ParsedRequest,
+) -> LogicAnalysis | None:
+    """Load a LocalWeb-approved preview without allowing paths outside the workspace."""
+
+    configured = os.environ.get("MAINFLOW_APPROVED_LOGIC_ANALYSIS", "").strip()
+    if not configured:
+        return None
+    source = Path(configured).resolve()
+    try:
+        source.relative_to(manager.workspace_root)
+    except ValueError as error:
+        raise ValueError("Approved logic analysis must be inside MAINFLOW_WORKSPACE") from error
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise TypeError("Approved logic analysis must be one JSON object")
+    for key in ("genre", "viewpoint", "mood_style"):
+        if payload.get(key) != request[key]:
+            raise ValueError(f"Approved logic analysis {key} does not match the current request")
+    raw_features = payload.get("features")
+    if not isinstance(raw_features, list) or not raw_features:
+        raise ValueError("Approved logic analysis must contain at least one Feature")
+    if len(raw_features) > 100:
+        raise ValueError("Approved logic analysis contains too many Features")
+    seen: set[str] = set()
+    for feature in raw_features:
+        if not isinstance(feature, dict):
+            raise TypeError("Every approved Feature must be an object")
+        for key in ("feature_id", "name", "description", "source_text"):
+            if not isinstance(feature.get(key), str) or not feature[key].strip():
+                raise ValueError(f"Approved Feature has an invalid {key}")
+        feature_id = feature["feature_id"]
+        if feature_id in seen:
+            raise ValueError(f"Approved Feature ID is duplicated: {feature_id}")
+        seen.add(feature_id)
+    return cast(LogicAnalysis, payload)
 
 
 def _build_inferred_feature_checklists(

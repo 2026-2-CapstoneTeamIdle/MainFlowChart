@@ -135,12 +135,24 @@ class OpenAIJsonClient:
     supports_feature_planning = True
 
     @classmethod
-    def from_environment(cls) -> OpenAIJsonClient:
+    def from_environment(
+        cls,
+        *,
+        node_name: str | None = None,
+        default_model: str | None = None,
+    ) -> OpenAIJsonClient:
         api_key = os.environ.get("OPENAI_API_KEY", "").strip()
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is required when using the OpenAI provider")
+        node_model_name = (
+            "LLM_" + re.sub(r"[^A-Za-z0-9]+", "_", node_name).strip("_").upper() + "_MODEL"
+            if node_name
+            else ""
+        )
         model = (
-            os.environ.get("MAINFLOW_OPENAI_MODEL")
+            (os.environ.get(node_model_name) if node_model_name else None)
+            or default_model
+            or os.environ.get("MAINFLOW_OPENAI_MODEL")
             or os.environ.get("OPENAI_MODEL")
             or DEFAULT_OPENAI_MODEL
         ).strip()
@@ -309,13 +321,28 @@ class GeminiApiClient:
     supports_feature_planning = True
 
     @classmethod
-    def from_environment(cls) -> GeminiApiClient:
+    def from_environment(
+        cls,
+        *,
+        node_name: str | None = None,
+        default_model: str | None = None,
+    ) -> GeminiApiClient:
         api_key = os.environ.get("GEMINI_API_KEY", "").strip()
         if not api_key:
             raise RuntimeError(
                 "A new game mechanic requires Gemini generation, but GEMINI_API_KEY is not set"
             )
-        model = os.environ.get("MAINFLOW_GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip()
+        node_model_name = (
+            "LLM_" + re.sub(r"[^A-Za-z0-9]+", "_", node_name).strip("_").upper() + "_MODEL"
+            if node_name
+            else ""
+        )
+        model = (
+            (os.environ.get(node_model_name) if node_model_name else None)
+            or default_model
+            or os.environ.get("MAINFLOW_GEMINI_MODEL")
+            or DEFAULT_GEMINI_MODEL
+        ).strip()
         if not re.fullmatch(r"[A-Za-z0-9._-]+", model):
             raise ValueError("MAINFLOW_GEMINI_MODEL contains unsupported characters")
         timeout = int(os.environ.get("MAINFLOW_GEMINI_TIMEOUT_SECONDS", "90"))
@@ -802,9 +829,19 @@ def create_feature_generator_from_environment() -> GeminiFeatureGenerator:
         "source_attempts": int(os.environ.get("MAINFLOW_FEATURE_SOURCE_ATTEMPTS", "2")),
     }
     if provider == "openai":
-        return GeminiFeatureGenerator(OpenAIJsonClient.from_environment(), **attempts)
+        return GeminiFeatureGenerator(
+            OpenAIJsonClient.from_environment(
+                node_name="feature_code_generation", default_model=DEFAULT_OPENAI_MODEL
+            ),
+            **attempts,
+        )
     if provider == "gemini":
-        return GeminiFeatureGenerator(GeminiApiClient.from_environment(), **attempts)
+        return GeminiFeatureGenerator(
+            GeminiApiClient.from_environment(
+                node_name="feature_code_generation", default_model=DEFAULT_GEMINI_MODEL
+            ),
+            **attempts,
+        )
     if provider == "local":
         return GeminiFeatureGenerator(
             LocalAIJsonClient.from_environment(node_name="feature_code_generation"),

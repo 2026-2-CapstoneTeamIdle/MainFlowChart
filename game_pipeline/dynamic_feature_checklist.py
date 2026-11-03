@@ -580,9 +580,9 @@ def _structured_client(
     if provider == "local":
         return LocalAIJsonClient.from_environment(node_name=node_name, default_model=default_model)
     if provider == "openai":
-        return OpenAIJsonClient.from_environment()
+        return OpenAIJsonClient.from_environment(node_name=node_name)
     if provider == "gemini":
-        return GeminiApiClient.from_environment()
+        return GeminiApiClient.from_environment(node_name=node_name)
     raise ValueError(f"Unsupported structured checklist provider: {provider}")
 
 

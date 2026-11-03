@@ -3,24 +3,67 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>MainFlowChart Local Web</title>
+    <title>Team Idle · Game Workflow</title>
     <link rel="stylesheet" href="/static/styles.css" />
     <script src="/static/app.js" defer></script>
   </head>
   <body>
     <main class="page-shell">
       <header class="hero">
-        <p class="eyebrow">TEAM IDLE · LOCAL WORKSPACE</p>
-        <h1>게임 제작 Workflow</h1>
-        <p class="hero-copy">
-          이미지, 게임 로직, 사운드 Agent를 하나의 로컬 화면에서 실행하기 위한 기본
-          화면입니다.
-        </p>
+        <div>
+          <p class="eyebrow">TEAM IDLE · LOCAL WORKSPACE</p>
+          <h1>Game Workflow</h1>
+          <p class="hero-copy">
+            AI 역할을 지정하고, Condition에서 분석된 Feature를 승인한 뒤 게임 제작과 검증을
+            실행합니다.
+          </p>
+        </div>
         <div class="server-state" aria-live="polite">
           <span id="status-dot" class="status-dot status-dot--pending"></span>
           <span id="status-text">로컬 서버 확인 중</span>
         </div>
       </header>
+
+      <section class="panel" aria-labelledby="models-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="section-label">MODEL ROUTING</p>
+            <h2 id="models-heading">기능별 AI 설정</h2>
+          </div>
+          <button id="save-models" class="secondary-button" type="button">설정 저장</button>
+        </div>
+        <p class="section-help">
+          Local 모델은 프로젝트에 등록된 목록에서 선택합니다. API 키는 브라우저로 다시
+          반환되지 않으며, 서버의 <code>workspace/.localweb/secrets.env</code>에만 저장됩니다.
+        </p>
+        <div id="model-grid" class="model-grid" aria-live="polite"></div>
+
+        <details class="credential-box">
+          <summary>API 인증 정보</summary>
+          <div class="credential-grid">
+            <label>
+              OpenAI API Key <span id="openai-key-state" class="key-state"></span>
+              <input id="openai-key" type="password" autocomplete="new-password" placeholder="새 키를 입력할 때만 작성" />
+            </label>
+            <label>
+              Gemini API Key <span id="gemini-key-state" class="key-state"></span>
+              <input id="gemini-key" type="password" autocomplete="new-password" placeholder="새 키를 입력할 때만 작성" />
+            </label>
+            <label>
+              Vast.ai Inference Key <span id="vastai-key-state" class="key-state"></span>
+              <input id="vastai-key" type="password" autocomplete="new-password" placeholder="새 키를 입력할 때만 작성" />
+            </label>
+            <label>
+              ElevenLabs API Key <span id="elevenlabs-key-state" class="key-state"></span>
+              <input id="elevenlabs-key" type="password" autocomplete="new-password" placeholder="새 키를 입력할 때만 작성" />
+            </label>
+          </div>
+          <p class="security-note">
+            키는 Workflow State, 프롬프트, 로그, API 응답에 포함되지 않습니다. 이 페이지는
+            반드시 <code>127.0.0.1</code>에서만 사용하세요.
+          </p>
+        </details>
+      </section>
 
       <section class="panel" aria-labelledby="request-heading">
         <div class="panel-heading">
@@ -28,96 +71,87 @@
             <p class="section-label">NEW PROJECT</p>
             <h2 id="request-heading">게임 생성 요청</h2>
           </div>
-          <span class="phase-badge">입력 선택 가능 · 실행 미연결</span>
+          <span id="phase-badge" class="phase-badge">입력 대기</span>
         </div>
 
         <form id="request-form" class="request-grid">
           <label>
             이미지 스타일
             <select id="image-style" name="image_style">
-              <option>Pixel Art</option>
-              <option>Anime</option>
-              <option>Cartoon</option>
-              <option>Realistic</option>
-              <option>Low Poly</option>
-              <option>Custom</option>
+              <option>Pixel Art</option><option>Anime</option><option>Cartoon</option>
+              <option>Realistic</option><option>Low Poly</option><option>Custom</option>
             </select>
           </label>
-
           <label>
             분위기 스타일
             <select name="mood_style">
-              <option>Cyberpunk</option>
-              <option>Medieval</option>
-              <option>Modern</option>
-              <option selected>Fantasy</option>
-              <option>Horror</option>
-              <option>Cozy</option>
+              <option>Cyberpunk</option><option>Medieval</option><option>Modern</option>
+              <option selected>Fantasy</option><option>Horror</option><option>Cozy</option>
             </select>
           </label>
-
           <label>
             게임 장르
             <select name="genre">
-              <option>플랫포머</option>
-              <option>타워 디펜스</option>
-              <option>카드</option>
-              <option>비주얼 노벨</option>
-              <option>육성 시뮬레이션</option>
-              <option>뱀서류</option>
+              <option>플랫포머</option><option>타워 디펜스</option><option>카드</option>
+              <option>비주얼 노벨</option><option>육성 시뮬레이션</option><option>뱀서류</option>
             </select>
           </label>
-
           <label>
             시점
             <select name="viewpoint">
-              <option>사이드뷰</option>
-              <option>탑다운</option>
-              <option>쿼터뷰</option>
-              <option>고정 화면</option>
+              <option>사이드뷰</option><option>탑다운</option><option>쿼터뷰</option><option>고정 화면</option>
             </select>
           </label>
-
           <label class="wide-field">
-            조건
-            <input
-              name="condition"
-              type="text"
-              placeholder="예: 공격과 8방향 이동이 가능한 게임"
-            />
+            Condition
+            <textarea name="condition" rows="5" required placeholder="플레이어가 좌우로 이동하고 점프하며..."></textarea>
           </label>
-
           <label class="wide-field">
-            Custom 이미지 참고 파일 (PNG/JPG)
-            <input
-              id="custom-image"
-              name="custom_image"
-              type="file"
-              accept="image/png,image/jpeg"
-              disabled
-            />
+            Custom 이미지 참고 파일 (PNG/JPG, 최대 10 MiB)
+            <input id="custom-image" name="custom_image" type="file" accept="image/png,image/jpeg" disabled />
           </label>
-
-          <button type="submit" disabled>Workflow 연결 후 사용 가능</button>
+          <div class="action-row wide-field">
+            <button id="generate-button" class="primary-button" type="button">Generate</button>
+            <button id="test-generate-button" class="test-button" type="button">test-Generate</button>
+          </div>
+          <p class="mode-help wide-field">
+            Generate는 이미지·사운드 적용을 포함한 전체 Flow입니다. test-Generate는 이미지·사운드
+            생성 및 적용을 제외하고 모듈 합성·컴파일·기능·시각 검증을 실행합니다.
+          </p>
         </form>
       </section>
 
-      <section class="panel" aria-labelledby="progress-heading">
+      <section id="feature-panel" class="panel is-hidden" aria-labelledby="feature-heading">
         <div class="panel-heading">
           <div>
-            <p class="section-label">WORKFLOW</p>
-            <h2 id="progress-heading">실행 현황</h2>
+            <p class="section-label">APPROVAL GATE</p>
+            <h2 id="feature-heading">조합 예정 Feature</h2>
           </div>
+          <span id="feature-count" class="phase-badge">0개</span>
         </div>
-
-        <div class="empty-state">
-          <div class="empty-icon">01</div>
-          <div>
-            <strong>아직 실행된 프로젝트가 없습니다.</strong>
-            <p>다음 단계에서 LangGraph Stream과 Artifact 목록을 이 영역에 연결합니다.</p>
-          </div>
+        <p class="section-help">
+          사용자 Condition, 요청 의존 기능, 장르 필수 기능을 확인하세요. Confirm하면 표시된
+          목록을 고정해 다음 단계로 진행하며, Reject하면 분석을 다시 수행합니다.
+        </p>
+        <div id="feature-list" class="feature-list"></div>
+        <div class="action-row">
+          <button id="confirm-button" class="primary-button" type="button">Confirm · 계속 생성</button>
+          <button id="reject-button" class="danger-button" type="button">Reject · 다시 분석</button>
         </div>
       </section>
+
+      <section class="panel log-panel" aria-labelledby="progress-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="section-label">LIVE WORKFLOW</p>
+            <h2 id="progress-heading">개발 로그</h2>
+          </div>
+          <span id="job-state" class="phase-badge">실행 전</span>
+        </div>
+        <pre id="workflow-log" class="workflow-log" aria-live="polite">아직 실행된 프로젝트가 없습니다.</pre>
+      </section>
+
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
     </main>
   </body>
 </html>

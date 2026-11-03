@@ -1,105 +1,152 @@
 # Local Web Manager
 
-`CI/CD/LocalWeb`은 MainFlowChart를 브라우저에서 확인하기 위한 로컬 전용 웹 골격이다.
-현재 단계에서는 정적 입력 화면과 서버 상태 확인만 제공하며 LangGraph Workflow는 실행하지 않는다.
+버전: **1.0.0**
 
-## 현재 제공 범위
+`CI/CD/LocalWeb`은 MainFlowChart를 `http://127.0.0.1:8000`에서 설정하고 실행하는 로컬
+전용 웹 서비스다. 메인 LangGraph의 Edge는 바꾸지 않으며, 웹 계층이 Feature 승인 단계를
+관리하고 승인된 `logic_analysis.json`을 기존 Flow에 전달한다.
 
-- 로컬 웹 화면: `http://localhost:8000`
-- FastAPI 문서: `http://localhost:8000/docs`
-- 서버 상태 API: `http://localhost:8000/api/health`
-- Workflow 입력 화면 골격
-- 계약 3.4.0 입력 항목: 이미지 스타일, 분위기 스타일, 장르, 시점, 한 문장 조건
-- Custom 이미지용 PNG/JPG 파일 선택 골격
-- 호스트 `workspace/`와 컨테이너 `/app/workspace` 연결
+## 제공 기능
 
-`/api/health`의 `workflow` 값이 `not_connected`인 것은 의도한 현재 상태다.
+- 실제 프로젝트 역할별 AI Provider/Model 선택
+- LocalAI 등록 모델 목록 선택
+- OpenAI, Gemini, Vast.ai, ElevenLabs API 키의 서버 전용 저장
+- 실제 게임 이미지 에셋 백엔드(Placeholder/LocalAI/OpenAI)와 사운드 백엔드
+  (Procedural/ElevenLabs) 선택
+- 전체 **Generate**와 에셋 제외 **test-Generate**
+- Condition → Feature 분석 결과 확인
+- Confirm 시 표시된 Feature를 고정하여 생성 계속
+- Reject 시 Condition → Feature 분석 재실행
+- 분석, 생성, 컴파일, 기능 검증, 시각 검증의 표준 출력/오류 로그 표시
 
-## 디렉터리
+## Generate 모드 차이
+
+| 버튼 | 실행 범위 |
+|---|---|
+| Generate | 기존 운영 Graph 전체: 게임, 이미지, 사운드 생성·검증·적용과 최종 검증 |
+| test-Generate | `--game-test`: 이미지·사운드 생성/검증/적용 제외, 모듈 합성 → 컴파일 → Feature Checklist → Visual Checklist |
+
+두 모드 모두 먼저 `user_input → parse_input → analysis → logic_analysis`를 실행한다. 화면에
+Feature가 표시된 뒤 사용자가 Confirm해야 나머지 단계가 시작된다.
+
+## API 키 보안 경계
+
+웹에서 입력한 키는 다음 무시된 로컬 파일에만 저장된다.
 
 ```text
-CI/CD/LocalWeb/
-├─ app.py
-├─ requirements.txt
-├─ Dockerfile
-├─ compose.yaml
-├─ LocalWebManager.md
-└─ static/
-   ├─ index.html
-   ├─ app.js
-   └─ styles.css
+workspace/.localweb/secrets.env
 ```
 
-## Docker로 실행
+- API 응답은 키 값 대신 `configured: true/false`만 반환한다.
+- 키를 Workflow State, 요청 JSON, 모델 프롬프트, 로그, Artifact에 기록하지 않는다.
+- 실행 시 서버가 키를 자식 Python 프로세스 환경변수로만 전달한다.
+- 역할/모델처럼 비밀이 아닌 설정은 `workspace/.localweb/settings.json`에 저장한다.
+- 이 방식은 로컬 비밀의 Git 커밋을 막지만, PC 관리자나 같은 사용자 계정의 파일 접근까지
+  막는 비밀 저장소는 아니다. 운영 서비스에서는 OS Secret Store 또는 Vault로 교체해야 한다.
+- 로컬 HTTP이므로 포트는 반드시 `127.0.0.1`에만 바인딩한다.
 
-저장소 최상위 디렉터리에서 실행한다.
+기존 PowerShell 환경변수의 `OPENAI_API_KEY`, `GEMINI_API_KEY`,
+`VASTAI_INFERENCE_API_KEY`, `ELEVENLABS_API_KEY`도 사용할 수 있다. 화면에서 새 키를
+저장하지 않으면 기존 키를 덮어쓰지 않는다.
+
+## Docker 실행
+
+저장소 최상위에서 실행한다.
 
 ```powershell
 docker compose -f "CI/CD/LocalWeb/compose.yaml" up --build
 ```
 
-브라우저에서 다음 주소를 연다.
+브라우저:
 
 ```text
-http://localhost:8000
+http://127.0.0.1:8000
 ```
 
-종료할 때는 다음 명령을 실행한다.
+종료:
 
 ```powershell
 docker compose -f "CI/CD/LocalWeb/compose.yaml" down
 ```
 
-Docker 포트는 호스트의 `127.0.0.1`에만 바인딩한다. 같은 네트워크의 다른 장치에서는
-기본 설정으로 접근할 수 없다.
+Docker의 LocalWeb 컨테이너는 호스트 LocalAI를 기본적으로
+`http://host.docker.internal:8080/v1`에서 찾는다. 다른 주소를 쓰면 실행 전에 지정한다.
+
+```powershell
+$env:LOCAL_LLM_BASE_URL = "http://host.docker.internal:8080/v1"
+$env:LOCAL_IMAGE_BASE_URL = "http://host.docker.internal:8080/v1"
+docker compose -f "CI/CD/LocalWeb/compose.yaml" up --build
+```
+
+LocalAI Compose와 함께 같은 Docker 네트워크에서 실행할 때는 서비스 주소에 맞춰
+`http://Local-AIModel:8080/v1`을 사용할 수 있다.
 
 ## Python으로 직접 실행
 
-Python 3.11 환경에서 다음 명령을 실행한다.
+저장소 최상위에서 기존 잠금 환경을 설치한 뒤 LocalWeb 의존성을 추가한다.
 
 ```powershell
-Set-Location "CI/CD/LocalWeb"
-py -3.11 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m uvicorn app:app --host 127.0.0.1 --port 8000 --reload
+uv sync --locked
+uv pip install --python .venv\Scripts\python.exe -r "CI/CD/LocalWeb/requirements.txt"
+uv run --locked python -m uvicorn --app-dir "CI/CD/LocalWeb" app:app `
+  --host 127.0.0.1 --port 8000 --reload
 ```
 
-종료는 실행 중인 터미널에서 `Ctrl+C`를 누른다.
+실행을 끝낼 때는 터미널에서 `Ctrl+C`를 누른다.
 
-## 포트 충돌
+## 사용 순서
 
-이미 8000번 포트를 사용하는 프로그램이 있으면 `compose.yaml`의 호스트 포트를 변경한다.
+1. `기능별 AI 설정`에서 각 역할의 Provider와 Model을 고른다.
+2. API Provider를 선택했다면 `API 인증 정보`에 해당 키를 입력한다.
+3. `설정 저장`을 누른다.
+4. 이미지 스타일, 분위기, 장르, 시점, Condition을 입력한다.
+5. `Generate` 또는 `test-Generate`를 누른다.
+6. 로그에서 Condition 분석 진행을 확인한다.
+7. `조합 예정 Feature`에서 출처를 확인한다.
+   - `사용자 요청`: Condition에서 직접 추출
+   - `요청 의존`: 요청 기능이 동작하기 위한 선행 기능
+   - `장르 필수`: 선택한 장르의 기본 플레이에 필요한 기능
+8. 목록이 맞으면 Confirm, 다시 분석하려면 Reject를 누른다.
+9. 완료 또는 실패까지 하단 로그를 확인한다.
 
-```yaml
-ports:
-  - "127.0.0.1:8001:8000"
-```
-
-이 경우 접속 주소는 `http://localhost:8001`이다.
-
-## Workspace 연결
-
-Docker 실행 시 다음 두 경로가 연결된다.
+## 생성 파일
 
 ```text
-호스트:    ./workspace
-컨테이너: /app/workspace
+workspace/
+├─ .localweb/
+│  ├─ settings.json
+│  ├─ secrets.env
+│  └─ jobs/{job_id}/
+│     ├─ request.json
+│     ├─ feature_preview.json
+│     └─ workflow.log
+├─ {preview_project_id}/       # Feature 분석 Artifact
+└─ {generated_project_id}/     # Confirm 이후 실제 생성 프로젝트
 ```
 
-현재 웹 골격은 Workspace를 읽거나 변경하지 않는다. 이후 Workflow API를 연결하면 기존
-`ArtifactManager`가 이 경로 아래에 프로젝트 파일을 생성한다.
+Reject할 때마다 분석 근거를 보존하기 위해 새로운 Preview 프로젝트가 생긴다. Confirm 이후
+실제 생성 프로젝트는 승인된 Preview의 Feature 목록을 검증해서 복사하므로 두 번째 분석에서
+목록이 임의로 바뀌지 않는다.
 
-화면에 표시되는 입력 형식은 `mainflow/contracts.py`의 계약 3.4.0과 일치한다. 사용자는 각
-항목을 선택하고 조건을 입력할 수 있으며, 이미지 스타일을 `Custom`으로 고르면 PNG/JPG 파일
-선택도 활성화된다. 단, 실행 버튼은 의도적으로 비활성화돼 있어 선택한 값이나 파일을 서버로
-전송하지 않는다. 실제 MainFlow 실행은 현재 CLI 또는 JSON 요청으로만 가능하다.
+## API 요약
 
-## 다음 구현 단계
+| Method | Path | 설명 |
+|---|---|---|
+| GET | `/api/health` | 서버/Workflow 연결 상태 |
+| GET | `/api/config/models` | 역할/모델과 키 등록 여부 조회 |
+| PUT | `/api/config/models` | 역할/모델과 새 키 저장 |
+| POST | `/api/jobs` | Feature 분석 작업 시작 |
+| GET | `/api/jobs/{job_id}` | 상태, Feature, 로그 조회 |
+| POST | `/api/jobs/{job_id}/confirm` | 승인된 Feature로 생성 계속 |
+| POST | `/api/jobs/{job_id}/reject` | Feature 분석 재실행 |
 
-1. 웹 요청·응답 데이터 모델 정의
-2. Workflow 실행 API 추가
-3. `graph.stream()` 이벤트를 실행 상태로 변환
-4. Artifact 목록과 미리보기 API 추가
-5. 개별 파일 및 프로젝트 ZIP 다운로드 추가
+OpenAPI 문서는 `http://127.0.0.1:8000/docs`에서 확인한다.
 
-Agent Node와 결정적인 Graph Edge는 이 로컬 웹 계층에서 변경하지 않는다.
+## 제한 사항
+
+- 작업 상태는 서버 메모리에 있으므로 서버 재시작 후 기존 작업을 화면에서 재개하지 않는다.
+  파일과 로그는 Workspace에 남는다.
+- 동시에 여러 생성 작업을 실행할 수 있지만 LocalAI가 모델을 교체 서빙한다면 GPU 메모리와
+  응답 시간이 크게 증가할 수 있다.
+- `test-Generate`의 Visual Checklist는 Unity 화면 캡처를 사용하므로 그래픽 렌더링 가능한
+  Unity 실행 환경이 필요하다.

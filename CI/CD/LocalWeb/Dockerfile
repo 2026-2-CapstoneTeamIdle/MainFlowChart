@@ -7,11 +7,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY CI/CD/LocalWeb/requirements.txt ./requirements.txt
-RUN python -m pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir "uv>=0.9,<1.0"
 
-COPY CI/CD/LocalWeb/ ./
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev
+
+COPY CI/CD/LocalWeb/requirements.txt ./CI/CD/LocalWeb/requirements.txt
+RUN uv pip install --python /app/.venv/bin/python -r CI/CD/LocalWeb/requirements.txt
+
+COPY . .
+
+ENV PATH="/app/.venv/bin:${PATH}" \
+    PYTHONPATH=/app
 
 EXPOSE 8000
 
-CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "--app-dir", "CI/CD/LocalWeb", "app:app", "--host", "0.0.0.0", "--port", "8000"]

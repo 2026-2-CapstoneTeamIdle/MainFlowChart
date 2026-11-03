@@ -240,7 +240,10 @@ def create_blueprint_planner_from_environment() -> GameBlueprintPlanner | None:
     if provider == "deterministic":
         return None
     if provider == "openai":
-        return GameBlueprintPlanner(OpenAIJsonClient.from_environment(), "openai")
+        return GameBlueprintPlanner(
+            OpenAIJsonClient.from_environment(node_name="blueprint"),
+            "openai",
+        )
     if provider == "local":
         return GameBlueprintPlanner(
             LocalAIJsonClient.from_environment(
@@ -252,7 +255,10 @@ def create_blueprint_planner_from_environment() -> GameBlueprintPlanner | None:
     if provider in {"vast", "vastai", "vast.ai", "vllm"}:
         return GameBlueprintPlanner(LocalAIJsonClient.from_environment("vastai"), "vastai")
     if provider == "gemini":
-        return GameBlueprintPlanner(GeminiApiClient.from_environment(), "gemini")
+        return GameBlueprintPlanner(
+            GeminiApiClient.from_environment(node_name="blueprint"),
+            "gemini",
+        )
     raise ValueError(
         "MAINFLOW_BLUEPRINT_PROVIDER must be 'deterministic', 'openai', 'local', "
         "'vastai', or 'gemini'"
