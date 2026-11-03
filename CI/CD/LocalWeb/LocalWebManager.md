@@ -1,6 +1,6 @@
 # Local Web Manager
 
-버전: **1.0.0**
+버전: **1.0.1**
 
 `CI/CD/LocalWeb`은 MainFlowChart를 `http://127.0.0.1:8000`에서 설정하고 실행하는 로컬
 전용 웹 서비스다. 메인 LangGraph의 Edge는 바꾸지 않으며, 웹 계층이 Feature 승인 단계를
@@ -17,7 +17,9 @@
 - Condition → Feature 분석 결과 확인
 - Confirm 시 표시된 Feature를 고정하여 생성 계속
 - Reject 시 Condition → Feature 분석 재실행
-- 분석, 생성, 컴파일, 기능 검증, 시각 검증의 표준 출력/오류 로그 표시
+- 분석, 생성, 컴파일, 기능 검증, 시각 검증의 진행 로그 표시
+- 종료 시 `프로젝트 ID / 실패 단계 / 실패 Feature / 오류 요약`만 화면에 표시하고 전체
+  Workflow JSON은 작업 파일로 별도 보존
 
 ## Generate 모드 차이
 
@@ -119,6 +121,7 @@ workspace/
 │  └─ jobs/{job_id}/
 │     ├─ request.json
 │     ├─ feature_preview.json
+│     ├─ workflow_result.json
 │     └─ workflow.log
 ├─ {preview_project_id}/       # Feature 분석 Artifact
 └─ {generated_project_id}/     # Confirm 이후 실제 생성 프로젝트
@@ -127,6 +130,10 @@ workspace/
 Reject할 때마다 분석 근거를 보존하기 위해 새로운 Preview 프로젝트가 생긴다. Confirm 이후
 실제 생성 프로젝트는 승인된 Preview의 Feature 목록을 검증해서 복사하므로 두 번째 분석에서
 목록이 임의로 바뀌지 않는다.
+
+`workflow_result.json`에는 CLI 호환을 위한 전체 `final_state`와 세부 검증 결과가 남는다.
+브라우저 로그에는 이 큰 JSON을 출력하지 않고 종료 요약만 표시한다. 세부 ArtifactReference가
+필요할 때만 해당 파일을 직접 확인한다.
 
 ## API 요약
 

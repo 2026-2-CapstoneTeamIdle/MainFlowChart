@@ -521,6 +521,8 @@ class WorkflowJobManager:
 
     def _run_generation(self, job: WorkflowJob) -> None:
         preview_path = job.job_root / "feature_preview.json"
+        result_path = job.job_root / "workflow_result.json"
+        result_path.unlink(missing_ok=True)
         try:
             preview = json.loads(preview_path.read_text(encoding="utf-8"))
             approved_logic_path = Path(preview["logic_analysis_path"]).resolve()
@@ -537,19 +539,26 @@ class WorkflowJobManager:
             str(job.request_file),
             "--workspace",
             str(WORKSPACE_ROOT),
+            "--result-file",
+            str(result_path),
+            "--quiet-result",
         ]
         if job.mode == "test-generate":
             command.append("--game-test")
         else:
             command.append("--visual-validation")
         return_code = self._stream_process(job, command, environment)
+        summary = _summarize_workflow_result(result_path, return_code)
+        with job.lock:
+            job.project_id = summary["project_id"]
+        _append_workflow_summary(job, summary)
         if return_code != 0:
-            self._fail(job, f"게임 생성 프로세스가 종료 코드 {return_code}로 실패했습니다.")
+            self._fail(job, "게임 생성에 실패했습니다. 위의 결과 요약을 확인하세요.")
             return
         with job.lock:
             job.status = "completed"
             job.stage = "completed"
-            job.project_id = _latest_project_id_from_logs(job.logs)
+            job.project_id = summary["project_id"]
         job.append_log("[WEB] 게임 생성 파이프라인이 완료되었습니다.")
 
     def _stream_process(
@@ -635,10 +644,152 @@ def _write_secrets(secrets: dict[str, str]) -> None:
         pass
 
 
-def _latest_project_id_from_logs(logs: list[str]) -> str | None:
-    pattern = re.compile(r'"project_id"\s*:\s*"(\d{8}_\d{2,})"')
-    for line in reversed(logs):
-        match = pattern.search(line)
-        if match:
-            return match.group(1)
-    return None
+def _summarize_workflow_result(result_path: Path, return_code: int) -> dict[str, Any]:
+    """Extract a small user-facing summary from the full machine result and artifacts."""
+
+    summary: dict[str, Any] = {
+        "project_id": None,
+        "status": "passed" if return_code == 0 else "failed",
+        "failure_stage": None,
+        "failed_features": [],
+        "error_summary": "",
+    }
+    if not result_path.is_file():
+        summary["failure_stage"] = "workflow_process"
+        summary["error_summary"] = (
+            f"결과 파일이 생성되지 않았습니다. 프로세스 종료 코드: {return_code}"
+        )
+        return summary
+    try:
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+        summary["failure_stage"] = "workflow_result"
+        summary["error_summary"] = f"결과 JSON을 읽지 못했습니다: {type(error).__name__}: {error}"
+        return summary
+    if not isinstance(payload, dict):
+        summary["failure_stage"] = "workflow_result"
+        summary["error_summary"] = "결과 JSON이 객체 형식이 아닙니다."
+        return summary
+
+    project_id = payload.get("project_id")
+    if isinstance(project_id, str) and re.fullmatch(r"\d{8}_\d{2,}", project_id):
+        summary["project_id"] = project_id
+
+    failure_messages: list[str] = []
+    if summary["project_id"] is not None:
+        project_root = (WORKSPACE_ROOT / summary["project_id"]).resolve()
+        try:
+            project_root.relative_to(WORKSPACE_ROOT)
+        except ValueError:
+            project_root = WORKSPACE_ROOT
+        generation_failure = project_root / "validation" / "game_generation_failure.json"
+        if generation_failure.is_file():
+            try:
+                failure_payload = json.loads(generation_failure.read_text(encoding="utf-8"))
+                summary["failure_stage"] = str(failure_payload.get("stage") or "design_game_logic")
+                message = str(failure_payload.get("message") or "").strip()
+                if message:
+                    failure_messages.append(message)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError, AttributeError):
+                pass
+        checklist_results = (
+            project_root / "validation" / "feature_checklists" / "checked" / "results.json"
+        )
+        if checklist_results.is_file():
+            try:
+                checklist_payload = json.loads(checklist_results.read_text(encoding="utf-8"))
+                attempts = checklist_payload.get("attempts", [])
+                if isinstance(attempts, list) and attempts:
+                    failed = attempts[-1].get("failed_features", [])
+                    if isinstance(failed, list):
+                        summary["failed_features"].extend(str(value) for value in failed)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError, AttributeError):
+                pass
+
+    game_validation = payload.get("game_validation")
+    if (
+        not failure_messages
+        and isinstance(game_validation, dict)
+        and game_validation.get("status") != "passed"
+    ):
+        summary["failure_stage"] = summary["failure_stage"] or "game_validation"
+        failure_messages.extend(_error_messages(game_validation))
+
+    visual_validation = payload.get("visual_validation")
+    if (
+        not failure_messages
+        and isinstance(visual_validation, dict)
+        and visual_validation.get("status") == "failed"
+    ):
+        summary["failure_stage"] = "visual_validation"
+        visual_summary = str(visual_validation.get("summary") or "").strip()
+        if visual_summary:
+            failure_messages.append(visual_summary)
+
+    final_validation = payload.get("final_validation")
+    if (
+        not failure_messages
+        and isinstance(final_validation, dict)
+        and final_validation.get("status") != "passed"
+    ):
+        summary["failure_stage"] = "final_validation"
+        failure_messages.extend(_error_messages(final_validation))
+
+    game_validator = payload.get("game_validator_ai")
+    if (
+        not failure_messages
+        and isinstance(game_validator, dict)
+        and game_validator.get("status") != "passed"
+    ):
+        summary["failure_stage"] = "game_quality_validator"
+        validator_summary = str(game_validator.get("summary") or "").strip()
+        if validator_summary:
+            failure_messages.append(validator_summary)
+
+    combined = " | ".join(dict.fromkeys(failure_messages))
+    generated_ids = re.findall(r"\bgenerated_feature_\d+\b", combined)
+    summary["failed_features"].extend(generated_ids)
+    summary["failed_features"] = list(dict.fromkeys(summary["failed_features"]))
+    if return_code != 0 and not combined:
+        combined = f"파이프라인이 종료 코드 {return_code}로 실패했습니다."
+    summary["error_summary"] = _compact_log_text(combined, max_length=900)
+    return summary
+
+
+def _error_messages(validation: dict[str, Any]) -> list[str]:
+    messages: list[str] = []
+    issues = validation.get("issues", [])
+    if not isinstance(issues, list):
+        return messages
+    for issue in issues:
+        if not isinstance(issue, dict) or issue.get("severity") != "error":
+            continue
+        code = str(issue.get("code") or "UNKNOWN")
+        message = str(issue.get("message") or "").strip()
+        messages.append(f"{code}: {message}" if message else code)
+    return messages
+
+
+def _compact_log_text(value: str, *, max_length: int) -> str:
+    compact = re.sub(r"\s+", " ", value).strip()
+    if len(compact) <= max_length:
+        return compact
+    return compact[: max_length - 1].rstrip() + "…"
+
+
+def _append_workflow_summary(job: WorkflowJob, summary: dict[str, Any]) -> None:
+    project_id = summary.get("project_id") or "확인되지 않음"
+    job.append_log("[RESULT] ----------------------------------------")
+    job.append_log(f"[RESULT] 프로젝트 ID: {project_id}")
+    if summary.get("status") == "passed":
+        job.append_log("[RESULT] 결과: 성공")
+        return
+    stage = summary.get("failure_stage") or "확인되지 않음"
+    failed_features = summary.get("failed_features") or []
+    feature_text = ", ".join(failed_features) if failed_features else "식별되지 않음"
+    error_summary = (
+        summary.get("error_summary") or "상세 오류를 workflow_result.json에서 확인하세요."
+    )
+    job.append_log(f"[RESULT] 실패 단계: {stage}")
+    job.append_log(f"[RESULT] 실패 Feature: {feature_text}")
+    job.append_log(f"[RESULT] 오류 요약: {error_summary}")

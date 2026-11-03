@@ -124,3 +124,65 @@ def test_generation_request_rejects_custom_style_without_file():
             viewpoint="사이드뷰",
             condition="점프 게임",
         )
+
+
+def test_workflow_summary_extracts_failed_stage_and_features(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    service = _load_service_module()
+    workspace = tmp_path / "workspace"
+    project_id = "20261103_02"
+    validation_root = workspace / project_id / "validation"
+    validation_root.mkdir(parents=True)
+    monkeypatch.setattr(service, "WORKSPACE_ROOT", workspace.resolve())
+    message = (
+        "Required generated features did not pass validation after bounded repairs: "
+        "generated_feature_03: ValueError: missing scene objects; "
+        "generated_feature_05: ValueError: unsupported Unity API; "
+        "generated_feature_06: StructuredOutputError: token limit"
+    )
+    (validation_root / "game_generation_failure.json").write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "stage": "design_game_logic",
+                "message": message,
+            }
+        ),
+        encoding="utf-8",
+    )
+    result_path = tmp_path / "workflow_result.json"
+    result_path.write_text(
+        json.dumps(
+            {
+                "project_id": project_id,
+                "game_validation": {
+                    "status": "failed",
+                    "issues": [
+                        {
+                            "code": "GAME_GENERATION_FAILED",
+                            "severity": "error",
+                            "message": message,
+                        }
+                    ],
+                },
+                "visual_validation": {
+                    "status": "failed",
+                    "summary": "Visual validation requires passed game validation",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = service._summarize_workflow_result(result_path, 1)
+
+    assert summary["project_id"] == project_id
+    assert summary["failure_stage"] == "design_game_logic"
+    assert summary["failed_features"] == [
+        "generated_feature_03",
+        "generated_feature_05",
+        "generated_feature_06",
+    ]
+    assert "final_state" not in summary["error_summary"]

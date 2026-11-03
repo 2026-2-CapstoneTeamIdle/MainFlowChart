@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import io
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from mainflow.run_flow import (
     REPOSITORY_ROOT,
     configure_console_encoding,
+    emit_result,
     load_repository_environment,
     main,
 )
@@ -107,6 +111,16 @@ class RunFlowExitTest(unittest.TestCase):
             self.assertEqual(buffer.getvalue().decode("utf-8").splitlines(), ["한글 — Unicode"])
         finally:
             stream.close_without_closing_buffer()
+
+    def test_quiet_result_writes_full_json_without_printing_it(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            result_file = Path(temporary_directory) / "workflow_result.json"
+            output = {"project_id": "20261103_02", "final_state": {"large": "value"}}
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                emit_result(output, result_file, quiet=True)
+
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertEqual(json.loads(result_file.read_text(encoding="utf-8")), output)
 
 
 if __name__ == "__main__":
