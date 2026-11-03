@@ -486,9 +486,9 @@ class LocalAIJsonClient:
             raise ValueError("LOCAL_LLM_MODEL must not be empty")
         normalized_node = re.sub(r"[^A-Za-z0-9]+", "_", node_name or "").strip("_").upper()
         planning_defaults = {
-            "CONDITION_FEATURE_ANALYSIS": (180, 1024, 1),
-            "GENRE_FEATURE_ENRICHMENT": (180, 2048, 1),
-            "DESIGN_V2": (300, 4096, 1),
+            "CONDITION_FEATURE_ANALYSIS": (180, 2048, 1),
+            "GENRE_FEATURE_ENRICHMENT": (180, 3072, 1),
+            "DESIGN_V2": (300, 6144, 1),
             "BLUEPRINT": (180, 2048, 1),
             "FEATURE_CHECKLIST_GENERATION": (240, 3072, 1),
             # Ten self-contained methods are generated per structured request and then assembled
@@ -799,7 +799,7 @@ def create_feature_generator_from_environment() -> GeminiFeatureGenerator:
     provider = resolve_feature_provider_from_environment()
     attempts = {
         "plan_attempts": int(os.environ.get("MAINFLOW_FEATURE_PLAN_ATTEMPTS", "2")),
-        "source_attempts": int(os.environ.get("MAINFLOW_FEATURE_SOURCE_ATTEMPTS", "2")),
+        "source_attempts": int(os.environ.get("MAINFLOW_FEATURE_SOURCE_ATTEMPTS", "3")),
     }
     if provider == "openai":
         return GeminiFeatureGenerator(OpenAIJsonClient.from_environment(), **attempts)
@@ -1489,7 +1489,7 @@ namespace TeamIdle.GameTemplate.Generated
         return cls(
             GeminiApiClient.from_environment(),
             plan_attempts=int(os.environ.get("MAINFLOW_FEATURE_PLAN_ATTEMPTS", "2")),
-            source_attempts=int(os.environ.get("MAINFLOW_FEATURE_SOURCE_ATTEMPTS", "2")),
+            source_attempts=int(os.environ.get("MAINFLOW_FEATURE_SOURCE_ATTEMPTS", "3")),
         )
 
     def generate(
@@ -1607,7 +1607,15 @@ namespace TeamIdle.GameTemplate.Generated
             "genre": design["game_spec"]["genre"],
             "viewpoint": design["game_spec"]["viewpoint"],
             "selected_existing_modules": design["selected_modules"],
-            "all_required_features": design["game_spec"]["features"],
+            "other_feature_owners": [
+                {
+                    "feature_id": str(feature.get("feature_id", "")),
+                    "name": str(feature.get("name") or feature.get("description", "unnamed")),
+                    "ownership": "external_do_not_implement",
+                }
+                for feature in design["game_spec"]["features"]
+                if feature.get("feature_id") != requirement["feature_id"]
+            ],
             "previously_generated_modules": GeminiFeatureGenerator._prior_generated_context(design),
             "runtime_invariants": runtime_invariants_for_genre(design["game_spec"]["genre"]),
             "level_zones": [
@@ -1631,10 +1639,11 @@ Describe bindings, runtime event flow, state changes, and observable acceptance 
 Plan at most three scene objects that this one feature directly owns. Do not list enemies, bases,
 global HUD objects, or other world content already owned by selected modules merely because they
 participate in the wider game loop. Refer to those through existing module APIs instead.
-Inspect all_required_features before planning. If this feature owns an actor or mutable state that
-a later required feature must configure, expose the smallest public property or method needed for
-that integration. If previously_generated_modules already owns the actor, reuse its exact public
-API instead of creating a duplicate actor or parallel state system.
+Every entry in other_feature_owners belongs to another module. Do not implement, validate, create
+scene objects for, or restate any of those features in this plan. If this feature owns actor state
+that another module may need, expose only the smallest public property or method needed for later
+integration. If previously_generated_modules already owns the actor, reuse its exact public API
+instead of creating a duplicate actor or parallel state system.
 scene_objects.components may contain only these existing Unity component names:
 Animator, AudioSource, BoxCollider2D, Button, Canvas, CanvasRenderer, CircleCollider2D,
 GameObject, Image, ParticleSystem, PolygonCollider2D, RectTransform, Rigidbody2D, Slider,
@@ -1675,7 +1684,7 @@ Context:
                 or not all(isinstance(item, str) and item.strip() for item in value)
             ):
                 raise ValueError(f"Feature implementation plan requires non-empty {key}")
-            result[key] = [item.strip()[:500] for item in value[:12]]
+            result[key] = [item.strip()[:300] for item in value[:6]]
         scene_objects = plan.get("scene_objects")
         if not isinstance(scene_objects, list):
             raise ValueError("Feature implementation plan requires scene_objects")
@@ -1841,6 +1850,14 @@ Context:
                         "and include the exact stable object_id string in source_code. Connect each "
                         "object to executable runtime behavior; do not create a missing-integration "
                         "placeholder or throw an exception."
+                    )
+                elif "must bind module dependencies from context" in error_text:
+                    feedback["required_action"] = (
+                        "For every dependency type listed by validation_error, locate its declared "
+                        "field and assign that field inside BindGeneratedFeature with the exact "
+                        "form `field = context.GetModule<DependencyType>();`. Keep the assignment "
+                        "after `bindingContext = context;`, then null-check the resolved field "
+                        "before use. Do not merely mention the type or resolve it in Update."
                     )
                 elif "is missing:" in error_text and (
                     "attribute" in error_text or "module ID" in error_text
@@ -2049,7 +2066,15 @@ Context:
             "genre": design["game_spec"]["genre"],
             "viewpoint": design["game_spec"]["viewpoint"],
             "selected_existing_modules": design["selected_modules"],
-            "all_required_features": design["game_spec"]["features"],
+            "other_feature_owners": [
+                {
+                    "feature_id": str(feature.get("feature_id", "")),
+                    "name": str(feature.get("name") or feature.get("description", "unnamed")),
+                    "ownership": "external_do_not_implement",
+                }
+                for feature in design["game_spec"]["features"]
+                if feature.get("feature_id") != requirement["feature_id"]
+            ],
             "previously_generated_modules": GeminiFeatureGenerator._prior_generated_context(design),
             "missing_requirements": requirements,
             "feature_implementation_plan": implementation_plan,
@@ -2062,9 +2087,10 @@ The missing requirement is immutable: preserve every explicit actor, trigger, at
 target, reward object, collection step, quantity, and cause/effect order. Do not substitute an
 easier mechanic. selected_existing_modules are capabilities, not permission to change behavior.
 Previously generated modules are part of this same game. Reuse their exact public members and
-owned scene actors instead of creating a competing copy. When this module owns state that another
-entry in all_required_features must later change, expose a minimal public property or method so a
-later module can integrate without reflection or scene-name guessing.
+owned scene actors instead of creating a competing copy. Every item in other_feature_owners is
+implemented elsewhere: do not add its actors, UI, checks, or behavior to this module. When this
+module owns state another module may change, expose a minimal public property or method so later
+integration does not require reflection or scene-name guessing.
 
 Rules:
 - Use namespace TeamIdle.GameTemplate.Generated, the exact skeleton below, and namespaces from
@@ -2257,6 +2283,7 @@ Context:
         source = self._normalize_known_type_aliases(source)
         source = self._normalize_host_owned_identity_scaffold(source, module_id, class_name)
         source = self._normalize_host_owned_binding_scaffold(source)
+        source = self._normalize_known_module_bindings(source)
         source = self._normalize_known_namespace_imports(source)
         if len(source) > 20_000:
             raise ValueError(f"Generated source is too large for {module_id}")
@@ -2267,6 +2294,7 @@ Context:
         if banned:
             raise ValueError(f"Generated source for {module_id} uses banned APIs: {banned}")
 
+        validation_issues: list[str] = []
         missing_namespaces = [
             namespace
             for type_name, namespace in self.KNOWN_TYPE_NAMESPACES.items()
@@ -2275,19 +2303,26 @@ Context:
             and f"{namespace}.{type_name}" not in source
         ]
         if missing_namespaces:
-            raise ValueError(
-                f"Generated source for {module_id} is missing namespace imports: "
-                f"{sorted(set(missing_namespaces))}"
+            validation_issues.append(
+                f"missing namespace imports: {sorted(set(missing_namespaces))}"
             )
-        self._validate_project_api_members(
-            source,
-            module_id,
-            additional_type_apis=generated_type_apis,
+        static_checks = (
+            lambda: self._validate_project_api_members(
+                source,
+                module_id,
+                additional_type_apis=generated_type_apis,
+            ),
+            lambda: self._validate_unity_api_members(source, module_id),
+            lambda: self._validate_binding_lifecycle(source, module_id),
+            lambda: self._validate_unity_value_type_mutations(source, module_id),
+            lambda: self._validate_single_generated_class(source, module_id, class_name),
+            lambda: self._validate_common_csharp_semantics(source, module_id),
         )
-        self._validate_unity_api_members(source, module_id)
-        self._validate_binding_lifecycle(source, module_id)
-        self._validate_unity_value_type_mutations(source, module_id)
-        self._validate_single_generated_class(source, module_id, class_name)
+        for check in static_checks:
+            try:
+                check()
+            except ValueError as error:
+                validation_issues.append(str(error))
 
         binding_requirements = {
             "InputAdapterModule": r"context\s*\.\s*GetModule\s*<\s*InputAdapterModule\s*>",
@@ -2295,15 +2330,18 @@ Context:
                 r"context\s*\.\s*GetModule\s*<\s*PlatformerMovementModule\s*>"
             ),
         }
-        missing_bindings = [
-            type_name
-            for type_name, pattern in binding_requirements.items()
-            if type_name in source and re.search(pattern, source) is None
-        ]
+        missing_bindings = []
+        for type_name, pattern in binding_requirements.items():
+            declared_fields = re.findall(
+                rf"\b(?:private|protected|internal|public)\s+{re.escape(type_name)}\s+"
+                r"([A-Za-z_][A-Za-z0-9_]*)\s*;",
+                source,
+            )
+            if declared_fields and re.search(pattern, source) is None:
+                missing_bindings.append(type_name)
         if missing_bindings:
-            raise ValueError(
-                f"Generated source for {module_id} must bind module dependencies from context: "
-                f"{missing_bindings}"
+            validation_issues.append(
+                f"must bind module dependencies from context: {missing_bindings}"
             )
 
         invalid_platformer_members: set[str] = set()
@@ -2320,8 +2358,8 @@ Context:
                 member for member in referenced_members if member not in {"ModuleId", "Bind"}
             )
         if invalid_platformer_members:
-            raise ValueError(
-                f"Generated source for {module_id} invents PlatformerMovementModule APIs: "
+            validation_issues.append(
+                "invents PlatformerMovementModule APIs: "
                 f"{sorted(invalid_platformer_members)}; base movement and jump are already owned "
                 "by the existing module"
             )
@@ -2360,26 +2398,32 @@ Context:
             if re.search(pattern, source) is None
         ]
         if missing:
-            raise ValueError(f"Generated source for {module_id} is missing: {missing}")
+            validation_issues.append(f"is missing: {missing}")
         if not self._has_valid_binding_completion(source):
-            raise ValueError(f"Generated source for {module_id} is missing: ['binding completion']")
+            validation_issues.append("is missing: ['binding completion']")
         if self._update_loop_uses_binding_context(source):
-            raise ValueError(
-                f"Generated source for {module_id} references method-local context from its "
+            validation_issues.append(
+                "references method-local context from its "
                 "update loop; store dependencies in private fields during BindGeneratedFeature"
             )
         if not self._has_active_behavior(source):
-            raise ValueError(
-                f"Generated source for {module_id} has no executable feature behavior "
-                "in a Unity runtime callback"
+            validation_issues.append(
+                "has no executable feature behavior in a Unity runtime callback"
             )
         placeholder_methods = self._placeholder_methods_reachable_from_runtime(source)
         if placeholder_methods:
-            raise ValueError(
-                f"Generated source for {module_id} delegates runtime behavior to empty methods: "
-                f"{placeholder_methods}"
+            validation_issues.append(
+                f"delegates runtime behavior to empty methods: {placeholder_methods}"
             )
-        self._validate_requirement_semantics(source, module_id, requirement)
+        try:
+            self._validate_requirement_semantics(source, module_id, requirement)
+        except ValueError as error:
+            validation_issues.append(str(error))
+        if validation_issues:
+            raise ValueError(
+                f"Generated source validation failed for {module_id}: "
+                + " | ".join(dict.fromkeys(validation_issues))
+            )
         return {
             "module_id": module_id,
             "feature_id": feature_id,
@@ -2885,6 +2929,37 @@ Context:
             )
 
     @staticmethod
+    def _validate_common_csharp_semantics(source: str, module_id: str) -> None:
+        """Reject deterministic C# type errors that regex API allow-lists cannot see."""
+
+        issues: list[str] = []
+        if re.search(
+            r"\b(?:GetComponentsInChildren|GetComponent|AddComponent)\s*<\s*GameObject\s*>",
+            source,
+        ):
+            issues.append("GameObject cannot be used as a Component generic argument")
+        if re.search(
+            r"\bif\s*\([\s\S]{0,500}?Physics2D\s*\.\s*"
+            r"Overlap(?:Circle|Box|Capsule|Point)\s*\([\s\S]{0,500}?(?:\|\||&&)"
+            r"[\s\S]{0,500}?\)\s*\{",
+            source,
+            re.DOTALL,
+        ):
+            issues.append(
+                "Physics2D.Overlap* returns a Collider2D and must be compared with null before "
+                "boolean operators"
+            )
+        if re.search(
+            r"\b(?:Collider2D|Collision2D)\s*\.\s*(?:onTrigger|onCollision)",
+            source,
+        ):
+            issues.append("Unity 2D collision callbacks are MonoBehaviour methods, not events")
+        if issues:
+            raise ValueError(
+                f"Generated source for {module_id} has deterministic C# type errors: {issues}"
+            )
+
+    @staticmethod
     def _validate_binding_lifecycle(source: str, module_id: str) -> None:
         """Prevent generated code from reading a binding that the assembler has not supplied."""
 
@@ -3069,6 +3144,43 @@ Context:
             return source
         insertion = "\n" + "\n".join(additions) + "\n        "
         return source[:closing_brace] + insertion + source[closing_brace:]
+
+    @staticmethod
+    def _normalize_known_module_bindings(source: str) -> str:
+        """Bind declared host module fields through the generated-feature context.
+
+        Resolving a repository-owned module is deterministic integration boilerplate, not game
+        behavior. Models occasionally declare an input or movement dependency and then forget
+        the corresponding ``GetModule<T>()`` assignment. Repair only the two dependency types
+        whose generated-feature contract explicitly permits this host-owned normalization.
+        """
+
+        capture = re.search(
+            r"(?m)^(?P<indent>[ \t]*)bindingContext\s*=\s*context\s*;",
+            source,
+        )
+        if capture is None:
+            return source
+
+        assignments: list[str] = []
+        for type_name in ("InputAdapterModule", "PlatformerMovementModule"):
+            if re.search(
+                rf"context\s*\.\s*GetModule\s*<\s*{re.escape(type_name)}\s*>\s*\(\s*\)",
+                source,
+            ):
+                continue
+            field_names = re.findall(
+                rf"\b(?:private|protected|internal|public)\s+{re.escape(type_name)}\s+"
+                r"([A-Za-z_][A-Za-z0-9_]*)\s*;",
+                source,
+            )
+            assignments.extend(
+                f"{capture.group('indent')}{field_name} = context.GetModule<{type_name}>();"
+                for field_name in field_names
+            )
+        if not assignments:
+            return source
+        return source[: capture.end()] + "\n" + "\n".join(assignments) + source[capture.end() :]
 
     @staticmethod
     def _has_valid_binding_completion(source: str) -> bool:

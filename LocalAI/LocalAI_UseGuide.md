@@ -4,7 +4,7 @@
 (API 이름: `gemma4-12b-it-qat-q4-0`)과 Qwen2.5-Coder-7B-Instruct Q5_K_M
 (API 이름: `qwen2.5-coder-7b-q5-k-m`)을 함께 등록한다.
 LocalAI v4.11.0 llama.cpp를 사용한다. Qwen GGUF는 약 5.44GB이고 Gemma 12B Q4 가중치는
-약 6.7GB이며 멀티모달 파일은 설치하지 않는다. 두 모델은 context 16384, gpu_layers 99,
+약 6.7GB이며 멀티모달 파일은 설치하지 않는다. 두 모델은 context 24576, gpu_layers 99,
 동시 추론 슬롯 1개,
 호스트 프롬프트 캐시 상한 1024MiB와
 동시 활성 backend 1개로 설정한다. 12GB GPU에서 모델 전체를 GPU에 올리되 Windows와
@@ -12,7 +12,7 @@ Unity가 사용할 여유를 남기는 구성이다.
 Condition→Feature와 Feature→Checklist는 Gemma를 사용하고 Checklist→Unity Test C#은 Qwen
 Coder를 사용한다. 두 모델은 동시에 VRAM에 상주하지 않고 요청 역할이 바뀔 때 교체된다.
 자동 컨텍스트 축소는 끄므로 LocalAI 시작 로그의 effective runtime tuning에서
-context=16384인지 확인한다. 시각 검증 VLM은 context 8192를 유지한다.
+context=24576인지 확인한다. 시각 검증 VLM은 context 8192를 유지한다.
 
 선택형 시각 검증은 Qwen3-VL-4B-Instruct Q4_K_M과 Q8 vision projector를 사용한다.
 `preload-visual.yaml`을 선택하면 코드 모델과 VLM을 함께 등록하되 한 번에 한 backend만
@@ -28,7 +28,7 @@ GPU 추론만 Vast.ai의 vLLM으로 옮길 때는 이 로컬 구성을 삭제하
 전환한다. 역할별 Coder/VLM/이미지 endpoint와 SSH tunnel 설정은
 `docs/VastAIManager.md`를 따른다.
 
-MainFlow에도 같은 값을 `LOCAL_LLM_CONTEXT_TOKENS=16384`로 설정한다. 이 값은 서버의
+MainFlow에도 같은 값을 `LOCAL_LLM_CONTEXT_TOKENS=24576`로 설정한다. 이 값은 서버의
 `context_size`를 변경하지 않고 호출 전 입력 예산을 검사하는 용도이므로 두 값을 항상 같게 유지한다.
 기능 생성은 전체 API 인덱스 대신 요구사항 관련 모듈의 시그니처만 검색해 전달한다.
 
@@ -46,9 +46,9 @@ docker compose -f compose.yaml -f LocalAI/compose.yaml logs -f Local-AIModel
 
 ```powershell
 uv run --locked python -m LocalAI.check_connection `
-  --model qwen2.5-coder-7b-q5-k-m --context-tokens 16384
+  --model qwen2.5-coder-7b-q5-k-m --context-tokens 24576
 uv run --locked python -m LocalAI.check_connection `
-  --model gemma4-12b-it-qat-q4-0 --context-tokens 16384
+  --model gemma4-12b-it-qat-q4-0 --context-tokens 24576
 ```
 
 Web UI: http://127.0.0.1:8080 / 호스트 API: http://127.0.0.1:8080/v1.
@@ -171,19 +171,19 @@ $env:MAINFLOW_FEATURE_PROVIDER = "local"
 $env:LOCAL_LLM_BASE_URL = "http://127.0.0.1:8080/v1"
 $env:LOCAL_LLM_MODEL = "qwen2.5-coder-7b-q5-k-m"
 $env:LLM_TIMEOUT_SECONDS = "300"
-$env:LOCAL_LLM_CONTEXT_TOKENS = "16384"
+$env:LOCAL_LLM_CONTEXT_TOKENS = "24576"
 $env:MAINFLOW_LOCAL_MAX_OUTPUT_TOKENS = "8192"
 $env:MAINFLOW_LOCAL_STRUCTURED_ATTEMPTS = "3"
 $env:MAINFLOW_FEATURE_PLAN_ATTEMPTS = "2"
-$env:MAINFLOW_FEATURE_SOURCE_ATTEMPTS = "2"
+$env:MAINFLOW_FEATURE_SOURCE_ATTEMPTS = "3"
 $env:MAINFLOW_FEATURE_GENERATION_BUDGET_SECONDS = "420"
 $env:LLM_FEATURE_CODE_GENERATION_STRUCTURED_ATTEMPTS = "1"
 $env:LLM_FEATURE_CODE_GENERATION_TIMEOUT_SECONDS = "180"
-$env:LLM_CONDITION_FEATURE_ANALYSIS_MAX_OUTPUT_TOKENS = "1024"
+$env:LLM_CONDITION_FEATURE_ANALYSIS_MAX_OUTPUT_TOKENS = "2048"
 $env:LLM_CONDITION_FEATURE_ANALYSIS_STRUCTURED_ATTEMPTS = "1"
-$env:LLM_GENRE_FEATURE_ENRICHMENT_MAX_OUTPUT_TOKENS = "2048"
+$env:LLM_GENRE_FEATURE_ENRICHMENT_MAX_OUTPUT_TOKENS = "3072"
 $env:LLM_GENRE_FEATURE_ENRICHMENT_STRUCTURED_ATTEMPTS = "1"
-$env:LLM_DESIGN_V2_MAX_OUTPUT_TOKENS = "4096"
+$env:LLM_DESIGN_V2_MAX_OUTPUT_TOKENS = "6144"
 $env:LLM_DESIGN_V2_STRUCTURED_ATTEMPTS = "1"
 $env:MAINFLOW_DESIGN_V2_CUSTOMIZATION_RETRIES = "0"
 $env:LLM_FEATURE_CHECKLIST_GENERATION_MAX_OUTPUT_TOKENS = "3072"

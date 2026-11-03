@@ -19,7 +19,7 @@ from game_pipeline.gemini_feature_generator import (
 from mainflow.contracts import FeatureRequirement, GameGenre, Viewpoint
 
 MAX_INFERRED_FEATURES = 30
-MAX_INFERRED_FEATURES_PER_REQUEST = 8
+MAX_INFERRED_FEATURES_PER_REQUEST = 5
 FEATURES_PER_DEPENDENCY_REQUEST = 3
 DEFAULT_CONDITION_FEATURE_MODEL = "gemma4-12b-it-qat-q4-0"
 
@@ -64,25 +64,25 @@ GENRE_FEATURE_ENRICHMENT_SCHEMA: dict[str, Any] = {
                             "preconditions": {
                                 "type": "array",
                                 "minItems": 1,
-                                "maxItems": 6,
+                                "maxItems": 3,
                                 "items": {"type": "string"},
                             },
                             "steps": {
                                 "type": "array",
                                 "minItems": 1,
-                                "maxItems": 8,
+                                "maxItems": 3,
                                 "items": {"type": "string"},
                             },
                             "expected_results": {
                                 "type": "array",
                                 "minItems": 1,
-                                "maxItems": 8,
+                                "maxItems": 3,
                                 "items": {"type": "string"},
                             },
                             "failure_signals": {
                                 "type": "array",
                                 "minItems": 1,
-                                "maxItems": 8,
+                                "maxItems": 3,
                                 "items": {"type": "string"},
                             },
                         },
@@ -178,20 +178,36 @@ class GenreFeatureEnricher:
         existing_feature_ids = {feature["feature_id"] for feature in existing_features}
         accepted: list[dict[str, Any]] = []
         rejected: list[dict[str, Any]] = []
-        for scope, target_feature_ids, target_features in requests:
-            response = self.client.generate_json(
-                self._prompt(
-                    genre=genre,
-                    viewpoint=viewpoint,
-                    user_condition=user_condition,
-                    core_loop=core_loop,
-                    existing_features=existing_features,
-                    target_features=target_features,
-                    closure_scope=scope,
-                    baseline_contract=baseline_contract,
-                ),
-                GENRE_FEATURE_ENRICHMENT_SCHEMA,
-            )
+        failed_requests: list[dict[str, object]] = []
+        successful_request_count = 0
+        for request_index, (scope, target_feature_ids, target_features) in enumerate(
+            requests, start=1
+        ):
+            try:
+                response = self.client.generate_json(
+                    self._prompt(
+                        genre=genre,
+                        viewpoint=viewpoint,
+                        user_condition=user_condition,
+                        core_loop=core_loop,
+                        existing_features=existing_features,
+                        target_features=target_features,
+                        closure_scope=scope,
+                        baseline_contract=baseline_contract,
+                    ),
+                    GENRE_FEATURE_ENRICHMENT_SCHEMA,
+                )
+            except (RuntimeError, TypeError, ValueError) as error:
+                failed_requests.append(
+                    {
+                        "request_index": request_index,
+                        "scope": scope,
+                        "target_feature_ids": sorted(target_feature_ids),
+                        "error": f"{type(error).__name__}: {error}",
+                    }
+                )
+                continue
+            successful_request_count += 1
             raw_features = response.get("features")
             if not isinstance(raw_features, list):
                 raise TypeError("Genre feature enrichment must return a features array")
@@ -287,6 +303,9 @@ class GenreFeatureEnricher:
                 ],
                 "added_feature_count": len(inferred),
                 "request_count": len(requests),
+                "successful_request_count": successful_request_count,
+                "failed_request_count": len(failed_requests),
+                "failed_requests": failed_requests,
                 "dependency_feature_count": sum(
                     feature.get("origin") == "requirement_dependency" for feature in inferred
                 ),
@@ -365,8 +384,11 @@ class GenreFeatureEnricher:
             "Do not add optional polish, lore, "
             "monetization, networking, achievements, or unrelated scope. Each description must be "
             "one concrete executable behavior, and each acceptance criterion must be observable in "
-            "Unity Play Mode. For every inferred feature, write a concrete checklist that can be "
-            "followed after Unity compilation: preconditions establish the actor and initial state, "
+            "Unity Play Mode. Keep name under 30 characters and description, rationale, and "
+            "acceptance_criteria under 180 characters each. Do not explain reasoning outside "
+            "those fields. For every inferred feature, write a concrete checklist that can be "
+            "followed after Unity compilation. Use at most three short entries in each checklist "
+            "array: preconditions establish the actor and initial state, "
             "steps describe input or elapsed-time actions, expected_results contain observable "
             "state/UI/scene changes, and failure_signals identify disconnected or no-op behavior. "
             "Do not use vague entries such as 'works correctly'. Classify implementation_kind "

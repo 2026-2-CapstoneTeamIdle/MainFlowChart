@@ -24,6 +24,39 @@ class FakeStructuredClient:
 
 
 class ConditionFeatureAnalysisTest(unittest.TestCase):
+    def test_preserves_successful_segments_when_one_request_fails(self) -> None:
+        class PartialClient:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def generate_json(self, prompt: str, schema: Mapping[str, Any]) -> Mapping[str, Any]:
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("token limit")
+                return {
+                    "features": [
+                        {
+                            "name": "보석 수집 완료",
+                            "description": "모든 보석을 모으면 목표 지점이 활성화된다.",
+                            "source_text": "보석을 모두 모으면 목표가 열린다",
+                            "acceptance_criteria": "마지막 보석 수집 후 목표가 활성화된다.",
+                            "implementation_kind": "scene_binding",
+                        }
+                    ]
+                }
+
+        result = ConditionFeatureAnalyzer(PartialClient(), "test").analyze(
+            genre="플랫포머",
+            viewpoint="사이드뷰",
+            condition="가시에 닿으면 체력이 감소한다. 보석을 모두 모으면 목표가 열린다.",
+            detected_features=[],
+        )
+
+        self.assertEqual([feature["name"] for feature in result.features], ["보석 수집 완료"])
+        self.assertEqual(result.report["successful_request_count"], 1)
+        self.assertEqual(result.report["failed_request_count"], 1)
+        self.assertEqual(result.report["failed_segments"][0]["segment_index"], 1)
+
     def test_replaces_vague_custom_clause_with_atomic_user_features(self) -> None:
         client = FakeStructuredClient(
             {

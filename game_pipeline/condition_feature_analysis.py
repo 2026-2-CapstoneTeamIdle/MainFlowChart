@@ -92,20 +92,31 @@ class ConditionFeatureAnalyzer:
         }
         accepted: list[FeatureRequirement] = []
         rejected: list[dict[str, str]] = []
+        failed_segments: list[dict[str, object]] = []
         condition_segments = _split_condition(condition)
         for segment_index, segment in enumerate(condition_segments, start=1):
-            response = self.client.generate_json(
-                self._prompt(
-                    genre,
-                    viewpoint,
-                    condition,
-                    segment,
-                    segment_index,
-                    len(condition_segments),
-                    detected_features,
-                ),
-                CONDITION_FEATURE_SCHEMA,
-            )
+            try:
+                response = self.client.generate_json(
+                    self._prompt(
+                        genre,
+                        viewpoint,
+                        condition,
+                        segment,
+                        segment_index,
+                        len(condition_segments),
+                        detected_features,
+                    ),
+                    CONDITION_FEATURE_SCHEMA,
+                )
+            except (RuntimeError, TypeError, ValueError) as error:
+                failed_segments.append(
+                    {
+                        "segment_index": segment_index,
+                        "segment": segment,
+                        "error": f"{type(error).__name__}: {error}",
+                    }
+                )
+                continue
             raw_features = response.get("features")
             if not isinstance(raw_features, list):
                 raise TypeError("Condition feature analysis must return a features array")
@@ -151,6 +162,9 @@ class ConditionFeatureAnalyzer:
                 "explicit_feature_count": len(features),
                 "added_feature_count": len(accepted),
                 "request_count": len(condition_segments),
+                "successful_request_count": len(condition_segments) - len(failed_segments),
+                "failed_request_count": len(failed_segments),
+                "failed_segments": failed_segments,
                 "request_segments": condition_segments,
                 "features": [
                     {
@@ -190,8 +204,10 @@ class ConditionFeatureAnalyzer:
             "failure condition in the user's condition into atomic implementable features. Do "
             "not add prerequisites or genre defaults in this stage; a separate closure stage "
             "does that. Do not collapse a compound sentence into one vague custom feature. Each "
-            "feature must describe one runtime behavior and have an observable Unity Play Mode "
-            "acceptance criterion. Preserve concrete qualifiers such as all items, patrol, "
+            "feature must describe one runtime behavior and have one short observable Unity Play "
+            "Mode acceptance criterion. Keep name under 30 characters and description, "
+            "source_text, and acceptance_criteria under 160 characters each. Preserve concrete "
+            "qualifiers such as all items, patrol, "
             "checkpoint, unlock-on-button, destination, input key, direction count, and resource "
             f"cost. Return no more than {MAX_FEATURES_PER_REQUEST} atomic features for this "
             "segment. Choose generate_code only when the behavior is not represented by a detected "

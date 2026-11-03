@@ -7,7 +7,7 @@
       uri: huggingface://google/gemma-4-12B-it-qat-q4_0-gguf/gemma-4-12b-it-qat-q4_0.gguf
   overrides:
     backend: llama-cpp
-    context_size: 16384
+    context_size: 24576
     gpu_layers: 99
     low_vram: true
     function:
@@ -18,7 +18,7 @@
       model: gemma-4-12b-it-qat-q4_0.gguf
       # The referenced gallery template also defines this nested value. Override it during
       # installation so it cannot retain the gallery's smaller default.
-      context_size: 16384
+      context_size: 24576
       temperature: 0.1
 
 - url: https://raw.githubusercontent.com/mudler/LocalAI/v4.11.0/gallery/qwen3.yaml
@@ -29,7 +29,7 @@
       sha256: 586844eac4d6d6321689f0192c8aa8e69cd8625974a5cc2d925b1a03366e4d16
   overrides:
     backend: llama-cpp
-    context_size: 16384
+    context_size: 24576
     gpu_layers: 99
     low_vram: false
     options:
@@ -38,5 +38,5 @@
       - fit_params:false
     parameters:
       model: qwen2.5-coder-7b-instruct-q5_k_m.gguf
-      context_size: 16384
+      context_size: 24576
       temperature: 0.1

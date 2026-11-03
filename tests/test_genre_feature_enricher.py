@@ -47,6 +47,58 @@ class FakeStructuredClient:
 
 
 class GenreFeatureEnricherTest(unittest.TestCase):
+    def test_preserves_successful_batches_when_later_request_fails(self) -> None:
+        class PartialClient:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def generate_json(self, prompt: str, schema: Mapping[str, Any]) -> Mapping[str, Any]:
+                self.calls += 1
+                if self.calls > 1:
+                    raise RuntimeError("invalid trailing JSON")
+                return {
+                    "features": [
+                        {
+                            "name": "피해 결과 표시",
+                            "description": "접촉 피해 직후 HUD 체력 값이 감소한다.",
+                            "rationale": "피해 결과가 플레이어에게 보여야 한다.",
+                            "acceptance_criteria": "접촉 전후 HUD 체력 값을 비교하면 감소한다.",
+                            "checklist": {
+                                "preconditions": ["플레이어 체력이 양수이다."],
+                                "steps": ["플레이어를 가시에 접촉시킨다."],
+                                "expected_results": ["HUD 체력 값이 감소한다."],
+                                "failure_signals": ["HUD 값이 변하지 않는다."],
+                            },
+                            "closure_kind": "user_requirement_dependency",
+                            "supports_feature_ids": ["feature-01"],
+                            "dependency_role": "player_feedback",
+                            "implementation_kind": "scene_binding",
+                            "target_mechanics": ["health_damage"],
+                        }
+                    ]
+                }
+
+        existing: list[FeatureRequirement] = [
+            {
+                "feature_id": "feature-01",
+                "name": "접촉 피해",
+                "description": "가시에 닿으면 플레이어 체력이 감소한다.",
+                "source_text": "가시에 닿으면 체력이 감소한다.",
+            }
+        ]
+        result = GenreFeatureEnricher(PartialClient(), "test").enrich(
+            genre="플랫포머",
+            viewpoint="사이드뷰",
+            user_condition="가시에 닿으면 체력이 감소한다.",
+            core_loop="발판을 건너 목표에 도달한다.",
+            existing_features=existing,
+            baseline_contract={"mechanics": ["health_damage"]},
+        )
+
+        self.assertEqual([feature["name"] for feature in result.features[1:]], ["피해 결과 표시"])
+        self.assertEqual(result.report["successful_request_count"], 1)
+        self.assertEqual(result.report["failed_request_count"], 1)
+
     def test_adds_missing_genre_features_and_preserves_user_features(self) -> None:
         client = FakeStructuredClient(
             {

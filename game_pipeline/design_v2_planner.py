@@ -95,7 +95,7 @@ class StagedDesignV2Planner:
     def __init__(
         self,
         client: StructuredJsonClient,
-        provider: Literal["local", "gemini"],
+        provider: Literal["openai", "local", "vastai", "gemini"],
     ) -> None:
         self.client = client
         self.provider = provider
@@ -147,10 +147,38 @@ class StagedDesignV2Planner:
                     ),
                     _schema_for(baseline),
                 )
+                response = cast(Mapping[str, Any], _coerce_to_baseline_shape(response, baseline))
                 attempts = 1
-                self._validate_stage_response(stage, response, baseline, fallback, result)
+                try:
+                    self._validate_stage_response(stage, response, baseline, fallback, result)
+                except (TypeError, ValueError) as validation_error:
+                    if customization_retries <= 0:
+                        raise
+                    response = self.client.generate_json(
+                        self._validation_repair_prompt(
+                            stage,
+                            game_spec,
+                            design_intent,
+                            context,
+                            baseline,
+                            response,
+                            str(validation_error),
+                            implementation_index,
+                            variation_seed,
+                        ),
+                        _schema_for(baseline),
+                    )
+                    response = cast(
+                        Mapping[str, Any], _coerce_to_baseline_shape(response, baseline)
+                    )
+                    attempts = 2
+                    self._validate_stage_response(stage, response, baseline, fallback, result)
                 changed_paths = _changed_design_paths(response, baseline)
-                if len(changed_paths) < MIN_CUSTOMIZED_LEAVES and customization_retries > 0:
+                if (
+                    len(changed_paths) < MIN_CUSTOMIZED_LEAVES
+                    and customization_retries > 0
+                    and attempts == 1
+                ):
                     response = self.client.generate_json(
                         self._customization_prompt(
                             stage,
@@ -163,6 +191,9 @@ class StagedDesignV2Planner:
                             variation_seed,
                         ),
                         _schema_for(baseline),
+                    )
+                    response = cast(
+                        Mapping[str, Any], _coerce_to_baseline_shape(response, baseline)
                     )
                     attempts = 2
                     self._validate_stage_response(stage, response, baseline, fallback, result)
@@ -177,6 +208,18 @@ class StagedDesignV2Planner:
                 )
             except Exception as error:  # noqa: BLE001 - optional stage has a safe fallback
                 result[stage] = baseline  # type: ignore[literal-required]
+                # A customized content plan can introduce archetypes that an invalid level plan
+                # never placed. Keeping that content while falling back only the level makes all
+                # later documents fail the same cross-document count check. Roll the coupled pair
+                # back together and let later stages specialize a consistent bundle.
+                if stage == "level_plan" and "content_plan" in result:
+                    candidate = cast(DesignV2Bundle, {**fallback, **result})
+                    try:
+                        validate_design_v2(candidate)
+                    except (TypeError, ValueError):
+                        result["content_plan"] = fallback["content_plan"]
+                        if "content_plan" not in self.fallback_stages:
+                            self.fallback_stages.append("content_plan")
                 self.fallback_stages.append(stage)
                 print(
                     f"[FLOW] design v2 단계 fallback: {stage} "
@@ -341,6 +384,38 @@ class StagedDesignV2Planner:
             f"{json.dumps(previous_response, ensure_ascii=False, separators=(',', ':'))}"
         )
 
+    @staticmethod
+    def _validation_repair_prompt(
+        stage: str,
+        game_spec: GameSpec,
+        design_intent: str,
+        upstream: Mapping[str, Any],
+        baseline: Any,
+        previous_response: Mapping[str, Any],
+        validation_error: str,
+        implementation_index: Mapping[str, Any],
+        variation_seed: str = "",
+    ) -> str:
+        return (
+            f"Your previous {stage} response matched the JSON shape but failed the project's "
+            "deterministic design validator. Return only one complete corrected JSON object "
+            "matching the same schema. Fix the exact validator error while preserving every "
+            "valid upstream reference, required ID, executable scenario, HUD requirement, and "
+            "positive bounded initial statistic. Do not emit Markdown, C#, file paths, or "
+            "commentary.\n\n"
+            f"VALIDATION_ERROR={validation_error}\n"
+            f"USER_INTENT={design_intent}\n"
+            f"VARIATION_SEED={variation_seed}\n"
+            f"GAME_SPEC={json.dumps(game_spec, ensure_ascii=False, separators=(',', ':'))}\n"
+            "IMPLEMENTATION_INDEX="
+            f"{json.dumps(implementation_index, ensure_ascii=False, separators=(',', ':'))}\n"
+            f"UPSTREAM={json.dumps(upstream, ensure_ascii=False, separators=(',', ':'))}\n"
+            "SAFETY_CONSTRAINT_EXAMPLE="
+            f"{json.dumps(baseline, ensure_ascii=False, separators=(',', ':'))}\n"
+            "REJECTED_RESPONSE="
+            f"{json.dumps(previous_response, ensure_ascii=False, separators=(',', ':'))}"
+        )
+
 
 def create_design_v2_planner_from_environment() -> StagedDesignV2Planner | None:
     configured = os.environ.get("MAINFLOW_DESIGN_V2_PROVIDER", "").strip().lower()
@@ -367,25 +442,53 @@ def create_design_v2_planner_from_environment() -> StagedDesignV2Planner | None:
 
 
 def _schema_for(value: Any) -> dict[str, Any]:
-    if isinstance(value, Mapping):
-        properties = {key: _schema_for(item) for key, item in value.items()}
+    return _schema_for_samples([value])
+
+
+def _schema_for_samples(samples: list[Any]) -> dict[str, Any]:
+    """Infer one strict schema from all sibling examples instead of the first item only.
+
+    A level's first zone may legitimately have no hazards while later zones contain hazard
+    placement objects. Looking only at the first zone produced ``items: {}``, which the OpenAI
+    strict-schema endpoint rejects before inference. Aggregating sibling samples preserves the
+    known object shape. A collection that is empty in every sample is constrained to remain
+    empty while still carrying the explicit item type required by the endpoint.
+    """
+
+    non_null = [sample for sample in samples if sample is not None]
+    if not non_null:
+        return {"type": "null"}
+    if all(isinstance(sample, Mapping) for sample in non_null):
+        mappings = [cast(Mapping[str, Any], sample) for sample in non_null]
+        property_names = list(mappings[0])
+        properties = {
+            key: _schema_for_samples([mapping[key] for mapping in mappings if key in mapping])
+            for key in property_names
+        }
         return {
             "type": "object",
             "additionalProperties": False,
             "required": list(properties),
             "properties": properties,
         }
-    if isinstance(value, list):
+    if all(isinstance(sample, list) for sample in non_null):
+        items = [item for sample in non_null for item in cast(list[Any], sample)]
+        if not items:
+            return {
+                "type": "array",
+                "maxItems": 0,
+                "items": {"type": "string"},
+            }
         return {
             "type": "array",
-            "items": _schema_for(value[0]) if value else {},
+            "items": _schema_for_samples(items),
         }
-    if isinstance(value, bool):
+    if all(isinstance(sample, bool) for sample in non_null):
         return {"type": "boolean"}
-    if isinstance(value, (int, float)):
+    if all(
+        not isinstance(sample, bool) and isinstance(sample, (int, float)) for sample in non_null
+    ):
         return {"type": "number"}
-    if value is None:
-        return {"type": ["object", "null"]}
     return {"type": "string"}
 
 
@@ -416,6 +519,39 @@ def _require_same_shape(value: Any, baseline: Any, path: str) -> None:
         matches = isinstance(value, str)
     if not matches:
         raise ValueError(f"{path} has the wrong value type")
+
+
+def _coerce_to_baseline_shape(value: Any, baseline: Any) -> Any:
+    """Repair harmless scalar typing drift before strict cross-document validation.
+
+    Small local models frequently quote numeric values even under a JSON schema. Converting only
+    values whose baseline is already numeric is deterministic and cannot invent design content.
+    """
+
+    if isinstance(baseline, Mapping) and isinstance(value, Mapping):
+        return {
+            key: _coerce_to_baseline_shape(item, baseline[key]) if key in baseline else item
+            for key, item in value.items()
+        }
+    if isinstance(baseline, list) and isinstance(value, list) and baseline:
+        return [
+            _coerce_to_baseline_shape(
+                item, baseline[index] if index < len(baseline) else baseline[0]
+            )
+            for index, item in enumerate(value)
+        ]
+    if isinstance(baseline, bool):
+        return value
+    if isinstance(baseline, (int, float)) and isinstance(value, str):
+        stripped = value.strip()
+        try:
+            number = float(stripped)
+        except ValueError:
+            return value
+        if isinstance(baseline, int) and number.is_integer():
+            return int(number)
+        return number
+    return value
 
 
 def _changed_design_paths(value: Any, baseline: Any, path: str = "") -> list[str]:

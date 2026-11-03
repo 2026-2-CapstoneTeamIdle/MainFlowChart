@@ -13,6 +13,8 @@ from game_pipeline.design_v2_planner import (
     REVISION_STAGE,
     STAGE_ORDER,
     StagedDesignV2Planner,
+    _coerce_to_baseline_shape,
+    _schema_for,
     create_design_v2_planner_from_environment,
 )
 from game_pipeline.gemini_feature_generator import LocalAIJsonClient
@@ -33,6 +35,33 @@ class QueuedStructuredClient:
 
 
 class StagedDesignV2PlannerTest(unittest.TestCase):
+    def test_coerces_numeric_strings_without_changing_text_fields(self) -> None:
+        result = _coerce_to_baseline_shape(
+            {"height": "1.25", "count": "3", "title": "3"},
+            {"height": 1.0, "count": 1, "title": "baseline"},
+        )
+
+        self.assertEqual(result, {"height": 1.25, "count": 3, "title": "3"})
+
+    def test_schema_uses_later_sibling_to_type_initially_empty_hazard_array(self) -> None:
+        level_plan = build_design_v2(
+            normalize_game_spec("플랫포머"),
+            "적과 가시를 피해 보석을 모은다.",
+        )["level_plan"]
+
+        schema = _schema_for(level_plan)
+        hazard_items = schema["properties"]["zones"]["items"]["properties"]["hazards"]["items"]
+
+        self.assertEqual(hazard_items["type"], "object")
+        self.assertIn("placement_id", hazard_items["properties"])
+
+    def test_schema_gives_globally_empty_array_an_explicit_item_type(self) -> None:
+        schema = _schema_for({"values": []})
+
+        values = schema["properties"]["values"]
+        self.assertEqual(values["maxItems"], 0)
+        self.assertEqual(values["items"], {"type": "string"})
+
     def setUp(self) -> None:
         self.spec = normalize_game_spec("플랫포머")
         self.intent = "벽을 타고 공중 대시로 세 구역을 돌파한다."
@@ -203,6 +232,32 @@ class StagedDesignV2PlannerTest(unittest.TestCase):
         self.assertEqual(result["balance_plan"], self.baseline["balance_plan"])
         self.assertEqual(result["game_design"]["title"], "바람 절벽의 대시")
         self.assertIn("balance_plan", planner.fallback_stages)
+
+    def test_openai_stage_retries_semantic_validation_error_once(self) -> None:
+        payloads = [self.customized_stage(stage) for stage in STAGE_ORDER]
+        balance_index = STAGE_ORDER.index("balance_plan")
+        invalid_balance = payloads[balance_index]
+        player_health = next(
+            item
+            for item in invalid_balance["stats"]  # type: ignore[index]
+            if item["stat_id"] == "player_health"
+        )
+        player_health["initial"] = 0
+        payloads.insert(balance_index + 1, self.customized_stage("balance_plan"))
+        payloads.append(self.customized_stage("level_plan"))
+        client = QueuedStructuredClient(payloads)
+        planner = StagedDesignV2Planner(client, "openai")
+
+        result = planner.generate(self.spec, self.intent)
+
+        repaired_health = next(
+            item for item in result["balance_plan"]["stats"] if item["stat_id"] == "player_health"
+        )
+        self.assertGreater(repaired_health["initial"], 0)
+        repair_prompt = client.prompts[balance_index + 1]
+        self.assertIn("VALIDATION_ERROR=player_health must start positive", repair_prompt)
+        self.assertIn("REJECTED_RESPONSE", repair_prompt)
+        self.assertNotIn("balance_plan", planner.fallback_stages)
 
     def test_invalid_revision_keeps_the_last_validated_level(self) -> None:
         payloads = [self.customized_stage(stage) for stage in STAGE_ORDER]

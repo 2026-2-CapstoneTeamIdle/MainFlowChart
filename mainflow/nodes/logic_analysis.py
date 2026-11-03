@@ -67,7 +67,14 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
                 detected_features=features,
             )
             features = condition_analysis.features
-            condition_report = {**condition_analysis.report, "status": "passed"}
+            condition_report = {
+                **condition_analysis.report,
+                "status": (
+                    "partial"
+                    if condition_analysis.report.get("failed_request_count", 0)
+                    else "passed"
+                ),
+            }
             log(f"사용자 명시 기능 {len(features)}개를 설계 입력으로 확정했습니다.")
     except Exception as error:  # noqa: BLE001 - deterministic parsing remains the fallback
         condition_report = {
@@ -124,7 +131,12 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
                 },
             )
             features = enrichment.features
-            enrichment_report = {**enrichment.report, "status": "passed"}
+            enrichment_report = {
+                **enrichment.report,
+                "status": (
+                    "partial" if enrichment.report.get("failed_request_count", 0) else "passed"
+                ),
+            }
             added_count = enrichment.report["added_feature_count"]
             dependency_count = enrichment.report.get("dependency_feature_count", 0)
             genre_count = enrichment.report.get(

@@ -269,6 +269,29 @@ class DynamicFeatureGenerationTest(unittest.TestCase):
                 {"generated_feature_01": requirement},
             )
 
+    def test_declared_input_dependency_is_bound_from_context_automatically(self) -> None:
+        requirement = {"feature_id": "feature_01", "feature_description": "벽을 탄다."}
+        source_without_binding = GENERATED_SOURCE.replace(
+            "            input = context.GetModule<InputAdapterModule>();\n",
+            "",
+        )
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": source_without_binding,
+        }
+
+        validated = GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+            module,
+            {"generated_feature_01": requirement},
+        )
+
+        self.assertIn(
+            "input = context.GetModule<InputAdapterModule>();",
+            validated["source_code"],
+        )
+
     def test_generated_source_accepts_public_api_from_prior_generated_module(self) -> None:
         prior_source = """namespace TeamIdle.GameTemplate.Generated
 {
@@ -422,7 +445,7 @@ public void BindGeneratedFeature(GeneratedFeatureBindingContext context)
         self.assertEqual(generator.client.structured_attempts, 1)
         self.assertEqual(generator.client.max_attempts, 1)
         self.assertEqual(generator.plan_attempts, 2)
-        self.assertEqual(generator.source_attempts, 2)
+        self.assertEqual(generator.source_attempts, 3)
 
     def test_openai_key_selects_openai_feature_provider(self) -> None:
         with patch.dict(
@@ -769,10 +792,10 @@ public void BindGeneratedFeature(GeneratedFeatureBindingContext context)
 
         self.assertEqual(
             (condition.max_output_tokens, condition.structured_attempts, condition.max_attempts),
-            (1024, 1, 1),
+            (2048, 1, 1),
         )
-        self.assertEqual((genre.max_output_tokens, genre.structured_attempts), (2048, 1))
-        self.assertEqual((design.max_output_tokens, design.structured_attempts), (4096, 1))
+        self.assertEqual((genre.max_output_tokens, genre.structured_attempts), (3072, 1))
+        self.assertEqual((design.max_output_tokens, design.structured_attempts), (6144, 1))
         self.assertEqual((blueprint.max_output_tokens, blueprint.structured_attempts), (2048, 1))
         self.assertEqual(
             (
@@ -1784,6 +1807,62 @@ public void BindGeneratedFeature(GeneratedFeatureBindingContext context)
             [item["object_id"] for item in plan["scene_objects"]],
             ["arrow_tower", "magic_tower", "projectile"],
         )
+
+    def test_feature_plan_marks_other_features_as_external_owners(self) -> None:
+        features: list[FeatureRequirement] = [
+            {
+                "feature_id": "feature-01",
+                "name": "접촉 피해",
+                "description": "가시에 닿으면 체력이 감소한다.",
+                "source_text": "가시에 닿으면 체력이 감소한다.",
+            },
+            {
+                "feature_id": "feature-02",
+                "name": "보석 수집",
+                "description": "보석을 획득하면 남은 수량이 감소한다.",
+                "source_text": "보석을 모두 모은다.",
+            },
+        ]
+        feature_plan = plan_feature_mechanics(features, "플랫포머")
+        design = build_game_logic_design(
+            normalize_game_spec(
+                "플랫포머",
+                {"features": feature_plan.game_features, "mechanics": feature_plan.mechanics},
+            )
+        )
+        module_id, requirement = next(iter(feature_plan.generation_requirements.items()))
+
+        prompt = GeminiFeatureGenerator._build_implementation_plan_prompt(
+            design, module_id, requirement
+        )
+
+        self.assertIn('"ownership": "external_do_not_implement"', prompt)
+        self.assertIn("Do not implement, validate, create", prompt)
+
+    def test_static_validation_reports_multiple_deterministic_csharp_errors(self) -> None:
+        source = GENERATED_SOURCE.replace(
+            "input = context.GetModule<InputAdapterModule>();",
+            "var objects = context.Environment.GetComponentsInChildren<GameObject>();\n"
+            "            input = context.GetModule<InputAdapterModule>();",
+        ).replace(
+            "if (!IsInitialized || !IsFeatureBound || Mathf.Abs(input.Movement.x) < 0.1f)",
+            "if (Physics2D.OverlapCircle(transform.position, 1f) || !IsInitialized)",
+        )
+        requirement = {"feature_id": "feature_01", "feature_description": "벽을 탄다."}
+        module = {
+            "module_id": "generated_feature_01",
+            **requirement,
+            "class_name": "WallClimbModule",
+            "source_code": source,
+        }
+
+        with self.assertRaisesRegex(ValueError, "GameObject cannot be used") as raised:
+            GeminiFeatureGenerator(FakeStructuredJsonClient({}))._validate_module(
+                module,
+                {"generated_feature_01": requirement},
+            )
+
+        self.assertIn("must be compared with null", str(raised.exception))
 
     def test_generated_source_accepts_binding_context_environment_root(self) -> None:
         requirement = {"feature_id": "feature_01", "feature_description": "벽을 탄다."}
