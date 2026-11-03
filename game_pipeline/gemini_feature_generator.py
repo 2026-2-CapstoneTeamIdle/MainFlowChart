@@ -830,16 +830,12 @@ def create_feature_generator_from_environment() -> GeminiFeatureGenerator:
     }
     if provider == "openai":
         return GeminiFeatureGenerator(
-            OpenAIJsonClient.from_environment(
-                node_name="feature_code_generation", default_model=DEFAULT_OPENAI_MODEL
-            ),
+            OpenAIJsonClient.from_environment(node_name="feature_code_generation"),
             **attempts,
         )
     if provider == "gemini":
         return GeminiFeatureGenerator(
-            GeminiApiClient.from_environment(
-                node_name="feature_code_generation", default_model=DEFAULT_GEMINI_MODEL
-            ),
+            GeminiApiClient.from_environment(node_name="feature_code_generation"),
             **attempts,
         )
     if provider == "local":
