@@ -17,6 +17,9 @@ namespace TeamIdle.GameTemplate.Common
         private string playerPrefsKey = "team_idle_game_save";
         private GameStateStoreModule stateStore;
         public override string ModuleId => "save_system";
+        public bool HasSave => PlayerPrefs.HasKey(playerPrefsKey);
+        public event Action Saved;
+        public event Action Loaded;
 
         public void Save()
         {
@@ -26,6 +29,7 @@ namespace TeamIdle.GameTemplate.Common
             };
             PlayerPrefs.SetString(playerPrefsKey, JsonUtility.ToJson(data));
             PlayerPrefs.Save();
+            Saved?.Invoke();
         }
 
         public bool Load()
@@ -34,6 +38,7 @@ namespace TeamIdle.GameTemplate.Common
                 return false;
             var data = JsonUtility.FromJson<SaveData>(PlayerPrefs.GetString(playerPrefsKey));
             stateStore.Restore(data?.entries ?? new List<GameStateStoreModule.Entry>());
+            Loaded?.Invoke();
             return true;
         }
 

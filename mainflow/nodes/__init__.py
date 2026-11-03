@@ -14,6 +14,7 @@ from mainflow.nodes.user_input import user_input_node
 from mainflow.nodes.validate_game import validate_game_node
 from mainflow.nodes.validate_image import validate_image_node
 from mainflow.nodes.validate_sound import validate_sound_node
+from mainflow.nodes.visual_validation import visual_validation_node
 
 __all__ = [
     "analysis_node",
@@ -30,4 +31,5 @@ __all__ = [
     "validate_game_node",
     "validate_image_node",
     "validate_sound_node",
+    "visual_validation_node",
 ]

@@ -4,6 +4,7 @@ import json
 import unittest
 
 from game_pipeline import build_game_logic_design, normalize_game_spec
+from game_pipeline.design_repairer import repair_design
 from game_pipeline.game_failure_classifier import classify_failure
 from game_pipeline.game_quality import evaluate_game_quality, parse_playtest_metrics
 from game_pipeline.unity_project_validator import UnityValidationOutcome
@@ -23,6 +24,7 @@ class GameQualityTest(unittest.TestCase):
             "failed_transition": "",
             "unused_requested_features": [],
             "passed_scenarios": ["feature_binding", "checkpoint_recovery", "start_to_goal"],
+            "validation_failures": [],
         }
         log = "UNITY_PLAYTEST_METRICS:" + json.dumps(payload)
         report = evaluate_game_quality(design, log)
@@ -30,6 +32,48 @@ class GameQualityTest(unittest.TestCase):
         self.assertTrue(report["passed"])
         self.assertEqual(report["score"], 100)
         self.assertEqual(parse_playtest_metrics(log)["last_reached_zone"], "mastery")
+
+    def test_validation_probe_failure_cannot_be_scored_as_passed(self) -> None:
+        design = build_game_logic_design(
+            normalize_game_spec("플랫포머", {"mechanics": ["movement", "jump"]})
+        )
+        log = (
+            "UNITY_RUNTIME_SMOKE_OK: legacy smoke result\n"
+            "UNITY_VALIDATION_SCENARIO_OK:start_to_goal\n"
+            "UNITY_VALIDATION_SCENARIO_OK:checkpoint_recovery\n"
+            "UNITY_VALIDATION_SCENARIO_OK:feature_binding\n"
+            "VALIDATION_FAIL:feature-06:health HUD was not bound"
+        )
+
+        report = evaluate_game_quality(design, log)
+
+        self.assertFalse(report["passed"])
+        self.assertEqual(
+            report["telemetry"]["validation_failures"],
+            ["feature-06:health HUD was not bound"],
+        )
+
+    def test_scores_complete_survivor_runtime_scenario(self) -> None:
+        design = build_game_logic_design(normalize_game_spec("뱀서류"))
+        payload = {
+            "completed": True,
+            "elapsed_seconds": 12.0,
+            "deaths": 0,
+            "stuck_seconds": 0.0,
+            "last_reached_zone": "survivor_mastery",
+            "failed_transition": "",
+            "unused_requested_features": [],
+            "passed_scenarios": ["survivor_spawn_chase_attack_progression"],
+            "validation_failures": [],
+        }
+
+        report = evaluate_game_quality(
+            design,
+            "UNITY_PLAYTEST_METRICS:" + json.dumps(payload),
+        )
+
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["score"], 100)
 
     def test_classifies_binding_failure_separately_from_compile_failure(self) -> None:
         binding = UnityValidationOutcome(
@@ -50,9 +94,54 @@ class GameQualityTest(unittest.TestCase):
                 }
             ]
         )
+        editor_binding_error = UnityValidationOutcome(
+            issues=[
+                {
+                    "code": "UNITY_BATCH_VALIDATION_FAILED",
+                    "severity": "error",
+                    "message": "missing batch markers",
+                }
+            ],
+            unity_log=(
+                "InvalidOperationException: Generated feature did not bind itself: "
+                "GeneratedFeature03Module"
+            ),
+        )
 
         self.assertEqual(classify_failure(binding)["target"], "binding")
         self.assertEqual(classify_failure(compile_error)["target"], "code")
+        self.assertEqual(classify_failure(editor_binding_error)["target"], "binding")
+
+    def test_runtime_no_progress_bridges_gap_near_stopped_player(self) -> None:
+        design = build_game_logic_design(normalize_game_spec("플랫포머"))
+        platforms = sorted(
+            [
+                platform
+                for zone in design["design_v2"]["level_plan"]["zones"]
+                for platform in zone["platforms"]
+            ],
+            key=lambda item: item["x"],
+        )
+        previous_widths = {item["platform_id"]: item["width"] for item in platforms}
+        evidence = (
+            "runtime.route_no_progress: best_x=-12.12, "
+            "current=(-12.15,-2.37), velocity=(0,0), goal_x=63.90"
+        )
+
+        revised, actions = repair_design(design, "level_plan", evidence)
+
+        revised_platforms = [
+            platform
+            for zone in revised["design_v2"]["level_plan"]["zones"]
+            for platform in zone["platforms"]
+        ]
+        self.assertTrue(any("runtime route gap" in action for action in actions))
+        self.assertTrue(
+            any(
+                platform["width"] > previous_widths[platform["platform_id"]]
+                for platform in revised_platforms
+            )
+        )
 
 
 if __name__ == "__main__":

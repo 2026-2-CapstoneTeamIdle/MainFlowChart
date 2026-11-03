@@ -142,6 +142,26 @@ API 응답은 JSON Schema, C# 선언 규칙, 금지 API, 소스 해시로 먼저
 컴파일 및 Bootstrap 씬 조립을 검증한다. 키와 선택 설정은 [`.env.example`](.env.example)을
 참고하되 실제 키는 저장소에 커밋하지 않는다.
 
+OpenAI API를 사용할 때는 `.env.example`을 `.env`로 복사한 뒤 `OPENAI_API_KEY`만 입력한다.
+CLI는 저장소 루트의 `.env`를 자동으로 읽으며, provider 변수가 비어 있으면 OpenAI 키의 존재를
+감지해 Feature 생성, design v2, Blueprint, 프로젝트 문맥 검수, 체크리스트 수정과 최종 Validator에
+OpenAI를 사용한다. 특정 단계만 로컬로 되돌리려면 해당 provider를 `local` 또는
+`deterministic`으로 명시한다. 기본 텍스트 모델은 Responses API로 호출하는
+`gpt-6.1-terra`이며, 비용과 출력 여유를 고려해 reasoning effort는 `low`로 시작한다.
+더 깊은 검토가 필요한 경우 `.env`의 `MAINFLOW_OPENAI_REASONING_EFFORT`를
+`medium` 또는 `high`로 올릴 수 있지만 reasoning token도 출력 한도와 과금에 포함된다.
+
+```powershell
+Copy-Item .env.example .env
+# .env에서 OPENAI_API_KEY=sk-... 입력
+uv run --locked python -m mainflow.run_flow `
+  --image-style "Pixel Art" `
+  --mood-style Fantasy `
+  --genre "플랫포머" `
+  --viewpoint "사이드뷰" `
+  --condition "벽을 타고 공중 대시로 세 구역을 돌파하는 게임"
+```
+
 ```powershell
 docker compose build
 docker compose run --rm mainflow

@@ -12,6 +12,10 @@
 5. 계약 `3.4.0`은 게임 설계를 7개 v2 문서로 분리하고 `level_plan`을 Unity Scene 조립에 전달한다.
 6. `condition`은 비어 있지 않은 한 문장으로 보관하며, Analysis가 기능 요구사항으로 변환한다.
 7. `image_style`이 `Custom`이면 PNG/JPG 파일을 함께 제공해야 한다.
+8. `visual_validation_result`는 선택형 시각 검증의 독립 보고서다. 비활성 모드는
+   `mode=disabled`, `status=skipped`로 명시하며 최종 검증에서 허용한다.
+9. 목표 비교 이미지는 검증 전용 `run_node_llm` 경로로 생성하며 `image_draft` 또는 게임 에셋
+   적용 계약에 포함하지 않는다.
 
 ## 사용자 입력 계약
 
@@ -122,8 +126,9 @@ Unity 조립기에 전달한다. Blueprint에는 장면 크기·배경 색, 콘�
 경로·수집물·위험물·목표 위치를 다시 조립하고, 타워 디펜스는 적 경로를, 뱀서류는 맵 반경과
 특전 풀을 Blueprint에 맞게 바꾼다.
 
-기본 제공자는 `deterministic`이며 외부 모델 호출 없이 항상 실행된다. `MAINFLOW_BLUEPRINT_PROVIDER`
-를 `local` 또는 `gemini`로 설정하면 해당 모델이 Blueprint만 제안한다. 제안은 JSON Schema와
+LocalAI 실행 구성의 기본 제공자는 `local`이며 역할별 모델
+`LLM_BLUEPRINT_MODEL=gemma4-12b-it-qat-q4-0`을 사용한다. LocalAI를 사용하지 않는 오프라인 실행은
+`MAINFLOW_BLUEPRINT_PROVIDER=deterministic`으로 비활성화할 수 있다. 제안은 JSON Schema와
 필수 콘텐츠·엔티티 검증을 통과해야 하며, 실패·시간 초과 시에는 전체 파이프라인을 중단하지 않고
 기본 Blueprint를 유지한다. 모델은 C# 코드, 파일 경로, Unity 패키지를 생성할 수 없다.
 
@@ -181,13 +186,18 @@ Play Mode 검증은 `UNITY_PLAYTEST_METRICS` JSON 로그로 완료 여부, 경�
 | `validate_image` | 요청, 이미지 에셋 요청, 이미지 draft, 에셋 기준 | `image_validation_result` | validation 결과 |
 | `validate_sound` | 요청, 사운드 에셋 요청, 사운드 draft, 에셋 기준 | `sound_validation_result` | validation 결과 |
 | `apply_assets_to_game` | 세 draft와 이미지·사운드 검증 결과 | `integrated_game` | 통합 게임 |
-| `final_validation` | `parsed_request`, `logic_analysis`, 게임 draft, 게임·이미지·사운드 검증 결과, 통합 게임 | `final_validation_result` | 최종 검증 결과 |
-| `game_quality_validator` | 전체 요구사항, draft, 게임·이미지·사운드·최종 검증 결과, 통합 게임 | `game_validator_ai_result` | 독립 AI 품질 평가 |
+| `visual_validation` | 요청·LogicAnalysis·게임 draft·게임 검증, 운영 그래프에서는 통합 게임 | `visual_validation_result` | 검증 전용 목표 화면, 회차별 Unity 캡처, VLM 판정과 수정 기록 |
+| `final_validation` | `parsed_request`, `logic_analysis`, 게임 draft, 게임·이미지·사운드·시각 검증 결과, 통합 게임 | `final_validation_result` | 최종 검증 결과 |
+| `game_quality_validator` | 전체 요구사항, draft, 게임·이미지·사운드·시각·최종 검증 결과, 통합 게임 | `game_validator_ai_result` | 독립 AI 품질 평가 |
 
 `game/project_context_index.json`은 자연어 요약이 아니라 생성된 C#을 결정적으로 스캔한 계약이다.
 파일 해시, 클래스와 상속 관계, 공개 메서드·속성·필드·이벤트, `module_id`, 기능 및 검증 기준 ID,
 설계 이벤트 연결을 원문 구조로 보존한다. 코드 생성기와 Validator는 이 인덱스에 없는 프로젝트
 멤버를 존재한다고 가정할 수 없다.
+
+`--game-test`는 운영 계약을 축소한 별도 실행 경로다. 이미지·사운드 생성/검증/적용 State를 만들지
+않고 `design_game_logic → validate_game → visual_validation`을 실행한다. 따라서
+`VisualValidationAgentInput.integrated_game`은 이 경로에서 선택 필드다.
 
 ### `validate_game` 실행 모드
 
@@ -203,6 +213,32 @@ C# 컴파일, 전체 모듈 부착, Bootstrap 씬 조립까지 검사하고 로�
 - `MAINFLOW_UNITY_VALIDATION_MODE=static`: Unity를 실행하지 않고 정적 검사만 수행한다.
 - `UNITY_EDITOR_PATH`: 자동 탐색 대신 사용할 Unity 실행 파일 경로다.
 - `MAINFLOW_UNITY_VALIDATION_TIMEOUT_SECONDS`: Unity Batch Mode 제한 시간이며 기본값은 300초다.
+
+### Condition, Feature, 동적 Checklist 계약
+
+`analysis`의 정적 키워드 결과는 오프라인 안전망이다. AI가 활성화되면 Gemma가 사용자 Condition을
+문장 또는 240자 이하 구간으로 나누고 요청당 최대 6개의 구현 가능한 원자 기능으로 분해한다.
+기능 보강도 사용자 기능 3개 이하의 의존성 요청과 장르 핵심 요청으로 분리한다. 각 요청은 최대
+8개 기능만 반환한다. 기능 보강 단계는 각 기능의 선행 상태·행위자·런타임 바인딩·
+결과·피드백·복구 흐름을 `requirement_dependency` Feature로 추가한다. 기존
+`FeatureRequirement` 필드는 변경하지 않는다.
+
+`validate_game`은 최종 `LogicAnalysis.features`의 Feature마다 Checklist를 정확히 하나씩 만들고,
+각 Checklist에 30개 기준을 생성한다. Gemma에는 30개를 한 번에 요구하지 않고 10개씩 3회 요청한
+뒤 중복을 검사하여 합친다. 따라서 전체 기준 수는 `Feature 수 × 30`이다. 각 기준은
+`DFC{Feature 순번}_{항목 순번}`, 관련 `feature_ids`, 준비, 동작, 기대 결과, 자동 증거를 갖는다.
+모든 항목은 해당 Checklist의 Feature ID를 반드시 포함한다. Qwen Coder는 Checklist의
+테스트 메서드를 10개씩 3회의 구조화 출력으로 생성하고, 호스트가 Feature당 Unity Test
+Framework PlayMode C# 파일 하나로 조립한다. 모델에는 전체 런타임 소스 대신 결정적으로
+검색한 관련 public API signature만 제공한다. 모든 DFC가 NUnit 보고서에 존재하며 Passed여야 한다.
+동적 Checklist 생성이나 생성된 테스트의 컴파일이 실패하면 정적 Checklist로 대체하지 않고
+`DYNAMIC_FEATURE_CHECKLIST_FAILED`로 즉시 전체 실패 처리한다.
+실패하면 테스트 파일이 아니라 게임 소스만 제한적으로 수정하고 Unity 컴파일 후 다시 실행한다.
+최대 Retry는 10회이며 최종 실패는 `validate_game` 실패다.
+
+AI 토큰 및 구조화 출력 경계에서 발생한 오류는 `validation/errorlog.md`의
+`날짜|시점|이유|상세` 계약으로 누적한다. 재시도로 정상 결과를 얻은 경우에도 원래 실패 행을
+삭제하지 않고 `*_RECOVERED` 행을 추가하여 발생과 복구를 함께 추적한다.
 
 ### `final_validation` 판정
 

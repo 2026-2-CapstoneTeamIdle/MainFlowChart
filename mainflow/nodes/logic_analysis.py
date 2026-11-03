@@ -2,6 +2,18 @@
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
+from typing import Any, cast
+
+from game_pipeline.condition_feature_analysis import (
+    create_condition_feature_analyzer_from_environment,
+)
+from game_pipeline.design_catalog import normalize_game_spec
+from game_pipeline.genre_feature_enricher import (
+    create_genre_feature_enricher_from_environment,
+)
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -38,6 +50,139 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
     manager = ArtifactManager()
     request: ParsedRequest = manager.read_json(state["parsed_request"])
     analysis: AnalysisResult = manager.read_json(state["analysis"])
+    approved_logic = _load_approved_logic_analysis(manager, request)
+    features = approved_logic["features"] if approved_logic is not None else analysis["features"]
+    condition_report: dict[str, object] = {
+        "provider": "none",
+        "model_role": "condition_feature_analysis",
+        "detected_feature_count": len(features),
+        "explicit_feature_count": len(features),
+        "added_feature_count": 0,
+        "status": "approved_preview" if approved_logic is not None else "disabled",
+    }
+    try:
+        condition_analyzer = create_condition_feature_analyzer_from_environment()
+        if condition_analyzer is not None:
+            log("사용자 Condition을 원자적인 구현 가능 기능으로 AI가 분해합니다.")
+            condition_analysis = condition_analyzer.analyze(
+                genre=request["genre"],
+                viewpoint=request["viewpoint"],
+                condition=request["condition"],
+                detected_features=features,
+            )
+            features = condition_analysis.features
+            condition_report = {
+                **condition_analysis.report,
+                "status": (
+                    "partial"
+                    if condition_analysis.report.get("failed_request_count", 0)
+                    else "passed"
+                ),
+            }
+            log(f"사용자 명시 기능 {len(features)}개를 설계 입력으로 확정했습니다.")
+    except Exception as error:  # noqa: BLE001 - deterministic parsing remains the fallback
+        condition_report = {
+            **condition_report,
+            "status": "failed",
+            "error": f"{type(error).__name__}: {error}",
+        }
+        log(f"Condition AI 파싱에 실패해 정적 파싱 결과를 사용합니다: {error}")
+
+    manager.write_json(
+        state["project_id"],
+        "data",
+        "condition_feature_analysis.json",
+        condition_report,
+        producer="logic_analysis",
+    )
+    enrichment_report: dict[str, object] = {
+        "provider": "none",
+        "genre": request["genre"],
+        "viewpoint": request["viewpoint"],
+        "input_feature_count": len(features),
+        "input_features": [
+            {
+                "feature_id": feature["feature_id"],
+                "name": feature["name"],
+                "description": feature["description"],
+            }
+            for feature in features
+        ],
+        "added_feature_count": 0,
+        "dependency_feature_count": 0,
+        "genre_feature_count": 0,
+        "added_features": [],
+        "rejected_features": [],
+        "status": "approved_preview" if approved_logic is not None else "disabled",
+    }
+    try:
+        enricher = create_genre_feature_enricher_from_environment()
+        if enricher is not None:
+            log("명시된 기능을 바탕으로 장르 필수 기능을 AI가 보강합니다.")
+            baseline = normalize_game_spec(request["genre"], {"viewpoint": request["viewpoint"]})
+            enrichment = enricher.enrich(
+                genre=request["genre"],
+                viewpoint=request["viewpoint"],
+                user_condition=request["condition"],
+                core_loop=CORE_LOOPS[request["genre"]],
+                existing_features=features,
+                baseline_contract={
+                    "features": [feature["description"] for feature in baseline["features"]],
+                    "mechanics": baseline["mechanics"],
+                    "controls": baseline["controls"],
+                    "win_conditions": baseline["win_conditions"],
+                    "lose_conditions": baseline["lose_conditions"],
+                },
+            )
+            features = enrichment.features
+            enrichment_report = {
+                **enrichment.report,
+                "status": (
+                    "partial" if enrichment.report.get("failed_request_count", 0) else "passed"
+                ),
+            }
+            added_count = enrichment.report["added_feature_count"]
+            dependency_count = enrichment.report.get("dependency_feature_count", 0)
+            genre_count = enrichment.report.get(
+                "genre_feature_count", added_count - dependency_count
+            )
+            log(
+                f"사용자 요구 의존 기능 {dependency_count}개와 장르 필수 기능 "
+                f"{genre_count}개(총 {added_count}개)를 설계 입력에 추가했습니다."
+            )
+    except Exception as error:  # noqa: BLE001 - enrichment must not discard user requirements
+        enrichment_report = {
+            **enrichment_report,
+            "status": "failed",
+            "error": f"{type(error).__name__}: {error}",
+        }
+        log(f"장르 필수 기능 보강에 실패해 사용자 기능만 사용합니다: {error}")
+
+    manager.write_json(
+        state["project_id"],
+        "data",
+        "genre_feature_enrichment.json",
+        enrichment_report,
+        producer="logic_analysis",
+    )
+    inferred_checklists = _build_inferred_feature_checklists(features)
+    manager.write_json(
+        state["project_id"],
+        "validation",
+        "inferred_feature_checklists.json",
+        {
+            "contract_version": CONTRACT_VERSION,
+            "checklists": inferred_checklists,
+        },
+        producer="logic_analysis",
+    )
+    manager.write_text(
+        state["project_id"],
+        "validation",
+        "inferred_feature_checklists.md",
+        _render_inferred_feature_checklists(inferred_checklists),
+        producer="logic_analysis",
+    )
     criteria: list[ValidationCriterion] = [
         {
             "criterion_id": f"logic-{feature['feature_id']}",
@@ -45,7 +190,7 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
             "description": feature["description"],
             "required": True,
         }
-        for feature in analysis["features"]
+        for feature in features
     ]
     criteria.extend(
         [
@@ -73,7 +218,7 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
         "viewpoint": request["viewpoint"],
         "mood_style": request["mood_style"],
         "core_loop": CORE_LOOPS[request["genre"]],
-        "features": analysis["features"],
+        "features": features,
         "criteria": criteria,
     }
     return {
@@ -85,3 +230,113 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
             producer="logic_analysis",
         )
     }
+
+
+def _load_approved_logic_analysis(
+    manager: ArtifactManager,
+    request: ParsedRequest,
+) -> LogicAnalysis | None:
+    """Load a LocalWeb-approved preview without allowing paths outside the workspace."""
+
+    configured = os.environ.get("MAINFLOW_APPROVED_LOGIC_ANALYSIS", "").strip()
+    if not configured:
+        return None
+    source = Path(configured).resolve()
+    try:
+        source.relative_to(manager.workspace_root)
+    except ValueError as error:
+        raise ValueError("Approved logic analysis must be inside MAINFLOW_WORKSPACE") from error
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise TypeError("Approved logic analysis must be one JSON object")
+    for key in ("genre", "viewpoint", "mood_style"):
+        if payload.get(key) != request[key]:
+            raise ValueError(f"Approved logic analysis {key} does not match the current request")
+    raw_features = payload.get("features")
+    if not isinstance(raw_features, list) or not raw_features:
+        raise ValueError("Approved logic analysis must contain at least one Feature")
+    if len(raw_features) > 100:
+        raise ValueError("Approved logic analysis contains too many Features")
+    seen: set[str] = set()
+    for feature in raw_features:
+        if not isinstance(feature, dict):
+            raise TypeError("Every approved Feature must be an object")
+        for key in ("feature_id", "name", "description", "source_text"):
+            if not isinstance(feature.get(key), str) or not feature[key].strip():
+                raise ValueError(f"Approved Feature has an invalid {key}")
+        feature_id = feature["feature_id"]
+        if feature_id in seen:
+            raise ValueError(f"Approved Feature ID is duplicated: {feature_id}")
+        seen.add(feature_id)
+    return cast(LogicAnalysis, payload)
+
+
+def _build_inferred_feature_checklists(
+    features: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    checklists: list[dict[str, Any]] = []
+    for feature in features:
+        origin = feature.get("origin", "user")
+        checklist = feature.get("checklist")
+        if origin not in {"genre_inferred", "requirement_dependency"} or not isinstance(
+            checklist, dict
+        ):
+            continue
+        checklists.append(
+            {
+                "checklist_id": f"IFC-{feature['feature_id']}",
+                "feature_id": feature["feature_id"],
+                "feature_name": feature["name"],
+                "origin": origin,
+                "description": feature["description"],
+                "rationale": feature.get("rationale", ""),
+                "acceptance_criteria": feature.get("acceptance_criteria", ""),
+                "supports_feature_ids": feature.get("supports_feature_ids", []),
+                "preconditions": checklist.get("preconditions", []),
+                "steps": checklist.get("steps", []),
+                "expected_results": checklist.get("expected_results", []),
+                "failure_signals": checklist.get("failure_signals", []),
+            }
+        )
+    return checklists
+
+
+def _render_inferred_feature_checklists(checklists: list[dict[str, Any]]) -> str:
+    lines = ["# AI 추론 기반 기능 체크리스트", ""]
+    if not checklists:
+        lines.extend(["> 이번 실행에서 추가된 기반 기능이 없습니다.", ""])
+        return "\n".join(lines)
+    lines.extend(
+        [
+            "> 사용자 입력 기능의 의존 기능과 장르 필수 기능을 생성한 직후 작성한 원본입니다.",
+            "> 컴파일 이후 Feature 검증 단계에서 체크본과 검증 기록을 별도로 남깁니다.",
+            "",
+        ]
+    )
+    for item in checklists:
+        lines.extend(
+            [
+                f"## {item['checklist_id']} · {item['feature_name']}",
+                "",
+                f"- Feature ID: `{item['feature_id']}`",
+                f"- 출처: `{item['origin']}`",
+                f"- 설명: {item['description']}",
+                f"- 생성 근거: {item['rationale']}",
+                f"- 최종 통과 기준: {item['acceptance_criteria']}",
+            ]
+        )
+        if item["supports_feature_ids"]:
+            lines.append(
+                "- 지원하는 사용자 기능: "
+                + ", ".join(f"`{value}`" for value in item["supports_feature_ids"])
+            )
+        for title, key in (
+            ("사전 조건", "preconditions"),
+            ("검증 절차", "steps"),
+            ("기대 결과", "expected_results"),
+            ("실패 신호", "failure_signals"),
+        ):
+            lines.extend(["", f"### {title}", ""])
+            lines.extend(f"- [ ] {value}" for value in item[key])
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"

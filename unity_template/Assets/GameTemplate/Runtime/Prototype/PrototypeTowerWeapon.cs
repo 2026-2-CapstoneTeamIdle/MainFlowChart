@@ -12,9 +12,39 @@ namespace TeamIdle.GameTemplate.Prototype
         private float attacksPerSecond = 1.2f;
         private float damage = 12f;
 
+        public string TowerTypeId { get; private set; } = "basic";
+        public int Level { get; private set; } = 1;
+        public float Range => range;
+        public float AttacksPerSecond => attacksPerSecond;
+        public float Damage => damage;
+
         public void Configure(Projectile2D prefab)
         {
+            Configure(prefab, "basic", 4f, 1.2f, 12f);
+        }
+
+        public void Configure(
+            Projectile2D prefab,
+            string towerTypeId,
+            float attackRange,
+            float attackRate,
+            float attackDamage
+        )
+        {
             projectilePrefab = prefab;
+            TowerTypeId = string.IsNullOrWhiteSpace(towerTypeId) ? "basic" : towerTypeId;
+            range = Mathf.Max(0.1f, attackRange);
+            attacksPerSecond = Mathf.Max(0.1f, attackRate);
+            damage = Mathf.Max(0.1f, attackDamage);
+            Level = 1;
+        }
+
+        public void Upgrade(float damageMultiplier, float rateMultiplier, float rangeBonus)
+        {
+            damage *= Mathf.Max(1f, damageMultiplier);
+            attacksPerSecond *= Mathf.Max(1f, rateMultiplier);
+            range += Mathf.Max(0f, rangeBonus);
+            Level++;
         }
 
         private void Start()

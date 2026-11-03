@@ -1,0 +1,42 @@
+# Feature-analysis pipeline v1.0.0. Only one backend remains active, so these
+# instruction and code models share the GPU by swapping on demand.
+- url: https://raw.githubusercontent.com/mudler/LocalAI/v4.11.0/gallery/gemma.yaml
+  name: gemma4-12b-it-qat-q4-0
+  files:
+    - filename: gemma-4-12b-it-qat-q4_0.gguf
+      uri: huggingface://google/gemma-4-12B-it-qat-q4_0-gguf/gemma-4-12b-it-qat-q4_0.gguf
+  overrides:
+    backend: llama-cpp
+    context_size: 24576
+    gpu_layers: 99
+    low_vram: true
+    function:
+      automatic_tool_parsing_fallback: true
+      grammar:
+        disable: true
+    parameters:
+      model: gemma-4-12b-it-qat-q4_0.gguf
+      # The referenced gallery template also defines this nested value. Override it during
+      # installation so it cannot retain the gallery's smaller default.
+      context_size: 24576
+      temperature: 0.1
+
+- url: https://raw.githubusercontent.com/mudler/LocalAI/v4.11.0/gallery/qwen3.yaml
+  name: qwen2.5-coder-7b-q5-k-m
+  files:
+    - filename: qwen2.5-coder-7b-instruct-q5_k_m.gguf
+      uri: huggingface://Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/qwen2.5-coder-7b-instruct-q5_k_m.gguf
+      sha256: 586844eac4d6d6321689f0192c8aa8e69cd8625974a5cc2d925b1a03366e4d16
+  overrides:
+    backend: llama-cpp
+    context_size: 24576
+    gpu_layers: 99
+    low_vram: false
+    options:
+      - parallel:1
+      - cache_ram:1024
+      - fit_params:false
+    parameters:
+      model: qwen2.5-coder-7b-instruct-q5_k_m.gguf
+      context_size: 24576
+      temperature: 0.1

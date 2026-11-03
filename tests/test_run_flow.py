@@ -1,13 +1,34 @@
 from __future__ import annotations
 
 import io
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from mainflow.run_flow import main
+from mainflow.run_flow import (
+    REPOSITORY_ROOT,
+    configure_console_encoding,
+    emit_result,
+    load_repository_environment,
+    main,
+)
+
+
+class ReconfigurableTextStream(io.TextIOWrapper):
+    def close_without_closing_buffer(self):
+        self.flush()
+        self.detach()
 
 
 class RunFlowExitTest(unittest.TestCase):
+    def test_repository_env_is_loaded_without_overriding_shell_values(self):
+        with patch("mainflow.run_flow.load_dotenv") as load_dotenv:
+            load_repository_environment()
+
+        load_dotenv.assert_called_once_with(REPOSITORY_ROOT / ".env", override=False)
+
     def run_cli(self, status, ai_status="passed"):
         state = {
             key: key
@@ -48,6 +69,58 @@ class RunFlowExitTest(unittest.TestCase):
 
     def test_validator_ai_revision_sets_nonzero_exit(self):
         self.assertEqual(self.run_cli("passed", "needs_revision"), 1)
+
+    def test_game_test_uses_asset_free_graph_and_both_validation_results(self):
+        state = {
+            "project_id": "20261031_01",
+            "game_validation_result": "game-validation",
+            "visual_validation_result": "visual-validation",
+        }
+        manager = MagicMock()
+        manager.read_json.side_effect = [
+            {"status": "passed"},
+            {"status": "passed"},
+        ]
+        with (
+            patch("mainflow.run_flow.load_request", return_value={}),
+            patch("mainflow.run_flow.build_graph") as production_graph,
+            patch("mainflow.run_flow.build_game_test_graph") as game_test_graph,
+            patch("mainflow.run_flow.ArtifactManager", return_value=manager),
+            patch("sys.argv", ["mainflow", "--game-test"]),
+            patch("sys.stdout", new_callable=io.StringIO),
+            patch("sys.stderr", new_callable=io.StringIO),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            game_test_graph.return_value.invoke.return_value = state
+            manager.ensure_project.return_value = "workspace/test"
+            result = main()
+
+        self.assertEqual(result, 0)
+        game_test_graph.assert_called_once_with()
+        production_graph.assert_not_called()
+
+    def test_console_encoding_is_reconfigured_for_unicode_output(self):
+        buffer = io.BytesIO()
+        stream = ReconfigurableTextStream(buffer, encoding="cp949")
+        try:
+            with patch("sys.stdout", stream), patch("sys.stderr", io.StringIO()):
+                configure_console_encoding()
+                print("한글 — Unicode")
+                stream.flush()
+
+            self.assertEqual(buffer.getvalue().decode("utf-8").splitlines(), ["한글 — Unicode"])
+        finally:
+            stream.close_without_closing_buffer()
+
+    def test_quiet_result_writes_full_json_without_printing_it(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            result_file = Path(temporary_directory) / "workflow_result.json"
+            output = {"project_id": "20261103_02", "final_state": {"large": "value"}}
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                emit_result(output, result_file, quiet=True)
+
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertEqual(json.loads(result_file.read_text(encoding="utf-8")), output)
 
 
 if __name__ == "__main__":

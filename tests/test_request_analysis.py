@@ -148,6 +148,58 @@ class RequestAnalysisTest(unittest.TestCase):
         )
         self.assertIn("일정 시간이 지나면 보스가 등장한다", descriptions)
 
+    def test_analysis_recognizes_new_feature_aliases_case_insensitively(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory) / "workspace"
+            with patch.dict(os.environ, {"MAINFLOW_WORKSPACE": str(workspace)}):
+                state = parse_input_node(
+                    {
+                        "image_style": "Pixel Art",
+                        "mood_style": "Fantasy",
+                        "genre": "타워 디펜스",
+                        "viewpoint": "탑다운",
+                        "condition": (
+                            "HEALTH_DAMAGE, OPTION, item_collect, Tower_upgrade, Player_stat 기능"
+                        ),
+                    }
+                )
+                state.update(analysis_node(state))  # type: ignore[arg-type]
+                analysis = ArtifactManager().read_json(state["analysis"])
+
+        self.assertEqual(
+            [feature["name"] for feature in analysis["features"]],
+            ["체력 및 피해", "옵션", "아이템 수집", "타워 업그레이드", "플레이어 스탯"],
+        )
+
+    def test_static_fallback_splits_platformer_damage_collection_and_clear_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory) / "workspace"
+            with patch.dict(os.environ, {"MAINFLOW_WORKSPACE": str(workspace)}):
+                state = parse_input_node(
+                    {
+                        "image_style": "Pixel Art",
+                        "mood_style": "Fantasy",
+                        "genre": "플랫포머",
+                        "viewpoint": "사이드뷰",
+                        "condition": (
+                            "플레이어가 좌우로 이동하고 점프하며 발판을 건넌다. "
+                            "적과 가시 함정에 닿으면 체력이 감소하고, 보석을 모두 "
+                            "모은 뒤 목적지에 도달하면 스테이지를 클리어한다."
+                        ),
+                    }
+                )
+                state.update(analysis_node(state))  # type: ignore[arg-type]
+                analysis = ArtifactManager().read_json(state["analysis"])
+
+        names = [feature["name"] for feature in analysis["features"]]
+        self.assertIn("좌우 이동", names)
+        self.assertIn("점프", names)
+        self.assertIn("접촉 피해", names)
+        self.assertIn("체력 및 피해", names)
+        self.assertIn("보석 수집", names)
+        self.assertIn("수집 완료 후 스테이지 클리어", names)
+        self.assertNotIn("사용자 지정 조건", names)
+
 
 if __name__ == "__main__":
     unittest.main()

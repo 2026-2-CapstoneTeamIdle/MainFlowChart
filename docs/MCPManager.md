@@ -9,7 +9,7 @@
 ```text
 LangGraph Node
   └─ run_node_llm(prompt, provider=...)
-      ├─ Gemini / OpenAI / Local SLM adapter
+      ├─ Gemini / OpenAI / Local SLM / Vast.ai vLLM adapter
       └─ MCPManager(node_name)
           └─ Streamable HTTP Client
               └─ mcp-server:8001/mcp
@@ -24,6 +24,7 @@ LangGraph Node
 - `MCP/config.py`: Docker와 로컬 환경 변수 설정
 - `MCP/llm_config.py`: 공급자·모델·endpoint 환경 변수 해석
 - `MCP/llm_providers.py`: Gemini와 OpenAI 호환 API 응답을 공통 형식으로 변환
+- `MCP/image_provider.py`: LocalAI 이미지 응답을 검사·다운로드·decode
 - `MCP/llm_runner.py`: LLM Tool 요청을 MCP로 실행하고 결과를 모델에 다시 전달
 
 LangGraph의 Edge와 State 계약은 변경하지 않는다. MCP는 파일 접근 능력을 제공할 뿐이며 Agent
@@ -195,6 +196,7 @@ Node State project_id=20261014_03
 gemini_result = await run_node_llm(prompt, provider="gemini")
 openai_result = await run_node_llm(prompt, provider="openai", model="팀 지정 모델")
 local_result = await run_node_llm(prompt, provider="local", model="qwen3:8b")
+vast_result = await run_node_llm(prompt, provider="vastai", model="mainflow-coder")
 ```
 
 `provider`를 생략하면 `LLM_{NODE_NAME}_PROVIDER`, `LLM_PROVIDER`, `gemini` 순서로 선택한다. 예를 들어
@@ -226,6 +228,35 @@ runner = MCPToolLLMRunner(manager, provider)
 
 테스트에서는 이 방식으로 가짜 Provider를 넣어 실제 API 호출 없이 Tool 반복, Node 권한,
 프로젝트 격리를 검증한다.
+
+### 같은 실행기로 로컬 이미지 생성
+
+기존 텍스트/MCP 호출은 그대로이며 `output="image"`를 지정한 경우에만 LocalAI 이미지 endpoint로
+분기한다. 이 분기는 파일 Tool 호출을 하지 않고 현재 Node에 바인딩된 `project_id`를 사용해 결과를
+즉시 이미지 Artifact로 등록한다.
+
+```python
+from MCP import ImageGenerationOptions, run_node_llm
+
+result = await run_node_llm(
+    "pixel art tower defense target screen",
+    ai="sd_turbo",
+    output="image",
+    image_options=ImageGenerationOptions(
+        size="512x512",
+        steps=2,
+        filename_prefix="target_screen",
+        artifact_category="validation",
+    ),
+)
+image_reference = result.artifacts[0]
+```
+
+반환 형식은 `ImageRunResult`이며 `artifacts`, `provider`, `model`, `prompt`, `size`를 가진다.
+`artifact_category` 기본값은 기존과 같은 `image`이고, 비교 전용 이미지는 `validation`을 지정할
+수 있다. 허용 범위는 두 category로 제한된다.
+기본 모델 SD-Turbo는 6GB 전용 GPU에 맞춰 512x512 FP16과 적은 step을 사용한다. 기존 게임 에셋
+생성기(`mainflow/image_backends.py`)는 별도 경로로 유지된다.
 
 ## 6. Node별 도구 권한
 
@@ -266,7 +297,7 @@ Validator AI다. 생성 Agent와 다른 시스템 프롬프트 및 MCP 정책을
 | `MCP_MAX_TEXT_BYTES` | `262144` | 한 번에 읽거나 쓰는 UTF-8 최대 크기 |
 | `MCP_MAX_LIST_ENTRIES` | `200` | 파일 목록 최대 개수 |
 | `MAINFLOW_WORKSPACE` | 저장소의 `workspace/` | 접근 가능한 workspace root |
-| `LLM_PROVIDER` | `gemini` | 전체 Node 기본 공급자: `gemini`, `openai`, `local` |
+| `LLM_PROVIDER` | `gemini` | 전체 Node 기본 공급자: `gemini`, `openai`, `local`, `vastai` |
 | `LLM_MODEL` | 공급자별 기본값 | 전체 Node 기본 모델 재정의 |
 | `LLM_{NODE}_PROVIDER` | 없음 | 특정 Node 공급자 재정의, 예: `LLM_ANALYSIS_PROVIDER` |
 | `LLM_{NODE}_MODEL` | 없음 | 특정 Node 모델 재정의, 예: `LLM_ANALYSIS_MODEL` |
@@ -282,6 +313,15 @@ Validator AI다. 생성 Agent와 다른 시스템 프롬프트 및 MCP 정책을
 | `LOCAL_LLM_API_KEY` | 없음 | Local endpoint가 인증을 요구할 때만 사용 |
 | `LOCAL_LLM_MODEL` | `gemma3` | Local SLM 기본 모델 |
 | `LOCAL_LLM_BASE_URL` | `http://127.0.0.1:11434/v1` | Local OpenAI 호환 endpoint |
+| `LOCAL_IMAGE_BASE_URL` | `http://127.0.0.1:8080/v1` | LocalAI 이미지 endpoint |
+| `VASTAI_INFERENCE_API_KEY` | 없음 | 원격 vLLM 추론 서버 키. Vast 계정 API 키와 분리 |
+| `VASTAI_CODER_BASE_URL` | `http://127.0.0.1:18000/v1` | SSH tunnel 또는 TLS 기반 Coder vLLM endpoint |
+| `VASTAI_VLM_BASE_URL` | `http://127.0.0.1:18001/v1` | 시각 검증 VLM endpoint |
+| `VASTAI_IMAGE_BASE_URL` | `http://127.0.0.1:18002/v1` | OpenAI Images 호환 vLLM-Omni endpoint |
+
+Vast.ai는 모델 추론에만 사용하고 MCP, workspace, Unity는 기존 환경에 둔다. 역할별 모델과 SSH
+tunnel 구성은 `docs/VastAIManager.md`를 따른다.
+| `LOCAL_IMAGE_MODEL` | `sd-turbo` | `output="image"`의 기본 로컬 이미지 모델 |
 
 API 키와 토큰은 MCP 도구 인자, workspace, manifest에 저장하지 않는다. 외부 공개 환경에서는 별도
 인증 계층을 추가해야 하며 현재 Compose 설정은 로컬 개발 전용이다.
@@ -298,7 +338,22 @@ docker compose run --rm mainflow
 MCP로 읽은 파일 내용은 모델 호출 입력에 포함되므로 Gemini/OpenAI를 선택하면 해당 내용이 외부
 API로 전송된다. 외부 전송이 불가능한 파일은 Local SLM을 사용하거나 프롬프트에서 제외해야 한다.
 
-## 8. 테스트
+## 8. MCP와 토큰 최적화
+
+MCP 도구는 필요한 파일만 느지게 읽어 **입력 토큰**을 줄이는 데 사용한다. 권장 순서는
+`list_project_files` → `search_project_text` → `read_project_text(start_line, end_line)`이다. 범위 읽기는
+한 번에 400줄로 제한되며, 모델은 검색 결과에서 필요한 줄만 추가로 요청해야 한다.
+
+`MCP_MAX_TEXT_BYTES`는 파일 입출력 안전 상한이지 모델 토큰 예산이 아니다. 전체 파일을 MCP로 읽으면
+도구 결과가 다음 모델 호출의 컨텍스트로 누적되므로, 직접 프롬프트에 파일을 넣는 것과 같은 초과가
+발생할 수 있다.
+
+MCP는 **출력 토큰** 초과를 해결하지는 못한다. `write_project_text`로 파일을 쓰더라도 전체 내용은 모델의
+도구 인자로 생성되어야 한다. 따라서 긴 C# 생성은 구조화된 작은 배치로 나누고 호스트가 조립한다.
+현재 Checklist 테스트 생성은 MCP 도구 라운드 대신 결정적 C# 인덱서로 관련 public API signature만
+선택하고, 프로젝트 문맥 검수와 완성 게임 품질 검수는 MCP의 검색·범위 읽기를 사용한다.
+
+## 9. 테스트
 
 ```powershell
 docker compose --profile test run --rm test

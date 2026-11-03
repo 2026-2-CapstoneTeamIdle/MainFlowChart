@@ -63,6 +63,7 @@ class RepairLoopTest(unittest.TestCase):
             generator.generate.side_effect = regenerate
             feature_generator = MagicMock()
             feature_generator.repair.return_value = design["generated_modules"]
+            feature_generator.regenerate.return_value = design["generated_modules"]
             record = MagicMock()
             with patch("game_pipeline.repair_loop.UnityProjectValidator") as validator:
                 validator.return_value.validate.side_effect = outcomes
@@ -137,7 +138,8 @@ class RepairLoopTest(unittest.TestCase):
     def test_repair_budget_is_bounded(self):
         result, model, _ = self.run_loop([failure("UNITY_RUNTIME_TEST_FAILED", "FAILED")] * 3)
         self.assertIsNone(result)
-        self.assertEqual(model.repair.call_count, 2)
+        self.assertEqual(model.repair.call_count, 1)
+        self.assertEqual(model.regenerate.call_count, 1)
 
     def test_undefined_tag_error_is_preserved_for_model_feedback(self):
         result, model, _ = self.run_loop(

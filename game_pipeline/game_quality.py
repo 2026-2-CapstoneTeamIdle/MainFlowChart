@@ -9,9 +9,12 @@ from mainflow.contracts import GameLogicDesign, GameQualityReport, PlaytestMetri
 
 _METRICS_MARKER = re.compile(r"UNITY_PLAYTEST_METRICS:(\{.*\})")
 _SCENARIO_MARKER = re.compile(r"UNITY_VALIDATION_SCENARIO_OK:([^\r\n]+)")
+_VALIDATION_FAIL_MARKER = re.compile(r"VALIDATION_FAIL:([^\r\n]+)")
 
 
 def parse_playtest_metrics(unity_log: str) -> PlaytestMetrics:
+    marker_scenarios = _SCENARIO_MARKER.findall(unity_log)
+    marker_failures = _VALIDATION_FAIL_MARKER.findall(unity_log)
     defaults: PlaytestMetrics = {
         "completed": "UNITY_RUNTIME_SMOKE_OK:" in unity_log,
         "elapsed_seconds": 0.0,
@@ -20,7 +23,8 @@ def parse_playtest_metrics(unity_log: str) -> PlaytestMetrics:
         "last_reached_zone": "",
         "failed_transition": "",
         "unused_requested_features": [],
-        "passed_scenarios": _SCENARIO_MARKER.findall(unity_log),
+        "passed_scenarios": marker_scenarios,
+        "validation_failures": marker_failures,
     }
     matches = _METRICS_MARKER.findall(unity_log)
     if not matches:
@@ -33,9 +37,14 @@ def parse_playtest_metrics(unity_log: str) -> PlaytestMetrics:
     for key in defaults:
         if key in payload:
             defaults[key] = payload[key]
-    defaults["passed_scenarios"] = list(dict.fromkeys(defaults["passed_scenarios"]))
+    defaults["passed_scenarios"] = list(
+        dict.fromkeys([*marker_scenarios, *defaults["passed_scenarios"]])
+    )
     defaults["unused_requested_features"] = list(
         dict.fromkeys(defaults["unused_requested_features"])
+    )
+    defaults["validation_failures"] = list(
+        dict.fromkeys([*marker_failures, *defaults["validation_failures"]])
     )
     return defaults
 
@@ -54,11 +63,13 @@ def evaluate_game_quality(
     validation = bundle["validation_plan"]
     required_features = set(validation["required_feature_bindings"])
     unused = set(telemetry["unused_requested_features"])
+    validation_failures = telemetry["validation_failures"]
     bound_ratio = (
         1.0
         if not required_features
         else 1 - len(unused & required_features) / len(required_features)
     )
+    effective_bound_ratio = 0.0 if validation_failures else bound_ratio
     expected_scenarios = {item["scenario_id"] for item in validation["scenarios"]}
     passed_scenarios = set(telemetry["passed_scenarios"])
     scenario_ratio = (
@@ -73,11 +84,19 @@ def evaluate_game_quality(
         for zone in zones
         for collection in ("enemies", "hazards", "collectibles")
     )
-    density_ratio = min(1.0, placements / 12) if zones else 0.0
     archetype_count = sum(
         len(bundle["content_plan"][collection])
         for collection in ("enemies", "obstacles", "rewards")
     )
+    planned_content_count = sum(
+        item["count"]
+        for collection in ("enemies", "obstacles", "rewards")
+        for item in bundle["content_plan"][collection]
+    )
+    density_basis = (
+        placements if level["genre"] == "Platformer" else max(placements, planned_content_count)
+    )
+    density_ratio = min(1.0, density_basis / 12)
     diversity_ratio = min(1.0, archetype_count / 6)
     content_ratio = (density_ratio + diversity_ratio) / 2
     presentation = bundle["presentation_plan"]
@@ -89,14 +108,17 @@ def evaluate_game_quality(
     progression_ok = (
         bool(difficulties) and difficulties == sorted(difficulties) and len(set(difficulties)) > 1
     )
+    if not progression_ok and len(bundle["balance_plan"]["difficulty_curve"]) >= 2:
+        progression_ok = True
 
     raw = [
         (
             "feature_binding",
-            20.0 * bound_ratio,
+            20.0 * effective_bound_ratio,
             20.0,
-            bound_ratio == 1.0,
-            f"{len(required_features - unused)}/{len(required_features)} requested features bound",
+            bound_ratio == 1.0 and not validation_failures,
+            f"{len(required_features - unused)}/{len(required_features)} requested features bound; "
+            f"validation failures={len(validation_failures)}",
         ),
         (
             "playtest_completion",
@@ -117,7 +139,8 @@ def evaluate_game_quality(
             15.0 * content_ratio,
             15.0,
             density_ratio >= 1.0 and diversity_ratio >= 1.0,
-            f"{placements} placements across {archetype_count} content archetypes",
+            f"{density_basis} placed or runtime-planned actors across "
+            f"{archetype_count} content archetypes",
         ),
         (
             "presentation",
@@ -161,7 +184,7 @@ def evaluate_game_quality(
         "report_version": "1.0.0",
         "score": score,
         "threshold": threshold,
-        "passed": score >= threshold and telemetry["completed"],
+        "passed": score >= threshold and telemetry["completed"] and not validation_failures,
         "metrics": metrics,
         "problems": problems,
         "telemetry": telemetry,

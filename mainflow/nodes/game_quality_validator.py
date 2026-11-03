@@ -5,7 +5,10 @@ from __future__ import annotations
 import os
 from typing import Any, cast
 
-from game_pipeline import create_game_quality_validator_from_environment
+from game_pipeline import (
+    create_game_quality_validator_from_environment,
+    resolve_feature_provider_from_environment,
+)
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -23,7 +26,7 @@ def game_quality_validator_node(
 
     log("독립 Validator AI가 요구사항, 플레이 흐름, 콘텐츠와 검증 증거를 종합 평가합니다.")
     manager = ArtifactManager()
-    keys = (
+    keys = [
         "parsed_request",
         "logic_analysis",
         "game_logic_draft",
@@ -32,7 +35,9 @@ def game_quality_validator_node(
         "sound_validation_result",
         "integrated_game",
         "final_validation_result",
-    )
+    ]
+    if "visual_validation_result" in state:
+        keys.append("visual_validation_result")
     try:
         evidence: dict[str, Any] = {}
         for key in keys:
@@ -52,7 +57,7 @@ def game_quality_validator_node(
         }:
             report = _disabled_report()
         else:
-            provider = os.environ.get("MAINFLOW_FEATURE_PROVIDER", "local").strip().lower()
+            provider = resolve_feature_provider_from_environment()
             validator = create_game_quality_validator_from_environment(
                 state["project_id"], provider=provider
             )
@@ -80,7 +85,7 @@ def _hard_failure_report(evidence: dict[str, Any]) -> GameValidatorAIResult:
         for name, payload in evidence.items()
         if name.endswith("validation_result")
         and isinstance(payload, dict)
-        and payload.get("status") != "passed"
+        and payload.get("status") not in {"passed", "skipped"}
     ]
     return {
         "report_version": "1.0.0",

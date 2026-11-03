@@ -9,14 +9,31 @@ import sys
 from pathlib import Path
 from typing import Any, cast, get_args
 
+from dotenv import load_dotenv
+
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import GameGenre, ImageStyle, MoodStyle, Viewpoint, WorkflowState
-from mainflow.langgraph_game_flow_skeleton import build_graph
+from mainflow.langgraph_game_flow_skeleton import build_game_test_graph, build_graph
 
 IMAGE_STYLES = cast(tuple[str, ...], get_args(ImageStyle))
 GAME_GENRES = cast(tuple[str, ...], get_args(GameGenre))
 MOOD_STYLES = cast(tuple[str, ...], get_args(MoodStyle))
 VIEWPOINTS = cast(tuple[str, ...], get_args(Viewpoint))
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+
+
+def load_repository_environment() -> None:
+    """Load ignored local secrets without replacing explicit shell environment values."""
+
+    load_dotenv(REPOSITORY_ROOT / ".env", override=False)
+
+
+def configure_console_encoding() -> None:
+    """Keep CLI output Unicode-safe on Windows terminals that default to CP949."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -43,6 +60,38 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Override the workspace directory (default: ./workspace).",
     )
+    parser.add_argument(
+        "--result-file",
+        type=Path,
+        help="Write the complete final result JSON to this file.",
+    )
+    parser.add_argument(
+        "--quiet-result",
+        action="store_true",
+        help="Do not print the complete final result JSON to stdout (requires --result-file).",
+    )
+    parser.add_argument(
+        "--game-test",
+        action="store_true",
+        help=(
+            "Skip image/sound generation and application; run module composition, Unity compile, "
+            "feature checklists, and visual checklists."
+        ),
+    )
+    visual_mode = parser.add_mutually_exclusive_group()
+    visual_mode.add_argument(
+        "--visual-validation",
+        dest="visual_validation",
+        action="store_true",
+        help="Enable Unity screenshot, VLM comparison, and bounded visual repair.",
+    )
+    visual_mode.add_argument(
+        "--skip-visual-validation",
+        dest="visual_validation",
+        action="store_false",
+        help="Skip screenshot/VLM validation even when the environment enables it.",
+    )
+    parser.set_defaults(visual_validation=None)
     return parser
 
 
@@ -95,17 +144,69 @@ def load_request(arguments: argparse.Namespace) -> WorkflowState:
 
 
 def main() -> int:
-    arguments = build_parser().parse_args()
+    load_repository_environment()
+    configure_console_encoding()
+    parser = build_parser()
+    arguments = parser.parse_args()
+    if arguments.quiet_result and arguments.result_file is None:
+        parser.error("--quiet-result requires --result-file")
+    if arguments.game_test and arguments.visual_validation is False:
+        parser.error("--game-test cannot be combined with --skip-visual-validation")
     if arguments.workspace:
         os.environ["MAINFLOW_WORKSPACE"] = str(arguments.workspace.resolve())
+    if arguments.game_test:
+        os.environ["MAINFLOW_VISUAL_VALIDATION"] = "1"
+    elif arguments.visual_validation is not None:
+        os.environ["MAINFLOW_VISUAL_VALIDATION"] = "1" if arguments.visual_validation else "0"
 
     initial_state = load_request(arguments)
-    final_state = cast(WorkflowState, build_graph().invoke(initial_state))
+    graph = build_game_test_graph() if arguments.game_test else build_graph()
+    final_state = cast(WorkflowState, graph.invoke(initial_state))
     manager = ArtifactManager()
     game_validation = manager.read_json(final_state["game_validation_result"])
+    if arguments.game_test:
+        visual_validation = manager.read_json(final_state["visual_validation_result"])
+        project_root = manager.ensure_project(final_state["project_id"])
+        output: dict[str, Any] = {
+            "mode": "game-test",
+            "project_id": final_state["project_id"],
+            "project_root": str(project_root),
+            "asset_generation": "skipped",
+            "execution_order": [
+                "module_composition",
+                "compile_test",
+                "feature_checklist_test",
+                "visual_checklist_test",
+            ],
+            "game_validation": game_validation,
+            "visual_validation": visual_validation,
+            "final_state": final_state,
+        }
+        emit_result(output, arguments.result_file, quiet=arguments.quiet_result)
+        if game_validation.get("status") != "passed":
+            print(
+                "Game test failed during compilation or feature checklist validation.",
+                file=sys.stderr,
+            )
+            return 1
+        if visual_validation.get("status") != "passed":
+            print("Game test failed during visual checklist validation.", file=sys.stderr)
+            return 1
+        return 0
+
     image_generation = manager.read_json(final_state["image_draft"])
     sound_generation = manager.read_json(final_state["sound_draft"])
     final_validation = manager.read_json(final_state["final_validation_result"])
+    visual_reference = final_state.get("visual_validation_result")
+    visual_validation = (
+        manager.read_json(visual_reference)
+        if visual_reference is not None
+        else {
+            "mode": "disabled",
+            "status": "skipped",
+            "summary": "Visual validation result was not emitted by the invoked graph.",
+        }
+    )
     game_validator_ai = manager.read_json(final_state["game_validator_ai_result"])
     project_root = manager.ensure_project(final_state["project_id"])
 
@@ -116,10 +217,11 @@ def main() -> int:
         "image_generation": image_generation,
         "sound_generation": sound_generation,
         "final_validation": final_validation,
+        "visual_validation": visual_validation,
         "game_validator_ai": game_validator_ai,
         "final_state": final_state,
     }
-    print(json.dumps(output, ensure_ascii=False, indent=2))
+    emit_result(output, arguments.result_file, quiet=arguments.quiet_result)
     if final_validation.get("status") != "passed":
         print(
             "Game did not pass final validation. Do not distribute this project; "
@@ -135,6 +237,20 @@ def main() -> int:
         )
         return 1
     return 0
+
+
+def emit_result(output: dict[str, Any], result_file: Path | None, *, quiet: bool) -> None:
+    """Persist the full machine result while keeping CLI output backward-compatible."""
+
+    serialized = json.dumps(output, ensure_ascii=False, indent=2) + "\n"
+    if result_file is not None:
+        destination = result_file.resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        temporary.write_text(serialized, encoding="utf-8")
+        os.replace(temporary, destination)
+    if not quiet:
+        print(serialized, end="")
 
 
 if __name__ == "__main__":

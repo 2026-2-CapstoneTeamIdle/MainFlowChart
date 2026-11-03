@@ -16,4 +16,5 @@
         disable: true
     parameters:
       model: gemma-4-E4B_q4_0-it.gguf
+      context_size: 8192
       temperature: 0.1

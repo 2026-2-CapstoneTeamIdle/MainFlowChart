@@ -6,6 +6,35 @@ from game_pipeline import build_game_logic_design, normalize_game_spec
 
 
 class GameDesignTest(unittest.TestCase):
+    def test_inferred_feature_checklist_survives_game_spec_normalization(self) -> None:
+        checklist = {
+            "preconditions": ["player health is initialized"],
+            "steps": ["collide an enemy with the player"],
+            "expected_results": ["player health decreases"],
+            "failure_signals": ["health remains unchanged"],
+        }
+        spec = normalize_game_spec(
+            "뱀서류",
+            {
+                "features": [
+                    {
+                        "feature_id": "requirement-dependency-01",
+                        "description": "Enemy contact damages the player.",
+                        "required": True,
+                        "origin": "requirement_dependency",
+                        "supports_feature_ids": ["feature-01"],
+                        "dependency_role": "interaction_consequence",
+                        "acceptance_criteria": "Health decreases after contact.",
+                        "checklist": checklist,
+                    }
+                ]
+            },
+        )
+
+        feature = spec["features"][0]
+        self.assertEqual(feature["origin"], "requirement_dependency")
+        self.assertEqual(feature["checklist"], checklist)
+
     def test_each_supported_genre_has_modules_features_and_assets(self) -> None:
         expected_mechanics = {
             "Platformer": "platformer_movement",

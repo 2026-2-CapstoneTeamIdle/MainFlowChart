@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol, TypeAlias
 
+from mainflow.contracts import ArtifactCategory, ArtifactReference
 from MCP.manager import MCPToolDefinition
 
 
@@ -17,12 +18,18 @@ class LLMToolCall:
     arguments: dict[str, Any]
 
 
+LLMContentBlock: TypeAlias = dict[str, Any]
+LLMMessageContent: TypeAlias = str | list[LLMContentBlock]
+
+
 @dataclass(frozen=True)
 class LLMConversationMessage:
     """Small common message format translated by each provider adapter."""
 
     role: str
-    content: str = ""
+    # OpenAI Responses and local OpenAI-compatible providers accept multimodal
+    # content blocks here. Text-only callers keep using a plain string.
+    content: LLMMessageContent = ""
     tool_calls: tuple[LLMToolCall, ...] = ()
     tool_call_id: str | None = None
     tool_name: str | None = None
@@ -58,6 +65,33 @@ class LLMRunResult:
     tool_calls: tuple[LLMToolExecution, ...] = field(default_factory=tuple)
 
 
+@dataclass(frozen=True)
+class ImageGenerationOptions:
+    """Options for the image branch of :func:`run_node_llm`."""
+
+    size: str = "512x512"
+    count: int = 1
+    steps: int = 2
+    negative_prompt: str | None = None
+    filename_prefix: str = "generated_image"
+    artifact_category: ArtifactCategory = "image"
+
+
+@dataclass(frozen=True)
+class ImageRunResult:
+    """Workspace artifacts produced by a local image-generation model."""
+
+    artifacts: tuple[ArtifactReference, ...]
+    provider: str
+    model: str
+    prompt: str
+    size: str
+
+
+NodeRunOutput: TypeAlias = LLMRunResult | ImageRunResult
+NodeOutputMode: TypeAlias = Literal["text", "image"]
+
+
 class LLMProvider(Protocol):
     """Adapter interface implemented by every supported model provider."""
 
@@ -72,6 +106,7 @@ class LLMProvider(Protocol):
         system_prompt: str | None,
         temperature: float,
         require_tool: bool,
+        max_tokens: int | None = None,
     ) -> LLMProviderResponse:
         """Generate one assistant turn, possibly containing tool calls."""
 

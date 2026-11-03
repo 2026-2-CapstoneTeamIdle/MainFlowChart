@@ -203,6 +203,14 @@ namespace TeamIdle.GameTemplate.Editor
                 generatedFeatureCount++;
             }
 
+            // Batch scene validation runs outside Play Mode, so GameBootstrap has not initialized
+            // runtime modules yet. Seed host-owned bindings that generated modules may inspect.
+            var batchPlayer = FindChildByName(generatedRoot.transform, "Player");
+            var batchHealth =
+                batchPlayer == null ? null : batchPlayer.GetComponent<HealthComponent>();
+            moduleRoot
+                .GetComponentInChildren<HealthDamageSystemModule>(true)
+                ?.BindPlayer(batchHealth);
             var boundFeatureCount = featureBinder.BindNow();
             if (boundFeatureCount != generatedFeatureCount)
             {
@@ -293,41 +301,10 @@ namespace TeamIdle.GameTemplate.Editor
             ValidationPlan validationPlan
         )
         {
-            var aliases = new Dictionary<string, string>(StringComparer.Ordinal)
-            {
-                ["collectible"] = "collectible_system",
-                ["goal"] = "goal_system",
-                ["health_damage"] = "health_damage_system",
-                ["wave_spawn"] = "wave_spawner",
-                ["tower_targeting"] = "tower_targeting_system",
-                ["base_defense"] = "base_defense_system",
-                ["deck"] = "deck_system",
-                ["turn"] = "turn_system",
-                ["card_resource"] = "card_resource_system",
-                ["card_effect"] = "card_effect_system",
-                ["dialogue"] = "dialogue_runner",
-                ["choice"] = "choice_branch_system",
-                ["branching"] = "choice_branch_system",
-                ["flags"] = "flag_system",
-                ["multiple_endings"] = "ending_resolver",
-                ["raising_endings"] = "raising_ending_resolver",
-                ["stats"] = "stat_system",
-                ["experience"] = "experience_system",
-                ["upgrade_selection"] = "upgrade_selection_system",
-                ["rarity"] = "rarity_system",
-                ["schedule"] = "schedule_system",
-                ["enemy_spawn"] = "enemy_spawn_system",
-                ["chase_ai"] = "enemy_spawn_system",
-                ["auto_target"] = "auto_target_system",
-                ["projectile"] = "projectile_system",
-                ["economy"] = "economy_system",
-                ["time_turn"] = "time_turn_system",
-                ["activity"] = "activity_system",
-            };
             var selected = new HashSet<string>(config.SelectedModules, StringComparer.Ordinal);
             foreach (var binding in validationPlan.required_feature_bindings)
             {
-                var moduleId = aliases.TryGetValue(binding, out var alias) ? alias : binding;
+                var moduleId = ModuleComponentCatalog.ResolveFeatureBindingModuleId(binding);
                 if (!selected.Contains(moduleId))
                 {
                     throw new InvalidOperationException(
@@ -890,7 +867,8 @@ namespace TeamIdle.GameTemplate.Editor
             body.gravityScale = 0f;
             body.freezeRotation = true;
             player.AddComponent<CircleCollider2D>();
-            player.AddComponent<HealthComponent>();
+            var playerHealth = player.AddComponent<HealthComponent>();
+            playerHealth.SetMaximum(context.Balance.Initial("player_health", 100f));
             player.AddComponent<PrototypeWingUpgradeApplier>();
             GetModule<TopDownMovementModule>(context)?.Bind(body);
             var cameraFollow =
@@ -901,29 +879,7 @@ namespace TeamIdle.GameTemplate.Editor
             cameraFollow.Bind(player.transform);
             cameraFollow.ConfigureBounds(-halfWidth, halfWidth, -halfHeight, halfHeight);
 
-            CreateSpriteObject(
-                "LeftWing",
-                player.transform,
-                new Vector2(-0.75f, 0f),
-                new Vector2(0.8f, 0.35f),
-                new Color(0.85f, 0.9f, 1f),
-                "wing"
-            );
-            CreateSpriteObject(
-                "RightWing",
-                player.transform,
-                new Vector2(0.75f, 0f),
-                new Vector2(0.8f, 0.35f),
-                new Color(0.85f, 0.9f, 1f),
-                "wing"
-            );
-
             var enemyPrefab = CreateSurvivorEnemyPrefab(context);
-            var projectilePrefab = CreateProjectilePrefab(
-                context,
-                "FeatherProjectile",
-                new Color(0.95f, 0.95f, 1f)
-            );
             var spawner = GetModule<EnemySpawnSystemModule>(context);
             SetObject(spawner, "enemyPrefab", enemyPrefab);
             SetObject(spawner, "target", player.transform);
@@ -931,9 +887,33 @@ namespace TeamIdle.GameTemplate.Editor
             SetInt(spawner, "maximumAlive", 24);
 
             var autoTarget = GetModule<AutoTargetSystemModule>(context);
-            SetObject(autoTarget, "origin", player.transform);
-            SetObject(autoTarget, "projectilePrefab", projectilePrefab);
-            SetInt(autoTarget, "enemyMask", 1 << 8);
+            if (autoTarget != null)
+            {
+                CreateSpriteObject(
+                    "LeftWing",
+                    player.transform,
+                    new Vector2(-0.75f, 0f),
+                    new Vector2(0.8f, 0.35f),
+                    new Color(0.85f, 0.9f, 1f),
+                    "wing"
+                );
+                CreateSpriteObject(
+                    "RightWing",
+                    player.transform,
+                    new Vector2(0.75f, 0f),
+                    new Vector2(0.8f, 0.35f),
+                    new Color(0.85f, 0.9f, 1f),
+                    "wing"
+                );
+                var projectilePrefab = CreateProjectilePrefab(
+                    context,
+                    "DefaultProjectile",
+                    new Color(0.95f, 0.95f, 1f)
+                );
+                SetObject(autoTarget, "origin", player.transform);
+                SetObject(autoTarget, "projectilePrefab", projectilePrefab);
+                SetInt(autoTarget, "enemyMask", 1 << 8);
+            }
             ConfigureUpgradePool(
                 GetModule<UpgradeSelectionSystemModule>(context),
                 context.Blueprint

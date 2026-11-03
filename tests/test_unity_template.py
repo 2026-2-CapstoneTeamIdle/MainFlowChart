@@ -97,6 +97,9 @@ class UnityTemplateTest(unittest.TestCase):
         self.assertNotIn("AudioMixerController", asset_binder)
         self.assertIn('failureDetail = "runtime.exception: " + message', runtime_smoke)
         self.assertNotIn("runtime.exception: inspect Unity log", runtime_smoke)
+        self.assertIn("IsIgnorableEditorInfrastructureLog(message, stack)", runtime_smoke)
+        self.assertIn("UnityEditor.Search.SearchDatabase", runtime_smoke)
+        self.assertIn("UnityEditor.Search.SearchInit.IndexationOnStartup", runtime_smoke)
         self.assertIn("ValidateCurrentSceneForBatch", builder)
         self.assertIn("ModuleComponentCatalog.ValidateForBatch", builder)
         self.assertIn("AttachGeneratedFeatureBinder", assembler)
@@ -177,6 +180,56 @@ class UnityTemplateTest(unittest.TestCase):
         fixed_update = movement.split("private void FixedUpdate()", maxsplit=1)[1]
         self.assertNotIn("input.ConfirmPressed", fixed_update)
 
+    def test_feature_binding_aliases_match_design_catalog(self) -> None:
+        catalog = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Editor/ModuleComponentCatalog.cs"
+        ).read_text(encoding="utf-8")
+        alias_block = re.search(
+            r"FeatureBindingModuleIds\s*=\s*new Dictionary<\s*string\s*,\s*string\s*>"
+            r"\s*\(StringComparer\.Ordinal\)\s*\{(?P<body>.*?)\n\s*\};",
+            catalog,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(alias_block)
+        aliases = dict(
+            re.findall(
+                r'\["([a-z0-9_]+)"\]\s*=\s*"([a-z0-9_]+)"',
+                alias_block.group("body"),
+            )
+        )
+
+        from game_pipeline.design_catalog import MECHANIC_TO_MODULE
+
+        expected_aliases = {
+            feature_id: module_id
+            for feature_id, module_id in MECHANIC_TO_MODULE.items()
+            if feature_id != module_id
+        }
+        self.assertEqual(aliases, expected_aliases)
+
+        validators = (
+            "Assets/GameTemplate/Editor/PrefabSceneAssembler.cs",
+            "Assets/GameTemplate/Editor/RuntimeSmokeValidator.cs",
+        )
+
+        for relative_path in validators:
+            source = (TEMPLATE_ROOT / relative_path).read_text(encoding="utf-8")
+            with self.subTest(relative_path=relative_path):
+                self.assertIn(
+                    "ModuleComponentCatalog.ResolveFeatureBindingModuleId(binding)",
+                    source,
+                )
+                self.assertNotIn("aliases.TryGetValue(binding", source)
+
+    def test_runtime_feature_ui_survives_scene_reload_with_bootstrap(self) -> None:
+        runtime_ui = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Runtime/Common/RuntimeFeatureUi.cs"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("DontDestroyOnLoad(canvasObject)", runtime_ui)
+        self.assertIn("EnsureEventSystem();", runtime_ui)
+        self.assertIn("DontDestroyOnLoad(eventSystem)", runtime_ui)
+
     def test_persistent_platformer_behaviours_use_matching_script_filenames(self) -> None:
         platformer_root = TEMPLATE_ROOT / "Assets/GameTemplate/Runtime/Platformer"
         for class_name in (
@@ -203,10 +256,15 @@ class UnityTemplateTest(unittest.TestCase):
             "Common/HealthComponent.cs": "HealthComponent",
             "Common/HealthDamageSystemModule.cs": "HealthDamageSystemModule",
             "Common/InputAdapterModule.cs": "InputAdapterModule",
+            "Common/ItemCollectionSystemModule.cs": "ItemCollectionSystemModule",
+            "Common/OptionsMenuModule.cs": "OptionsMenuModule",
+            "Common/PlayerStatDisplayModule.cs": "PlayerStatDisplayModule",
             "Common/Projectile2D.cs": "Projectile2D",
             "Common/ProjectileSystemModule.cs": "ProjectileSystemModule",
             "Common/SaveSystemModule.cs": "SaveSystemModule",
             "Common/SceneFlowManagerModule.cs": "SceneFlowManagerModule",
+            "Common/ScoreSystemModule.cs": "ScoreSystemModule",
+            "Common/GameTimerModule.cs": "GameTimerModule",
             "Common/UiRouterModule.cs": "UiRouterModule",
             "SurvivorLike/ChaseAgent2D.cs": "ChaseAgent2D",
             "SurvivorLike/AutoTargetSystemModule.cs": "AutoTargetSystemModule",
@@ -218,6 +276,7 @@ class UnityTemplateTest(unittest.TestCase):
             "TowerDefense/BaseDefenseSystemModule.cs": "BaseDefenseSystemModule",
             "TowerDefense/PathFollower2D.cs": "PathFollower2D",
             "TowerDefense/TowerTargetingSystemModule.cs": "TowerTargetingSystemModule",
+            "TowerDefense/TowerUpgradeSystemModule.cs": "TowerUpgradeSystemModule",
             "TowerDefense/WaveSpawnerModule.cs": "WaveSpawnerModule",
             "Prototype/PrototypeExperienceReward.cs": "PrototypeExperienceReward",
             "Prototype/PrototypeTowerEndpoint.cs": "PrototypeTowerEndpoint",
@@ -232,6 +291,23 @@ class UnityTemplateTest(unittest.TestCase):
                     f"public sealed class {class_name}",
                     source_path.read_text(encoding="utf-8"),
                 )
+
+    def test_health_binding_and_survivor_smoke_guard_initial_state(self) -> None:
+        health_system = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Runtime/Common/HealthDamageSystemModule.cs"
+        ).read_text(encoding="utf-8")
+        assembler = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Editor/PrefabSceneAssembler.cs"
+        ).read_text(encoding="utf-8")
+        smoke = (TEMPLATE_ROOT / "Assets/GameTemplate/Editor/RuntimeSmokeValidator.cs").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("PlayerHealth.Current <= 0f", health_system)
+        self.assertIn('Balance.Initial("player_health", 100f)', assembler)
+        self.assertIn("runtime.initial_state_viable", smoke)
+        self.assertIn("runtime.validation_probe_failed", smoke)
+        self.assertIn("FindObjectsByType<ValidationProbe>", smoke)
 
     def test_template_meta_guids_are_unique(self) -> None:
         owners: dict[str, Path] = {}
@@ -255,6 +331,7 @@ class UnityTemplateTest(unittest.TestCase):
         self.assertIn("com.unity.2d.tilemap", dependencies)
         self.assertIn("com.unity.modules.physics2d", dependencies)
         self.assertIn("com.unity.modules.particlesystem", dependencies)
+        self.assertIn("com.unity.modules.animation", dependencies)
         self.assertIn("com.unity.ugui", dependencies)
 
     def test_bootstrap_scene_references_config_and_runtime_scripts(self) -> None:

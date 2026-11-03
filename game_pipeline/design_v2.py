@@ -25,6 +25,7 @@ from mainflow.contracts import (
     LevelPlatform,
     LevelZone,
     PresentationPlan,
+    StatTuning,
     SystemDesign,
     ValidationPlan,
 )
@@ -56,14 +57,73 @@ def build_design_v2(
     ]
     game_design = _game_design(game_spec, intent)
     system_design = _system_design(game_spec)
-    level_plan = (
-        _platformer_level_plan(game_spec, intent, variation_seed=variation_seed)
-        if game_spec["genre"] == "Platformer"
-        else _generic_level_plan(game_spec)
-    )
+    if game_spec["genre"] == "Platformer":
+        level_plan = _platformer_level_plan(game_spec, intent, variation_seed=variation_seed)
+    elif game_spec["genre"] == "SurvivorLike":
+        level_plan = _survivor_level_plan(game_spec)
+    else:
+        level_plan = _generic_level_plan(game_spec)
     content_plan = _content_plan(game_spec, level_plan, intent)
     balance_plan = _balance_plan(game_spec)
-    presentation_plan: PresentationPlan = {
+    presentation_plan = _presentation_plan(game_spec, image_ids, sound_ids)
+    validation_plan = _validation_plan(game_spec, level_plan)
+    return {
+        "game_design": game_design,
+        "system_design": system_design,
+        "content_plan": content_plan,
+        "level_plan": level_plan,
+        "balance_plan": balance_plan,
+        "presentation_plan": presentation_plan,
+        "validation_plan": validation_plan,
+    }
+
+
+def _presentation_plan(
+    game_spec: GameSpec, image_ids: list[str], sound_ids: list[str]
+) -> PresentationPlan:
+    if game_spec["genre"] == "SurvivorLike":
+        return {
+            "plan_version": "2.0.0",
+            "ui_screens": ["hud", "pause", "level_up_choice", "stage_result", "failure"],
+            "state_transitions": [
+                "ready -> playing",
+                "playing -> level_up_choice -> playing",
+                "playing -> failed",
+                "playing -> boss -> cleared",
+            ],
+            "feedback_cues": [
+                {
+                    "cue_id": "player_hit",
+                    "trigger": "enemy contact damage accepted",
+                    "visual_feedback": "HP 감소, 적색 플래시와 카메라 흔들림",
+                    "audio_asset_id": sound_ids[-1] if sound_ids else "",
+                },
+                {
+                    "cue_id": "xp_pickup",
+                    "trigger": "experience gem collected",
+                    "visual_feedback": "경험치 바 증가와 획득 위치 팝",
+                    "audio_asset_id": sound_ids[-1] if sound_ids else "",
+                },
+                {
+                    "cue_id": "level_up",
+                    "trigger": "experience threshold reached",
+                    "visual_feedback": "시간 정지 후 무작위 특전 3개 표시",
+                    "audio_asset_id": sound_ids[-1] if sound_ids else "",
+                },
+                {
+                    "cue_id": "boss_spawn",
+                    "trigger": "survival timer reaches boss threshold",
+                    "visual_feedback": "보스 경고와 카메라 강조",
+                    "audio_asset_id": sound_ids[-1] if sound_ids else "",
+                },
+            ],
+            "camera_effects": ["player follow", "hit shake", "boss emphasis"],
+            "particle_requests": ["weapon hit burst", "experience pickup", "level up aura"],
+            "animation_requests": ["idle", "run", "attack", "hit", "death"],
+            "required_image_asset_ids": image_ids,
+            "required_sound_asset_ids": sound_ids,
+        }
+    return {
         "plan_version": "2.0.0",
         "ui_screens": ["hud", "pause", "stage_result", "failure"],
         "state_transitions": [
@@ -98,16 +158,6 @@ def build_design_v2(
         "required_image_asset_ids": image_ids,
         "required_sound_asset_ids": sound_ids,
     }
-    validation_plan = _validation_plan(game_spec, level_plan)
-    return {
-        "game_design": game_design,
-        "system_design": system_design,
-        "content_plan": content_plan,
-        "level_plan": level_plan,
-        "balance_plan": balance_plan,
-        "presentation_plan": presentation_plan,
-        "validation_plan": validation_plan,
-    }
 
 
 def validate_design_v2(bundle: DesignV2Bundle) -> None:
@@ -115,7 +165,45 @@ def validate_design_v2(bundle: DesignV2Bundle) -> None:
 
     if bundle["game_design"]["target_play_minutes"] < 3:
         raise ValueError("target_play_minutes must be at least 3")
+    stats = {item["stat_id"]: item for item in bundle["balance_plan"]["stats"]}
+    player_health = stats.get("player_health")
+    if player_health is None:
+        raise ValueError("balance_plan requires player_health")
+    if (
+        player_health["minimum"] <= 0
+        or player_health["initial"] <= 0
+        or player_health["maximum"] < player_health["initial"]
+    ):
+        raise ValueError("player_health must start positive and within its valid range")
+    move_speed = stats.get("move_speed")
+    if move_speed is None or move_speed["initial"] <= 0:
+        raise ValueError("balance_plan requires a positive initial move_speed")
     level = bundle["level_plan"]
+    required_zone_fields = {
+        "zone_id",
+        "title",
+        "purpose",
+        "challenge",
+        "reward",
+        "difficulty",
+        "required_mechanics",
+        "start_x",
+        "end_x",
+        "checkpoint",
+        "platforms",
+        "hazards",
+        "enemies",
+        "collectibles",
+    }
+    zone_ids: set[str] = set()
+    for index, zone in enumerate(level["zones"]):
+        missing = required_zone_fields - set(zone)
+        if missing:
+            raise ValueError(f"level_plan zone {index} is missing fields: {sorted(missing)}")
+        zone_id = zone["zone_id"].strip()
+        if not zone_id or zone_id in zone_ids:
+            raise ValueError(f"level_plan zone {index} has an empty or duplicate zone_id")
+        zone_ids.add(zone_id)
     if level["genre"] == "Platformer":
         if len(level["zones"]) < 3:
             raise ValueError("Platformer level_plan requires at least three zones")
@@ -148,13 +236,29 @@ def validate_design_v2(bundle: DesignV2Bundle) -> None:
             raise ValueError(
                 "validation_plan must contain exactly the executable platformer scenarios"
             )
-    elif len(bundle["validation_plan"]["scenarios"]) < 3:
-        raise ValueError("validation_plan requires at least three scenarios")
+    elif level["genre"] == "SurvivorLike":
+        scenario_ids = {
+            scenario["scenario_id"] for scenario in bundle["validation_plan"]["scenarios"]
+        }
+        if "survivor_spawn_chase_attack_progression" not in scenario_ids:
+            raise ValueError("SurvivorLike validation requires its executable runtime scenario")
+        if len(level["zones"]) < 3:
+            raise ValueError(
+                "SurvivorLike level_plan requires opening, escalation, and boss phases"
+            )
+        if not bundle["content_plan"]["enemies"] or not bundle["content_plan"]["rewards"]:
+            raise ValueError("SurvivorLike content requires enemies and progression rewards")
+    elif not bundle["validation_plan"]["scenarios"]:
+        raise ValueError("validation_plan requires at least one executable scenario")
     presentation = bundle["presentation_plan"]
     if "hud" not in presentation["ui_screens"]:
         raise ValueError("presentation_plan requires a HUD")
     cue_ids = {cue["cue_id"] for cue in presentation["feedback_cues"]}
-    required_cues = {"player_hit", "collectible_pickup", "checkpoint_reached"}
+    required_cues = (
+        {"player_hit", "xp_pickup", "level_up", "boss_spawn"}
+        if level["genre"] == "SurvivorLike"
+        else {"player_hit", "collectible_pickup", "checkpoint_reached"}
+    )
     if not cue_ids.issuperset(required_cues):
         raise ValueError("presentation_plan is missing required gameplay feedback cues")
     if "hit shake" not in presentation["camera_effects"]:
@@ -184,6 +288,44 @@ def _game_design(game_spec: GameSpec, intent: str) -> GameDirectorDesign:
 
 def _system_design(game_spec: GameSpec) -> SystemDesign:
     abilities = [feature["description"] for feature in game_spec["features"]]
+    if game_spec["genre"] == "SurvivorLike":
+        return {
+            "design_version": "2.0.0",
+            "player_states": ["ready", "moving", "hurt", "level_up_choice", "dead", "victory"],
+            "player_abilities": abilities,
+            "enemy_states": ["spawn", "chase", "contact_attack", "defeated", "boss"],
+            "combat_formulas": [
+                "accepted_damage = max(1, contact_damage - defense)",
+                "one enemy can damage the player at most once per invulnerability interval",
+            ],
+            "resources": ["health", "experience", "level", "survival_time"],
+            "progression": [
+                "defeated enemy -> experience gem -> level up -> choose one of three upgrades",
+                "survival time -> stronger spawn wave -> boss -> victory",
+            ],
+            "save_data": ["best survival time", "highest level", "boss defeats"],
+            "event_connections": [
+                {
+                    "event_id": "enemy_defeated",
+                    "producer": "enemy health",
+                    "consumers": ["experience gem spawn", "score", "audio feedback"],
+                    "payload": ["enemy_id", "experience_value", "world_position"],
+                },
+                {
+                    "event_id": "player_damaged",
+                    "producer": "contact damage",
+                    "consumers": ["health hud", "invulnerability", "hit feedback"],
+                    "payload": ["remaining_health", "maximum_health"],
+                },
+                {
+                    "event_id": "level_up",
+                    "producer": "experience system",
+                    "consumers": ["time pause", "upgrade selection", "hud"],
+                    "payload": ["level", "three_upgrade_choices"],
+                },
+            ],
+            "stats": _survivor_stats(),
+        }
     return {
         "design_version": "2.0.0",
         "player_states": ["ready", "moving", "airborne", "hurt", "dead", "cleared"],
@@ -290,6 +432,77 @@ def _content_plan(game_spec: GameSpec, level_plan: LevelPlan, intent: str) -> Co
             ],
             "stages": [zone["title"] for zone in level_plan["zones"]],
             "final_goal": f"필수 보상을 획득하고 {intent[:48]}의 최종 목표에 도달",
+        }
+    if game_spec["genre"] == "SurvivorLike":
+        return {
+            "plan_version": "2.0.0",
+            "enemies": [
+                {
+                    "content_id": "swarm_enemy",
+                    "role": "빠르게 접근하는 기본 추적 적",
+                    "count": 12,
+                    "stats": [
+                        {"stat_id": "health", "value": 1},
+                        {"stat_id": "speed", "value": 2.4},
+                    ],
+                    "behaviors": ["spawn outside camera", "chase player", "contact damage"],
+                },
+                {
+                    "content_id": "armored_enemy",
+                    "role": "여러 번 공격해야 쓰러지는 압박 적",
+                    "count": 5,
+                    "stats": [
+                        {"stat_id": "health", "value": 5},
+                        {"stat_id": "speed", "value": 1.4},
+                    ],
+                    "behaviors": ["chase player", "resist one hit", "drop larger experience gem"],
+                },
+                {
+                    "content_id": "survival_boss",
+                    "role": "최종 생존 목표",
+                    "count": 1,
+                    "stats": [
+                        {"stat_id": "health", "value": 60},
+                        {"stat_id": "speed", "value": 1.1},
+                    ],
+                    "behaviors": ["spawn at time threshold", "chase player", "victory on defeat"],
+                },
+            ],
+            "obstacles": [
+                {
+                    "content_id": "arena_pressure_zone",
+                    "role": "안전한 이동 경로를 주기적으로 제한",
+                    "count": 2,
+                    "stats": [{"stat_id": "damage", "value": 1}],
+                    "behaviors": ["telegraph before activation", "damage on contact"],
+                }
+            ],
+            "rewards": [
+                {
+                    "content_id": "experience_gem",
+                    "role": "적 처치 위치에 생성되는 수동 수집 성장 자원",
+                    "count": 17,
+                    "stats": [{"stat_id": "experience", "value": 1}],
+                    "behaviors": [
+                        "drop on enemy defeat",
+                        "collect on player overlap",
+                        "update experience bar",
+                    ],
+                },
+                {
+                    "content_id": "three_choice_upgrade",
+                    "role": "레벨업마다 전투를 정지하고 하나를 선택",
+                    "count": 3,
+                    "stats": [{"stat_id": "choice_count", "value": 3}],
+                    "behaviors": [
+                        "pause simulation",
+                        "offer three distinct upgrades",
+                        "resume after choice",
+                    ],
+                },
+            ],
+            "stages": [zone["title"] for zone in level_plan["zones"]],
+            "final_goal": "시간이 지날수록 강화되는 적 무리를 버티고 보스를 처치한다.",
         }
     return {
         "plan_version": "2.0.0",
@@ -500,7 +713,82 @@ def _generic_level_plan(game_spec: GameSpec) -> LevelPlan:
     }
 
 
+def _survivor_level_plan(game_spec: GameSpec) -> LevelPlan:
+    mechanics = list(dict.fromkeys(game_spec["mechanics"])) or ["top_down_movement"]
+    phases = [
+        ("tutorial_1", "초기 생존", "tutorial", 1, -12.0, -4.0, "이동과 자동 공격을 확인"),
+        ("challenge_2", "군집 격화", "challenge", 2, -4.0, 4.0, "경험치를 모아 특전을 선택"),
+        ("mastery_3", "보스 출현", "mastery", 3, 4.0, 12.0, "강화된 무리 속에서 보스를 처치"),
+    ]
+    zones: list[LevelZone] = []
+    for zone_id, title, purpose, difficulty, start_x, end_x, challenge in phases:
+        zones.append(
+            {
+                "zone_id": zone_id,
+                "title": title,
+                "purpose": purpose,  # type: ignore[typeddict-item]
+                "challenge": challenge,
+                "reward": "다음 생존 단계와 강화 선택 해금" if difficulty < 3 else "승리",
+                "difficulty": difficulty,
+                "required_mechanics": mechanics,
+                "start_x": start_x,
+                "end_x": end_x,
+                "checkpoint": None,
+                "platforms": [],
+                "hazards": [
+                    _placement(
+                        f"pressure_{difficulty}", "arena_pressure_zone", end_x - 1, difficulty - 2
+                    )
+                ],
+                "enemies": [
+                    _placement(
+                        f"enemy_phase_{difficulty}",
+                        "survival_boss"
+                        if difficulty == 3
+                        else ("swarm_enemy" if difficulty == 1 else "armored_enemy"),
+                        end_x - 2,
+                        2 - difficulty,
+                    )
+                ],
+                "collectibles": [
+                    _placement(f"xp_phase_{difficulty}", "experience_gem", end_x - 3, 0)
+                ],
+            }
+        )
+    return {
+        "plan_version": "2.0.0",
+        "genre": "SurvivorLike",
+        "player_spawn": _placement("player_spawn", "player", 0, 0),
+        "goal": _placement("boss_victory", "survival_boss", 10, 0),
+        "zones": zones,
+        "safe_start_seconds": 4.0,
+        "camera_orthographic_size": 7.0,
+        "max_horizontal_gap": 0.0,
+        "max_step_up": 0.0,
+        "minimum_landing_width": 0.0,
+    }
+
+
 def _balance_plan(game_spec: GameSpec) -> BalancePlan:
+    if game_spec["genre"] == "SurvivorLike":
+        return {
+            "plan_version": "2.0.0",
+            "stats": _survivor_stats(),
+            "formulas": [
+                "accepted_damage = max(1, contact_damage - defense)",
+                "experience_to_next_level = 5 + 3 * (level - 1)",
+                "enemy_health = base_health * (1 + 0.12 * elapsed_minutes)",
+            ],
+            "difficulty_curve": [
+                "0-60 seconds: sparse swarm enemies and safe movement space",
+                "60-180 seconds: faster spawns plus armored enemies",
+                "after 180 seconds: boss appears while regular waves continue",
+            ],
+            "reward_costs": [
+                "level up: reach the experience threshold",
+                "victory: defeat the timed boss before health reaches zero",
+            ],
+        }
     return {
         "plan_version": "2.0.0",
         "stats": [
@@ -532,7 +820,84 @@ def _balance_plan(game_spec: GameSpec) -> BalancePlan:
     }
 
 
+def _survivor_stats() -> list[StatTuning]:
+    return [
+        {"stat_id": "player_health", "initial": 100, "minimum": 1, "maximum": 250, "unit": "hp"},
+        {"stat_id": "move_speed", "initial": 5, "minimum": 2, "maximum": 10, "unit": "units/s"},
+        {"stat_id": "weapon_damage", "initial": 2, "minimum": 1, "maximum": 30, "unit": "hp"},
+        {"stat_id": "contact_damage", "initial": 10, "minimum": 1, "maximum": 40, "unit": "hp"},
+        {
+            "stat_id": "damage_interval",
+            "initial": 0.75,
+            "minimum": 0.2,
+            "maximum": 2,
+            "unit": "seconds",
+        },
+        {
+            "stat_id": "spawn_interval",
+            "initial": 1.2,
+            "minimum": 0.15,
+            "maximum": 3,
+            "unit": "seconds",
+        },
+    ]
+
+
 def _validation_plan(game_spec: GameSpec, level_plan: LevelPlan) -> ValidationPlan:
+    if level_plan["genre"] == "SurvivorLike":
+        return {
+            "plan_version": "2.0.0",
+            "scenarios": [
+                {
+                    "scenario_id": "survivor_spawn_chase_attack_progression",
+                    "title": "적 생성부터 성장·보스·승패까지 생존 루프",
+                    "steps": [
+                        "spawn player with positive health",
+                        "spawn enemy outside camera and chase player",
+                        "deal contact damage with an interval",
+                        "defeat enemy and drop a collectable experience gem",
+                        "collect enough gems and choose one of three upgrades",
+                        "spawn and defeat boss at the survival threshold",
+                    ],
+                    "assertions": [
+                        "health HUD reflects damage without immediate game over",
+                        "requested attack delivery damages enemies",
+                        "experience changes only after collecting a dropped gem",
+                        "level-up choice pauses and resumes play",
+                        "boss defeat enters victory state",
+                    ],
+                }
+            ],
+            "rules": [
+                {
+                    "rule_id": "initial-state-viable",
+                    "description": "체력은 양수이고 첫 프레임에 패배하지 않음",
+                    "required": True,
+                },
+                {
+                    "rule_id": "spawn-safe-window",
+                    "description": "초기 안전 시간 동안 적이 즉시 접촉하지 않음",
+                    "required": True,
+                },
+                {
+                    "rule_id": "combat-loop-connected",
+                    "description": "공격·처치·드롭·수집·성장 순서가 실제 객체로 연결됨",
+                    "required": True,
+                },
+                {
+                    "rule_id": "hud-state-bound",
+                    "description": "체력·경험치·레벨·시간이 실제 런타임 상태와 일치",
+                    "required": True,
+                },
+                {
+                    "rule_id": "boss-flow-reachable",
+                    "description": "보스 출현과 처치 후 승리 상태가 도달 가능",
+                    "required": True,
+                },
+            ],
+            "required_scene_objects": ["Player", "GameHud", "EnemySpawnSystem"],
+            "required_feature_bindings": list(game_spec["mechanics"]),
+        }
     scenarios = [
         {
             "scenario_id": "start_to_goal",
@@ -560,6 +925,16 @@ def _validation_plan(game_spec: GameSpec, level_plan: LevelPlan) -> ValidationPl
         "plan_version": "2.0.0",
         "scenarios": scenarios,
         "rules": [
+            {
+                "rule_id": "initial-state-viable",
+                "description": "첫 플레이 프레임에 체력·자원·입력이 유효하고 패배 상태가 아님",
+                "required": True,
+            },
+            {
+                "rule_id": "spawn-safe-window",
+                "description": "초기 스폰 지점에 즉시 치명적인 적·함정·충돌이 없음",
+                "required": True,
+            },
             {
                 "rule_id": "level-route-reachable",
                 "description": "모든 필수 발판 간격과 높이가 플레이어 이동 한계 이내",

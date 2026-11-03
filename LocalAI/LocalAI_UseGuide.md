@@ -1,15 +1,34 @@
 # LocalAI 사용 가이드
 
-통합 버전: 1.3.0. 기본 모델은 Qwen2.5-Coder-7B-Instruct Q5_K_M(API 이름: qwen2.5-coder-7b-q5-k-m)이다.
-LocalAI v4.11.0 llama.cpp를 사용한다. 공식 텍스트 전용 GGUF는 약 5.44GB이며
-멀티모달 파일은 설치하지 않는다. context 8192, gpu_layers 99, 동시 추론 슬롯 1개,
+통합 버전: 1.8.0. 기본 preload는 Feature 분석용 Gemma 4 12B QAT Q4_0
+(API 이름: `gemma4-12b-it-qat-q4-0`)과 Qwen2.5-Coder-7B-Instruct Q5_K_M
+(API 이름: `qwen2.5-coder-7b-q5-k-m`)을 함께 등록한다.
+LocalAI v4.11.0 llama.cpp를 사용한다. Qwen GGUF는 약 5.44GB이고 Gemma 12B Q4 가중치는
+약 6.7GB이며 멀티모달 파일은 설치하지 않는다. 두 모델은 context 24576, gpu_layers 99,
+동시 추론 슬롯 1개,
 호스트 프롬프트 캐시 상한 1024MiB와
 동시 활성 backend 1개로 설정한다. 12GB GPU에서 모델 전체를 GPU에 올리되 Windows와
 Unity가 사용할 여유를 남기는 구성이다.
+Condition→Feature와 Feature→Checklist는 Gemma를 사용하고 Checklist→Unity Test C#은 Qwen
+Coder를 사용한다. 두 모델은 동시에 VRAM에 상주하지 않고 요청 역할이 바뀔 때 교체된다.
 자동 컨텍스트 축소는 끄므로 LocalAI 시작 로그의 effective runtime tuning에서
-context=8192인지 확인한다.
+context=24576인지 확인한다. 시각 검증 VLM은 context 8192를 유지한다.
 
-MainFlow에도 같은 값을 `LOCAL_LLM_CONTEXT_TOKENS=8192`로 설정한다. 이 값은 서버의
+선택형 시각 검증은 Qwen3-VL-4B-Instruct Q4_K_M과 Q8 vision projector를 사용한다.
+`preload-visual.yaml`을 선택하면 코드 모델과 VLM을 함께 등록하되 한 번에 한 backend만
+활성화한다. 자세한 실행 흐름은 `docs/VisualValidationManager.md`를 따른다.
+
+Node 공통 실행기의 로컬 이미지 생성은 `stabilityai/sd-turbo`를 `sd-turbo`라는 API 이름으로
+사용한다. 6GB 전용 GPU를 기준으로 512x512, FP16, 기본 2 step으로 설정했다. 이 경로는
+`run_node_llm(output="image")` 전용이며 기존 `mainflow/image_backends.py`의 게임 에셋 생성
+경로를 교체하거나 변경하지 않는다. `LOCALAI_SINGLE_ACTIVE_BACKEND`도 활성화해 텍스트/VLM/이미지
+backend가 동시에 VRAM을 점유하지 않고 모델 전환 시 이전 backend를 내리도록 했다.
+
+GPU 추론만 Vast.ai의 vLLM으로 옮길 때는 이 로컬 구성을 삭제하지 않고 provider를 `vastai`로
+전환한다. 역할별 Coder/VLM/이미지 endpoint와 SSH tunnel 설정은
+`docs/VastAIManager.md`를 따른다.
+
+MainFlow에도 같은 값을 `LOCAL_LLM_CONTEXT_TOKENS=24576`로 설정한다. 이 값은 서버의
 `context_size`를 변경하지 않고 호출 전 입력 예산을 검사하는 용도이므로 두 값을 항상 같게 유지한다.
 기능 생성은 전체 API 인덱스 대신 요구사항 관련 모듈의 시그니처만 검색해 전달한다.
 
@@ -26,12 +45,119 @@ docker compose -f compose.yaml -f LocalAI/compose.yaml logs -f Local-AIModel
 최초 다운로드가 끝난 후 등록 상태를 확인한다.
 
 ```powershell
-uv run --locked python -m LocalAI.check_connection --model qwen2.5-coder-7b-q5-k-m
+uv run --locked python -m LocalAI.check_connection `
+  --model qwen2.5-coder-7b-q5-k-m --context-tokens 24576
+uv run --locked python -m LocalAI.check_connection `
+  --model gemma4-12b-it-qat-q4-0 --context-tokens 24576
 ```
 
 Web UI: http://127.0.0.1:8080 / 호스트 API: http://127.0.0.1:8080/v1.
-연결 검사는 등록 여부만 확인하며 코드 생성 성공을 보장하지 않는다.
+연결 검사는 `/v1/models/capabilities`에서 모델 등록 여부와 서버가 실제로 보고하는 Context를
+함께 확인한다. `context_mismatch`는 MainFlow가 계산하는 입력·출력 예산과 서버 한도가 다르다는
+뜻이므로 실행 전에 반드시 수정한다. 이 검사는 코드 생성 성공 자체를 보장하지는 않는다.
 모델은 idle-capstone-local-ai-models named volume에 저장되며 기존 모델은 삭제하지 않는다.
+`Local-AIBackendSetup` 일회성 서비스는 CUDA 12 Diffusers backend를
+`idle-capstone-local-ai-backends` volume에 설치하고 SD-Turbo 설정을 쓰기 가능한 runtime 설정
+volume으로 복사한다. LocalAI는 이 준비 서비스가 성공한 뒤 시작한다. Diffusers 가중치는 최초
+시작 시 `idle-capstone-local-ai-models`의 관리형 cache로 다운로드된다. 단일 checkpoint와 예제
+이미지는 제외하고 Diffusers 구성요소만 저장한다. 따라서 최초 컨테이너 시작과 첫 요청은
+backend/모델 다운로드 때문에 오래 걸릴 수 있다. runtime 설정은
+`idle-capstone-local-ai-configuration` volume에 저장된다.
+
+## Feature 분석과 동적 Unity Checklist
+
+기본 `preload-feature-pipeline.yaml`은 두 역할 모델을 등록한다. 명시적으로 선택하려면 다음과 같이
+실행한다.
+
+```powershell
+$env:LOCALAI_PRELOAD_MODELS_CONFIG = "/configuration/preload-feature-pipeline.yaml"
+$env:MAINFLOW_FEATURE_PROVIDER = "local"
+$env:MAINFLOW_DESIGN_V2_PROVIDER = "local"
+$env:LLM_DESIGN_V2_MODEL = "gemma4-12b-it-qat-q4-0"
+$env:MAINFLOW_BLUEPRINT_PROVIDER = "local"
+$env:LLM_BLUEPRINT_MODEL = "gemma4-12b-it-qat-q4-0"
+$env:MAINFLOW_CONDITION_FEATURE_PROVIDER = "local"
+$env:MAINFLOW_GENRE_FEATURE_PROVIDER = "local"
+$env:LLM_CONDITION_FEATURE_ANALYSIS_MODEL = "gemma4-12b-it-qat-q4-0"
+$env:LLM_FEATURE_CHECKLIST_GENERATION_PROVIDER = "local"
+$env:LLM_FEATURE_CHECKLIST_GENERATION_MODEL = "gemma4-12b-it-qat-q4-0"
+$env:LLM_UNITY_CHECKLIST_TEST_GENERATION_PROVIDER = "local"
+$env:LLM_UNITY_CHECKLIST_TEST_GENERATION_MODEL = "qwen2.5-coder-7b-q5-k-m"
+docker compose -f compose.yaml -f LocalAI/compose.yaml up -d --force-recreate Local-AIModel
+```
+
+Gemma의 공식 파일 이름은 `gemma-4-12b-it-qat-q4_0.gguf`이며, 사용자가 적은 모델명 끝의
+불완전한 `-` 대신 위 API 별칭을 사용한다. 프로젝트 실행 후 생성물은
+`workspace/{project_id}/validation/feature_checklists/generated/{feature_id}/`에서 확인한다.
+Condition은 문장 단위의 최대 6개 기능 요청으로 분리되고, 장르 보강은 기능 의존성과 장르 핵심
+요청으로 나뉜다. Checklist 30개 항목도 Gemma에 10개씩 3회 요청한 뒤 중복을 검사해 합친다.
+Qwen의 Unity Test 코드도 10개 메서드씩 구조화 출력으로 생성하고, 호스트가 Feature당 C# 파일
+하나로 조립한다. 입력에는 전체 C# 원문 대신 관련 public API signature만 전달한다.
+각 Feature는 Checklist 한 개와 30개 항목, Unity 테스트 파일 한 개를 가진다. Unity Editor가 없거나
+동적 C#이 3회의 생성 시도 안에 컴파일되지 않거나
+`Feature 수 × 30` 항목 중 하나라도 통과하지 못하면 게임 검증은 실패한다.
+동적 Checklist 생성 또는 컴파일 실패 시 저장소의 정적 Checklist로 우회하지 않는다.
+
+토큰 초과와 복구 이력은 실행 프로젝트의 `workspace/{project_id}/validation/errorlog.md`에서
+확인한다. 각 행은 `날짜|시점|이유|상세`이며 입력 Context 부족, `finish_reason=length`, 구조화
+JSON 실패, 동적 테스트 생성·컴파일 실패를 기록한다. 축약 재요청이나 재생성 후 성공하면
+`TOKEN_OUTPUT_RECOVERED`, `STRUCTURED_OUTPUT_RECOVERED`, `DYNAMIC_TEST_*_RECOVERED` 행이
+추가되므로 단순 실패와 자동 복구를 구분할 수 있다.
+
+## Node 공통 이미지 생성
+
+State에 `project_id`가 바인딩된 비동기 Node에서 텍스트 호출과 같은 함수에
+`output="image"`를 지정한다.
+
+```python
+from MCP import ImageGenerationOptions, ImageRunResult, run_node_llm
+
+
+async def make_target_image(state):
+    result = await run_node_llm(
+        "pixel art side-view platformer, forest ruins, readable game screen",
+        system_prompt="Create a coherent target screenshot without text or watermark.",
+        ai="sd_turbo",
+        output="image",
+        image_options=ImageGenerationOptions(
+            size="512x288",
+            steps=2,
+            negative_prompt="blurry, text, watermark, broken UI",
+            filename_prefix="visual_target",
+            artifact_category="validation",
+        ),
+    )
+    assert isinstance(result, ImageRunResult)
+    return {"target_image": result.artifacts[0]}
+```
+
+기본 결과 이미지는 임시 URL이 아니라
+`workspace/{project_id}/generated/images/{filename_prefix}_*.png`에 저장된다. 검증 전용 호출처럼
+`artifact_category="validation"`을 지정하면 `workspace/{project_id}/validation/`에 저장된다.
+두 경우 모두 manifest에 등록된 `ArtifactReference`로 반환된다. `system_prompt`는 이미지 모델의 별도 system role이
+아니라 이미지 prompt 앞에 붙는 지시문으로 처리한다. 이미지 모델은 MCP 파일 Tool을 호출하지
+않으며, `require_tool=True`는 오류다.
+
+별칭을 생략해도 이미지 출력의 기본 모델은 `LOCAL_IMAGE_MODEL` 또는 `sd-turbo`다. 로컬 호스트와
+Docker 주소는 다음 변수로 분리한다.
+
+```powershell
+$env:LOCAL_IMAGE_BASE_URL = "http://127.0.0.1:8080/v1"
+$env:LOCAL_IMAGE_MODEL = "sd-turbo"
+```
+
+Compose의 MainFlow 컨테이너에는 `http://Local-AIModel:8080/v1`이 자동 주입된다. 현재 이미지
+분기는 LocalAI만 허용한다. 다른 로컬 이미지 모델을 추가하려면 새 LocalAI YAML을 `/models`에
+mount하고, `LocalAI/profiles.py`에 `capabilities=frozenset({"image"})`인 별칭을 추가한다.
+
+실제 공통 실행기부터 Artifact 저장까지 한 번에 확인하려면 다음을 실행한다.
+
+```powershell
+$env:LOCAL_IMAGE_BASE_URL = "http://127.0.0.1:8080/v1"
+uv run --locked python -m LocalAI.check_image_generation
+```
+
+출력 JSON의 `artifacts[0].relative_path`가 실제 생성 파일 경로다.
 
 ## 게임 코드 생성
 
@@ -45,7 +171,25 @@ $env:MAINFLOW_FEATURE_PROVIDER = "local"
 $env:LOCAL_LLM_BASE_URL = "http://127.0.0.1:8080/v1"
 $env:LOCAL_LLM_MODEL = "qwen2.5-coder-7b-q5-k-m"
 $env:LLM_TIMEOUT_SECONDS = "300"
-$env:MAINFLOW_LOCAL_MAX_OUTPUT_TOKENS = "2048"
+$env:LOCAL_LLM_CONTEXT_TOKENS = "24576"
+$env:MAINFLOW_LOCAL_MAX_OUTPUT_TOKENS = "8192"
+$env:MAINFLOW_LOCAL_STRUCTURED_ATTEMPTS = "3"
+$env:MAINFLOW_FEATURE_PLAN_ATTEMPTS = "2"
+$env:MAINFLOW_FEATURE_SOURCE_ATTEMPTS = "3"
+$env:MAINFLOW_FEATURE_GENERATION_BUDGET_SECONDS = "420"
+$env:LLM_FEATURE_CODE_GENERATION_STRUCTURED_ATTEMPTS = "1"
+$env:LLM_FEATURE_CODE_GENERATION_TIMEOUT_SECONDS = "180"
+$env:LLM_CONDITION_FEATURE_ANALYSIS_MAX_OUTPUT_TOKENS = "2048"
+$env:LLM_CONDITION_FEATURE_ANALYSIS_STRUCTURED_ATTEMPTS = "1"
+$env:LLM_GENRE_FEATURE_ENRICHMENT_MAX_OUTPUT_TOKENS = "3072"
+$env:LLM_GENRE_FEATURE_ENRICHMENT_STRUCTURED_ATTEMPTS = "1"
+$env:LLM_DESIGN_V2_MAX_OUTPUT_TOKENS = "6144"
+$env:LLM_DESIGN_V2_STRUCTURED_ATTEMPTS = "1"
+$env:MAINFLOW_DESIGN_V2_CUSTOMIZATION_RETRIES = "0"
+$env:LLM_FEATURE_CHECKLIST_GENERATION_MAX_OUTPUT_TOKENS = "3072"
+$env:LLM_FEATURE_CHECKLIST_GENERATION_STRUCTURED_ATTEMPTS = "1"
+$env:LLM_UNITY_CHECKLIST_TEST_GENERATION_MAX_OUTPUT_TOKENS = "6144"
+$env:LLM_UNITY_CHECKLIST_TEST_GENERATION_STRUCTURED_ATTEMPTS = "1"
 uv run --locked python -m mainflow.run_flow --image-style "Pixel Art" --mood-style "Fantasy" --genre "플랫포머" --viewpoint "사이드뷰" --condition "벽을 타고 올라갈 수 있는 게임"
 ```
 

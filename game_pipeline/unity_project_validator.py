@@ -697,10 +697,13 @@ class UnityProjectValidator:
         tokens = (
             "error CS",
             "ArgumentException:",
+            "InvalidOperationException:",
             "NullReferenceException:",
             "MissingReferenceException:",
             "Unhandled Exception",
             "Scripts have compiler errors",
+            "Generated feature did not bind itself",
+            "could not bind",
         )
         diagnostics: list[str] = []
         seen: set[str] = set()

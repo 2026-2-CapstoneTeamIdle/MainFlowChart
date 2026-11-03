@@ -64,6 +64,18 @@ class GameFeature(TypedDict):
     feature_id: str
     description: str
     required: bool
+    origin: NotRequired[Literal["user", "genre_inferred", "requirement_dependency"]]
+    supports_feature_ids: NotRequired[list[str]]
+    dependency_role: NotRequired[str]
+    acceptance_criteria: NotRequired[str]
+    checklist: NotRequired[FeatureChecklistSpec]
+
+
+class FeatureChecklistSpec(TypedDict):
+    preconditions: list[str]
+    steps: list[str]
+    expected_results: list[str]
+    failure_signals: list[str]
 
 
 class AssetRequirement(TypedDict):
@@ -140,6 +152,7 @@ class GeneratedGameModule(TypedDict):
     source_code: str
     source_sha256: str
     implementation_plan: NotRequired[dict[str, object]]
+    requirement_contract: NotRequired[dict[str, str]]
 
 
 class ImplementationSystem(TypedDict):
@@ -419,6 +432,7 @@ class PlaytestMetrics(TypedDict):
     failed_transition: str
     unused_requested_features: list[str]
     passed_scenarios: list[str]
+    validation_failures: list[str]
 
 
 class QualityMetric(TypedDict):
@@ -470,6 +484,33 @@ class FeatureRequirement(TypedDict):
     name: str
     description: str
     source_text: str
+    origin: NotRequired[Literal["user", "genre_inferred", "requirement_dependency"]]
+    rationale: NotRequired[str]
+    acceptance_criteria: NotRequired[str]
+    checklist: NotRequired[FeatureChecklistSpec]
+    supports_feature_ids: NotRequired[list[str]]
+    dependency_role: NotRequired[
+        Literal[
+            "prerequisite_state",
+            "required_actor",
+            "runtime_binding",
+            "interaction_consequence",
+            "player_feedback",
+            "failure_recovery",
+            "genre_core",
+        ]
+    ]
+    implementation_kind: NotRequired[
+        Literal[
+            "reuse_module",
+            "configure_existing",
+            "scene_binding",
+            "design_constraint",
+            "generate_code",
+            "validation_only",
+        ]
+    ]
+    target_mechanics: NotRequired[list[str]]
 
 
 class AnalysisResult(TypedDict):
@@ -708,6 +749,46 @@ class GameValidatorAIResult(TypedDict):
     tool_calls: list[str]
 
 
+class VisualChecklistResult(TypedDict):
+    criterion_id: str
+    status: Literal["passed", "failed", "unverifiable"]
+    message: str
+    evidence: list[str]
+
+
+class VisualValidationFinding(TypedDict):
+    severity: Literal["warning", "error"]
+    criterion_id: str
+    message: str
+    recommendation: str
+    suggested_files: list[str]
+
+
+class VisualValidationAttempt(TypedDict):
+    attempt: int
+    status: Literal["passed", "needs_revision", "failed"]
+    score: float
+    summary: str
+    screenshot: ArtifactReference | None
+    checklist_results: list[VisualChecklistResult]
+    findings: list[VisualValidationFinding]
+    modified_files: list[str]
+    compile_passed: bool | None
+    feature_checklist_passed: bool | None
+
+
+class VisualValidationResult(TypedDict):
+    report_version: Literal["1.0.0"]
+    contract_version: ContractVersion
+    mode: Literal["enabled", "disabled"]
+    status: Literal["passed", "failed", "skipped"]
+    model: str
+    max_attempts: int
+    attempts: list[VisualValidationAttempt]
+    target_image: ArtifactReference | None
+    summary: str
+
+
 # ---------------------------------------------------------------------------
 # LangGraph shared state
 # total=False is intentional because the graph fills fields incrementally.
@@ -733,6 +814,7 @@ class WorkflowState(TypedDict, total=False):
     image_validation_result: ArtifactReference
     sound_validation_result: ArtifactReference
     integrated_game: ArtifactReference
+    visual_validation_result: ArtifactReference
     final_validation_result: ArtifactReference
     game_validator_ai_result: ArtifactReference
 
@@ -899,10 +981,24 @@ class FinalValidationAgentInput(TypedDict):
     project_id: str
     logic_analysis: ArtifactReference
     integrated_game: ArtifactReference
+    visual_validation_result: ArtifactReference
 
 
 class FinalValidationAgentOutput(TypedDict):
     final_validation_result: ArtifactReference
+
+
+class VisualValidationAgentInput(TypedDict):
+    project_id: str
+    parsed_request: ArtifactReference
+    logic_analysis: ArtifactReference
+    game_logic_draft: ArtifactReference
+    game_validation_result: ArtifactReference
+    integrated_game: NotRequired[ArtifactReference]
+
+
+class VisualValidationAgentOutput(TypedDict):
+    visual_validation_result: ArtifactReference
 
 
 class GameValidatorAIAgentInput(TypedDict):
@@ -914,6 +1010,7 @@ class GameValidatorAIAgentInput(TypedDict):
     image_validation_result: ArtifactReference
     sound_validation_result: ArtifactReference
     integrated_game: ArtifactReference
+    visual_validation_result: ArtifactReference
     final_validation_result: ArtifactReference
 
 

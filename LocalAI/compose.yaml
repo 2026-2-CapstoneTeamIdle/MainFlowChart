@@ -1,11 +1,39 @@
 services:
+  Local-AIBackendSetup:
+    image: ${LOCALAI_IMAGE:-docker.io/localai/localai:v4.11.0-gpu-nvidia-cuda-12}
+    entrypoint: ["/bin/sh"]
+    # Windows checkouts may expose this bind-mounted script with CRLF line endings.
+    # Normalize it in-memory before execution so /bin/sh never parses `set -eu\r`.
+    command: ["-c", "tr -d '\\r' < /setup/setup-runtime.sh | /bin/sh"]
+    volumes:
+      - type: volume
+        source: local-ai-backends
+        target: /backends
+      - type: volume
+        source: local-ai-configuration
+        target: /configuration
+      - type: bind
+        source: ./LocalAI/sd-turbo.yaml
+        target: /seed/sd-turbo.yaml
+        read_only: true
+      - type: bind
+        source: ./LocalAI/setup-runtime.sh
+        target: /setup/setup-runtime.sh
+        read_only: true
+
   Local-AIModel:
     image: ${LOCALAI_IMAGE:-docker.io/localai/localai:v4.11.0-gpu-nvidia-cuda-12}
     container_name: Local-AIModel
     environment:
       MODELS_PATH: /models
-      PRELOAD_MODELS_CONFIG: ${LOCALAI_PRELOAD_MODELS_CONFIG:-/configuration/preload-qwen-coder.yaml}
+      LOCALAI_MODELS_CONFIG_FILE: /configuration/sd-turbo.yaml
+      PRELOAD_MODELS_CONFIG: ${LOCALAI_PRELOAD_MODELS_CONFIG:-/configuration/preload-feature-pipeline.yaml}
+      # Fallback for gallery templates that do not materialize a model-level context_size.
+      # Per-model values in the preload files still take precedence (for example the 8K VLM).
+      LOCALAI_CONTEXT_SIZE: ${LOCALAI_CONTEXT_SIZE:-24576}
       LOCALAI_MAX_ACTIVE_BACKENDS: "1"
+      LOCALAI_SINGLE_ACTIVE_BACKEND: "true"
+      LOCALAI_FORCE_BACKEND_SHUTDOWN: "true"
       LLAMACPP_PARALLEL: "1"
       PARALLEL_REQUEST: "false"
       LOCALAI_DISABLE_HARDWARE_DEFAULTS: "true"
@@ -17,6 +45,12 @@ services:
       - type: volume
         source: local-ai-models
         target: /models
+      - type: volume
+        source: local-ai-backends
+        target: /backends
+      - type: volume
+        source: local-ai-configuration
+        target: /configuration
       - type: bind
         source: ./LocalAI/preload-models.yaml
         target: /configuration/preload-models.yaml
@@ -29,9 +63,20 @@ services:
         source: ./LocalAI/preload-gemma4-e4b.yaml
         target: /configuration/preload-gemma4-e4b.yaml
         read_only: true
+      - type: bind
+        source: ./LocalAI/preload-visual.yaml
+        target: /configuration/preload-visual.yaml
+        read_only: true
+      - type: bind
+        source: ./LocalAI/preload-feature-pipeline.yaml
+        target: /configuration/preload-feature-pipeline.yaml
+        read_only: true
     ports:
       - "127.0.0.1:8080:8080"
     gpus: all
+    depends_on:
+      Local-AIBackendSetup:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/readyz"]
       interval: 15s
@@ -43,8 +88,56 @@ services:
     environment:
       LOCAL_LLM_BASE_URL: http://Local-AIModel:8080/v1
       LOCAL_LLM_MODEL: ${LOCALAI_DEFAULT_MODEL:-qwen2.5-coder-7b-q5-k-m}
-      MAINFLOW_FEATURE_PROVIDER: ${MAINFLOW_FEATURE_PROVIDER:-local}
-      MAINFLOW_LOCAL_MAX_OUTPUT_TOKENS: ${MAINFLOW_LOCAL_MAX_OUTPUT_TOKENS:-2048}
+      LOCAL_IMAGE_BASE_URL: http://Local-AIModel:8080/v1
+      LOCAL_IMAGE_MODEL: ${LOCALAI_IMAGE_MODEL:-sd-turbo}
+      MAINFLOW_FEATURE_PROVIDER: ${MAINFLOW_FEATURE_PROVIDER:-}
+      MAINFLOW_DESIGN_V2_PROVIDER: ${MAINFLOW_DESIGN_V2_PROVIDER:-local}
+      LLM_DESIGN_V2_MODEL: ${LLM_DESIGN_V2_MODEL:-gemma4-12b-it-qat-q4-0}
+      MAINFLOW_BLUEPRINT_PROVIDER: ${MAINFLOW_BLUEPRINT_PROVIDER:-local}
+      LLM_BLUEPRINT_MODEL: ${LLM_BLUEPRINT_MODEL:-gemma4-12b-it-qat-q4-0}
+      LOCAL_LLM_CONTEXT_TOKENS: ${LOCAL_LLM_CONTEXT_TOKENS:-24576}
+      MAINFLOW_LOCAL_MAX_OUTPUT_TOKENS: ${MAINFLOW_LOCAL_MAX_OUTPUT_TOKENS:-8192}
+      MAINFLOW_LOCAL_STRUCTURED_ATTEMPTS: ${MAINFLOW_LOCAL_STRUCTURED_ATTEMPTS:-3}
+      LOCAL_LLM_STRUCTURED_MODE: ${LOCAL_LLM_STRUCTURED_MODE:-}
+      LLM_CONDITION_FEATURE_ANALYSIS_MAX_OUTPUT_TOKENS: ${LLM_CONDITION_FEATURE_ANALYSIS_MAX_OUTPUT_TOKENS:-2048}
+      LLM_CONDITION_FEATURE_ANALYSIS_STRUCTURED_ATTEMPTS: ${LLM_CONDITION_FEATURE_ANALYSIS_STRUCTURED_ATTEMPTS:-1}
+      LLM_CONDITION_FEATURE_ANALYSIS_TIMEOUT_SECONDS: ${LLM_CONDITION_FEATURE_ANALYSIS_TIMEOUT_SECONDS:-180}
+      LLM_GENRE_FEATURE_ENRICHMENT_MAX_OUTPUT_TOKENS: ${LLM_GENRE_FEATURE_ENRICHMENT_MAX_OUTPUT_TOKENS:-3072}
+      LLM_GENRE_FEATURE_ENRICHMENT_STRUCTURED_ATTEMPTS: ${LLM_GENRE_FEATURE_ENRICHMENT_STRUCTURED_ATTEMPTS:-1}
+      LLM_GENRE_FEATURE_ENRICHMENT_TIMEOUT_SECONDS: ${LLM_GENRE_FEATURE_ENRICHMENT_TIMEOUT_SECONDS:-180}
+      LLM_DESIGN_V2_MAX_OUTPUT_TOKENS: ${LLM_DESIGN_V2_MAX_OUTPUT_TOKENS:-6144}
+      LLM_DESIGN_V2_STRUCTURED_ATTEMPTS: ${LLM_DESIGN_V2_STRUCTURED_ATTEMPTS:-1}
+      LLM_DESIGN_V2_TIMEOUT_SECONDS: ${LLM_DESIGN_V2_TIMEOUT_SECONDS:-300}
+      MAINFLOW_DESIGN_V2_CUSTOMIZATION_RETRIES: ${MAINFLOW_DESIGN_V2_CUSTOMIZATION_RETRIES:-0}
+      LLM_BLUEPRINT_MAX_OUTPUT_TOKENS: ${LLM_BLUEPRINT_MAX_OUTPUT_TOKENS:-2048}
+      LLM_BLUEPRINT_STRUCTURED_ATTEMPTS: ${LLM_BLUEPRINT_STRUCTURED_ATTEMPTS:-1}
+      LLM_BLUEPRINT_TIMEOUT_SECONDS: ${LLM_BLUEPRINT_TIMEOUT_SECONDS:-180}
+      LLM_FEATURE_CHECKLIST_GENERATION_MAX_OUTPUT_TOKENS: ${LLM_FEATURE_CHECKLIST_GENERATION_MAX_OUTPUT_TOKENS:-3072}
+      LLM_FEATURE_CHECKLIST_GENERATION_STRUCTURED_ATTEMPTS: ${LLM_FEATURE_CHECKLIST_GENERATION_STRUCTURED_ATTEMPTS:-1}
+      LLM_FEATURE_CHECKLIST_GENERATION_TIMEOUT_SECONDS: ${LLM_FEATURE_CHECKLIST_GENERATION_TIMEOUT_SECONDS:-240}
+      LLM_UNITY_CHECKLIST_TEST_GENERATION_MAX_OUTPUT_TOKENS: ${LLM_UNITY_CHECKLIST_TEST_GENERATION_MAX_OUTPUT_TOKENS:-6144}
+      LLM_UNITY_CHECKLIST_TEST_GENERATION_STRUCTURED_ATTEMPTS: ${LLM_UNITY_CHECKLIST_TEST_GENERATION_STRUCTURED_ATTEMPTS:-1}
+      LLM_UNITY_CHECKLIST_TEST_GENERATION_TIMEOUT_SECONDS: ${LLM_UNITY_CHECKLIST_TEST_GENERATION_TIMEOUT_SECONDS:-600}
+      MAINFLOW_FEATURE_PLAN_ATTEMPTS: ${MAINFLOW_FEATURE_PLAN_ATTEMPTS:-2}
+      MAINFLOW_FEATURE_SOURCE_ATTEMPTS: ${MAINFLOW_FEATURE_SOURCE_ATTEMPTS:-3}
+      MAINFLOW_FEATURE_GENERATION_BUDGET_SECONDS: ${MAINFLOW_FEATURE_GENERATION_BUDGET_SECONDS:-420}
+      LLM_FEATURE_CODE_GENERATION_MAX_OUTPUT_TOKENS: ${LLM_FEATURE_CODE_GENERATION_MAX_OUTPUT_TOKENS:-8192}
+      LLM_FEATURE_CODE_GENERATION_STRUCTURED_ATTEMPTS: ${LLM_FEATURE_CODE_GENERATION_STRUCTURED_ATTEMPTS:-1}
+      LLM_FEATURE_CODE_GENERATION_TIMEOUT_SECONDS: ${LLM_FEATURE_CODE_GENERATION_TIMEOUT_SECONDS:-180}
+      MAINFLOW_VISUAL_TARGET_AI: ${MAINFLOW_VISUAL_TARGET_AI:-sd_turbo}
+      MAINFLOW_VISUAL_TARGET_SIZE: ${MAINFLOW_VISUAL_TARGET_SIZE:-512x288}
+      MAINFLOW_VISUAL_TARGET_STEPS: ${MAINFLOW_VISUAL_TARGET_STEPS:-2}
+      LLM_VISUAL_VALIDATION_PROVIDER: ${LLM_VISUAL_VALIDATION_PROVIDER:-local}
+      LLM_VISUAL_VALIDATION_MODEL: ${LLM_VISUAL_VALIDATION_MODEL:-qwen3-vl-4b-instruct-q4-k-m}
+      LLM_VISUAL_VALIDATION_MAX_TOKENS: ${LLM_VISUAL_VALIDATION_MAX_TOKENS:-768}
+      LLM_VISUAL_VALIDATION_RESPONSE_ATTEMPTS: ${LLM_VISUAL_VALIDATION_RESPONSE_ATTEMPTS:-2}
+      MAINFLOW_CONDITION_FEATURE_PROVIDER: ${MAINFLOW_CONDITION_FEATURE_PROVIDER:-local}
+      MAINFLOW_GENRE_FEATURE_PROVIDER: ${MAINFLOW_GENRE_FEATURE_PROVIDER:-local}
+      LLM_CONDITION_FEATURE_ANALYSIS_MODEL: ${LLM_CONDITION_FEATURE_ANALYSIS_MODEL:-gemma4-12b-it-qat-q4-0}
+      LLM_FEATURE_CHECKLIST_GENERATION_PROVIDER: ${LLM_FEATURE_CHECKLIST_GENERATION_PROVIDER:-local}
+      LLM_FEATURE_CHECKLIST_GENERATION_MODEL: ${LLM_FEATURE_CHECKLIST_GENERATION_MODEL:-gemma4-12b-it-qat-q4-0}
+      LLM_UNITY_CHECKLIST_TEST_GENERATION_PROVIDER: ${LLM_UNITY_CHECKLIST_TEST_GENERATION_PROVIDER:-local}
+      LLM_UNITY_CHECKLIST_TEST_GENERATION_MODEL: ${LLM_UNITY_CHECKLIST_TEST_GENERATION_MODEL:-qwen2.5-coder-7b-q5-k-m}
       LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-300}
     depends_on:
       Local-AIModel:
@@ -53,3 +146,7 @@ services:
 volumes:
   local-ai-models:
     name: idle-capstone-local-ai-models
+  local-ai-backends:
+    name: idle-capstone-local-ai-backends
+  local-ai-configuration:
+    name: idle-capstone-local-ai-configuration

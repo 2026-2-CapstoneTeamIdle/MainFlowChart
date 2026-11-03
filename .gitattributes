@@ -5,6 +5,7 @@
 *.toml text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+*.sh text eol=lf
 unity_template/**/*.meta text eol=lf
 unity_template/**/*.unity text eol=lf
 # Unity serializes empty YAML values as `key: ` in generated project settings.

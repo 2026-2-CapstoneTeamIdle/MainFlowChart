@@ -12,7 +12,7 @@ from game_pipeline.blueprint_planner import (
     create_blueprint_planner_from_environment,
 )
 from game_pipeline.game_blueprint import build_game_blueprint
-from game_pipeline.gemini_feature_generator import LocalAIJsonClient
+from game_pipeline.gemini_feature_generator import LocalAIJsonClient, OpenAIJsonClient
 from game_pipeline.design_catalog import normalize_game_spec
 
 
@@ -79,6 +79,19 @@ class BlueprintPlannerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "required content archetype"):
             GameBlueprintPlanner(client, "local").generate(self.spec, self.intent)
 
+    def test_cosmetic_names_are_normalized_instead_of_rejecting_blueprint(self) -> None:
+        payload = copy.deepcopy(self.fallback)
+        for field in ("blueprint_version", "blueprint_id", "source", "title"):
+            del payload[field]
+        payload["entities"][0]["display_name"] = ""
+        payload["entities"][1]["display_name"] = "x" * 80
+        client = FakeStructuredJsonClient(payload)
+
+        result = GameBlueprintPlanner(client, "local").generate(self.spec, self.intent)
+
+        self.assertTrue(result["entities"][0]["display_name"])
+        self.assertEqual(len(result["entities"][1]["display_name"]), 48)
+
     def test_default_provider_is_offline_deterministic(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             self.assertIsNone(create_blueprint_planner_from_environment())
@@ -89,7 +102,7 @@ class BlueprintPlannerTest(unittest.TestCase):
             {
                 "MAINFLOW_BLUEPRINT_PROVIDER": "local",
                 "LOCAL_LLM_BASE_URL": "http://local-ai:8080/v1",
-                "LOCAL_LLM_MODEL": "planner-test-model",
+                "LLM_BLUEPRINT_MODEL": "planner-test-model",
             },
             clear=True,
         ):
@@ -98,6 +111,18 @@ class BlueprintPlannerTest(unittest.TestCase):
         self.assertIsNotNone(planner)
         self.assertIsInstance(planner.client, LocalAIJsonClient)
         self.assertEqual(planner.client.model, "planner-test-model")
+
+    def test_openai_key_enables_openai_blueprint_planner(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"OPENAI_API_KEY": "test-openai-key", "OPENAI_MODEL": "gpt-4.1"},
+            clear=True,
+        ):
+            planner = create_blueprint_planner_from_environment()
+
+        self.assertIsNotNone(planner)
+        self.assertIsInstance(planner.client, OpenAIJsonClient)
+        self.assertEqual(planner.provider, "openai")
 
 
 if __name__ == "__main__":

@@ -36,6 +36,74 @@ FEATURE_PATTERNS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("카드 덱 구성", ("덱빌딩", "덱구성", "카드조합"), "카드를 선택해 덱을 구성할 수 있다."),
     ("대화 선택", ("선택지", "대화선택"), "선택한 대화에 따라 진행 결과가 달라진다."),
     ("타워 배치", ("타워배치", "방어탑배치"), "맵에 방어 시설을 배치할 수 있다."),
+    (
+        "접촉 피해",
+        (
+            "닿으면체력이감소",
+            "접촉하면체력이감소",
+            "적과가시함정에닿으면",
+            "적에게닿으면체력이",
+        ),
+        "플레이어가 적 또는 가시 함정에 접촉하면 체력이 감소한다.",
+    ),
+    (
+        "체력 및 피해",
+        (
+            "health_damage",
+            "체력감소",
+            "체력이감소",
+            "체력이줄",
+            "체력이닳",
+            "체력및피해",
+            "체력이0",
+        ),
+        "적의 공격을 받으면 체력이 감소하고 0이 되면 게임 오버가 된다.",
+    ),
+    (
+        "보석 수집",
+        ("보석을모", "보석수집", "보석을전부", "보석을모두"),
+        "보석을 획득하면 수집 상태와 남은 보석 수가 갱신된다.",
+    ),
+    (
+        "수집 완료 후 스테이지 클리어",
+        (
+            "보석을모두모은뒤목적지",
+            "보석을전부모은뒤목적지",
+            "모두모은뒤목적지에도달",
+        ),
+        "필수 보석을 모두 수집한 상태로 목적지에 도달해야 스테이지가 클리어된다.",
+    ),
+    (
+        "옵션",
+        ("option", "options", "옵션", "소리조정"),
+        "ESC키로 옵션을 열어 소리를 조절하거나 게임을 종료할 수 있다.",
+    ),
+    (
+        "아이템 수집",
+        ("item_collect", "아이템수집", "자원수집"),
+        "게임에 필요한 자원을 수집하고 종류별로 저장한다.",
+    ),
+    (
+        "타워 업그레이드",
+        ("tower_upgrade", "타워업그레이드", "타워강화"),
+        "재화를 사용해 타워의 레벨과 전투 수치를 높인다.",
+    ),
+    (
+        "플레이어 스탯",
+        ("player_stat", "player_stats", "플레이어스탯", "상태창"),
+        "E키로 플레이어의 체력과 주요 스탯을 확인한다.",
+    ),
+    ("점수 기록", ("점수", "스코어"), "플레이 성과를 점수로 누적하고 표시한다."),
+    (
+        "게임 타이머",
+        ("게임타이머", "제한시간", "플레이시간"),
+        "경과 시간 또는 남은 시간을 측정하고 표시한다.",
+    ),
+    (
+        "저장 및 불러오기",
+        ("저장및불러오기", "세이브로드", "진행상황저장"),
+        "게임 진행 상태를 저장하고 다시 불러온다.",
+    ),
 )
 
 # Commas and Korean connective endings often join one coherent mechanic. Splitting on them
@@ -58,7 +126,7 @@ def analysis_node(state: AnalysisAgentInput) -> AnalysisAgentOutput:
     manager = ArtifactManager()
     request: ParsedRequest = manager.read_json(state["parsed_request"])
     condition = request["condition"].strip()
-    compact_condition = condition.replace(" ", "")
+    compact_condition = condition.replace(" ", "").casefold()
     features: list[FeatureRequirement] = []
     matched_names: set[str] = set()
 
@@ -112,7 +180,7 @@ def _unmatched_clauses(condition: str) -> list[str]:
     clauses = [clause.strip() for clause in CLAUSE_SEPARATOR.split(condition) if clause.strip()]
     unmatched: list[str] = []
     for clause in clauses:
-        compact = clause.replace(" ", "")
+        compact = clause.replace(" ", "").casefold()
         matching_patterns = [
             pattern
             for _, patterns, _ in FEATURE_PATTERNS

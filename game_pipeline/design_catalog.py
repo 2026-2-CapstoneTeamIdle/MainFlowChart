@@ -35,6 +35,7 @@ COMMON_MODULES = [
     "save_system",
     "asset_registry",
     "audio_manager",
+    "options_menu",
     "ui_router",
     "validation_probe",
 ]
@@ -72,6 +73,13 @@ MECHANIC_TO_MODULE = {
     "economy": "economy_system",
     "time_turn": "time_turn_system",
     "activity": "activity_system",
+    "options": "options_menu",
+    "item_collect": "item_collection_system",
+    "tower_upgrade": "tower_upgrade_system",
+    "player_stats": "player_stat_display",
+    "score": "score_system",
+    "game_timer": "game_timer",
+    "save_load": "save_system",
 }
 
 GENRE_ALIASES: dict[str, GenreProfile] = {
@@ -126,7 +134,7 @@ GENRE_PRESETS: dict[GenreProfile, GameSpec] = {
         "features": [
             _feature("player_movement", "플레이어가 8방향으로 이동한다."),
             _feature("enemy_wave", "적이 지속적으로 생성되어 플레이어를 추적한다."),
-            _feature("auto_feather_attack", "날개에서 가까운 적에게 깃털을 자동 발사한다."),
+            _feature("primary_attack", "사용자 요구에 지정된 주 공격 방식으로 적을 공격한다."),
             _feature("level_up", "경험치 획득 시 레벨이 상승한다."),
             _feature("three_upgrade_choices", "레벨업 시 강화 선택지 3개를 표시한다."),
             _feature("upgrade_rarity", "강화에 일반·레어·에픽·전설 등급을 적용한다."),
@@ -142,6 +150,10 @@ GENRE_PRESETS: dict[GenreProfile, GameSpec] = {
             "experience",
             "rarity",
             "upgrade_selection",
+            "item_collect",
+            "player_stats",
+            "score",
+            "game_timer",
         ],
         "controls": {"movement": "WASD or arrow keys", "confirm": "Enter"},
         "win_conditions": ["survive_until_time_limit"],
@@ -150,9 +162,9 @@ GENRE_PRESETS: dict[GenreProfile, GameSpec] = {
         "asset_requirements": [
             _asset("player_sprite", "image", "플레이어", "날개를 가진 플레이어 스프라이트"),
             _asset("enemy_sprite", "image", "적", "플레이어를 추적하는 적 스프라이트"),
-            _asset("feather_projectile", "image", "공격", "날개에서 발사되는 깃털 투사체"),
+            _asset("primary_attack_visual", "image", "공격", "사용자가 지정한 주 공격 수단"),
             _asset("survivor_bgm", "sound", "배경음악", "반복 가능한 전투 배경음악"),
-            _asset("feather_attack_sfx", "sound", "공격 효과음", "짧은 깃털 발사 효과음"),
+            _asset("primary_attack_sfx", "sound", "공격 효과음", "사용자가 지정한 공격 효과음"),
         ],
     },
     "Platformer": {
@@ -170,6 +182,9 @@ GENRE_PRESETS: dict[GenreProfile, GameSpec] = {
             "health_damage",
             "collectible",
             "goal",
+            "item_collect",
+            "player_stats",
+            "score",
         ],
         "controls": {"movement": "A/D or arrow keys", "jump": "Space"},
         "win_conditions": ["stage_goal_is_reached"],
@@ -199,6 +214,10 @@ GENRE_PRESETS: dict[GenreProfile, GameSpec] = {
             "health_damage",
             "economy",
             "base_defense",
+            "tower_upgrade",
+            "player_stats",
+            "score",
+            "game_timer",
         ],
         "controls": {"select": "left click", "cancel": "right click or Escape"},
         "win_conditions": ["all_waves_are_cleared"],
@@ -293,6 +312,24 @@ GENRE_PRESETS: dict[GenreProfile, GameSpec] = {
     },
 }
 
+# When the request supplies mechanics, retain only the genre runtime needed to host arbitrary
+# generated behavior. Optional attacks, rewards, and progression stay under the user contract.
+GENRE_FOUNDATION_MECHANICS: dict[GenreProfile, list[str]] = {
+    "Platformer": ["platformer_movement", "health_damage"],
+    "TowerDefense": ["wave_spawn", "health_damage", "base_defense"],
+    "CardGame": ["deck", "turn", "card_effect", "health_damage"],
+    "VisualNovel": ["dialogue", "choice", "branching"],
+    "RaisingSimulation": ["time_turn", "stats", "activity"],
+    "SurvivorLike": [
+        "top_down_movement",
+        "health_damage",
+        "enemy_spawn",
+        "chase_ai",
+        "player_stats",
+        "game_timer",
+    ],
+}
+
 
 def _unique_strings(values: list[str]) -> list[str]:
     return list(dict.fromkeys(value for value in values if value.strip()))
@@ -314,20 +351,28 @@ def _normalize_features(value: object, defaults: list[GameFeature]) -> list[Game
                 raise ValueError("Each feature requires a non-empty feature_id")
             if not isinstance(description, str) or not description.strip():
                 raise ValueError("Each feature requires a non-empty description")
-            features.append(
-                {
-                    "feature_id": feature_id,
-                    "description": description,
-                    "required": bool(item.get("required", True)),
-                }
-            )
+            normalized: GameFeature = {
+                "feature_id": feature_id,
+                "description": description,
+                "required": bool(item.get("required", True)),
+            }
+            for key in (
+                "origin",
+                "supports_feature_ids",
+                "dependency_role",
+                "acceptance_criteria",
+                "checklist",
+            ):
+                if key in item:
+                    normalized[key] = deepcopy(item[key])  # type: ignore[literal-required]
+            features.append(normalized)
         else:
             raise TypeError("Each feature must be a string or object")
     if len({item["feature_id"] for item in features}) != len(features):
         raise ValueError("game_spec feature_id values must be unique")
-    merged = {item["feature_id"]: deepcopy(item) for item in defaults}
-    merged.update({item["feature_id"]: item for item in features})
-    return list(merged.values())
+    # An explicit feature list is the user's contract, not an extension point for a genre demo.
+    # Merging preset attacks here silently changed orbiting swords into the preset projectile.
+    return features
 
 
 def _normalize_assets(
@@ -430,8 +475,12 @@ def normalize_game_spec(
         "mechanics": _string_list(
             override.get("mechanics"),
             "mechanics",
-            preset["mechanics"],
-            merge_defaults=True,
+            (
+                preset["mechanics"]
+                if override.get("mechanics") is None
+                else GENRE_FOUNDATION_MECHANICS[profile]
+            ),
+            merge_defaults=override.get("mechanics") is not None,
         ),
         "controls": {**preset["controls"], **dict(controls_value)},
         "win_conditions": _string_list(

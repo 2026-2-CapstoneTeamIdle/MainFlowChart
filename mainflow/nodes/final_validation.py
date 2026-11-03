@@ -63,6 +63,20 @@ def final_validation_node(state: FinalValidationAgentInput) -> FinalValidationAg
         logic = payloads["logic_analysis"]
         integrated = payloads["integrated_game"]
         draft = payloads["game_logic_draft"]
+        visual_reference = state.get("visual_validation_result")
+        if visual_reference is None:
+            visual = {"mode": "disabled", "status": "skipped"}
+        else:
+            if visual_reference["project_id"] != state["project_id"]:
+                raise ValueError("Cross-project input: visual_validation_result")
+            visual = manager.read_json(visual_reference)
+            evidence.append(visual_reference)
+        check(
+            "final.visual_validation",
+            visual["status"] == "passed"
+            or (visual["mode"] == "disabled" and visual["status"] == "skipped"),
+            ("Visual validation must pass when enabled; disabled mode may be explicitly skipped"),
+        )
         check(
             "integration.game_available",
             integrated["status"] == "integrated" and integrated["entry_artifact"] is not None,
@@ -231,14 +245,17 @@ def final_validation_node(state: FinalValidationAgentInput) -> FinalValidationAg
             )
             expected = {scenario["scenario_id"] for scenario in plan["scenarios"]}
             passed = set(telemetry["passed_scenarios"])
-            check(
-                "final.start_to_goal",
+            runtime_plan_passed = (
                 runtime
                 and telemetry["completed"]
                 and not telemetry["failed_transition"]
-                and "start_to_goal" in passed
-                and expected <= passed,
-                "All planned scenarios, including start-to-goal, must pass after asset import",
+                and not telemetry["validation_failures"]
+                and expected <= passed
+            )
+            check(
+                "final.start_to_goal",
+                runtime_plan_passed,
+                "Every genre-specific executable scenario must pass after asset import",
             )
             for criterion in logic["criteria"]:
                 # Semantic criteria require their own explicit checks, never a broad target status.
@@ -263,13 +280,16 @@ def final_validation_node(state: FinalValidationAgentInput) -> FinalValidationAg
                     )
                     if feature is not None:
                         mechanics = set(plan_feature_mechanics([feature], logic["genre"]).mechanics)
-                        satisfied = (
-                            runtime
-                            and "feature_binding" in passed
-                            and bool(mechanics)
-                            and mechanics <= set(plan["required_feature_bindings"])
-                            and not mechanics.intersection(telemetry["unused_requested_features"])
-                        )
+                        if mechanics:
+                            satisfied = (
+                                runtime_plan_passed
+                                and mechanics <= set(plan["required_feature_bindings"])
+                                and not mechanics.intersection(
+                                    telemetry["unused_requested_features"]
+                                )
+                            )
+                        elif feature.get("origin") == "genre_inferred":
+                            satisfied = runtime_plan_passed
                 check(
                     criterion["criterion_id"],
                     satisfied,

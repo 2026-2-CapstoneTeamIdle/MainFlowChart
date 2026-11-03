@@ -15,6 +15,11 @@ workspace/                         # workspace/.gitignore로 내용 제외
    ├─ game/                        # 게임 코드, asset_requests, Unity 프로젝트, 통합 결과
    ├─ data/                        # 요청/중간 데이터와 artifact_manifest.json
    └─ validation/                  # 검증 기준서와 검증 결과
+      ├─ errorlog.md               # AI 토큰/구조화 출력/동적 검증 실패와 복구 이력
+      └─ feature_checklists/
+         ├─ original/              # 저장소의 30항목 기존 체크리스트 사본
+         ├─ generated/             # Feature별 하위 폴더와 전체 Checklist index
+         └─ checked/               # Retry별 NUnit 판정과 체크본
 ```
 
 `project_id` 형식은 `YYYYMMDD_NN`이다. `NN`은 해당 날짜에 생성된 프로젝트의 순번이며 두 자리 이상으로 표현한다. 예를 들어 2026년 9월 26일의 세 번째 프로젝트는 `20260926_03`이다. `ArtifactManager.create_project()`가 기존 폴더를 조회하고 다음 번호를 원자적으로 확보한다.
@@ -101,6 +106,7 @@ workspace/{project_id}/generated/images/references/custom_style.{png|jpg|jpeg}
 
 ```text
 workspace/{project_id}/data/analysis.json
+workspace/{project_id}/data/condition_feature_analysis.json
 workspace/{project_id}/data/logic_analysis.json
 workspace/{project_id}/game/asset_requests/image_asset_request.json
 workspace/{project_id}/game/asset_requests/sound_asset_request.json
@@ -113,6 +119,30 @@ workspace/{project_id}/validation/development/*.json
 `implementation_tasks.json`은 게임 구현의 작업 DAG와 최종 시도 횟수·상태·증거를 담는다.
 `validation/development/`의 번호가 붙은 스냅샷은 각 작업의 실행·재시도·성공 또는 실패 직후
 상태를 보존한다. 따라서 긴 생성 과정이 중단돼도 어느 단계에서 왜 멈췄는지 확인할 수 있다.
+
+`condition_feature_analysis.json`은 Condition을 작은 문장 구간으로 나누어 명시 기능을 원자적으로
+분해한 결과와 요청 횟수를 기록한다.
+최종 Feature와 의존 Feature는 각각 하나의 30항목 Checklist를 가진다. 전체 index는
+`validation/feature_checklists/generated/checklist.json`과 `Checklist.md`에 저장하고, 실제 개별
+파일은 `generated/{feature_id}/checklist.json`, `Checklist.md`,
+`GeneratedFeatureChecklist_DFC*.cs`에 저장한다. C# 파일은 Unity 프로젝트의
+`Assets/Tests/PlayMode/`에도 복사된다. Checklist 항목은 Gemma가 10개씩 3회 생성한 뒤 하나로
+병합한다. Qwen도 10개 테스트 메서드씩 구조화 생성하며, 호스트가 모든 배치를 위 C# 파일
+하나로 조립한다. 전체 검증 항목 수는 `Feature 수 × 30`이며, 누락 또는
+Skip된 동적 기준은 통과로 간주하지 않는다.
+
+동적 Checklist 자체의 생성 또는 생성된 Unity 테스트의 컴파일이 실패하면 정적 Checklist로
+대체하지 않고 `validate_game` 전체를 실패 처리한다. AI 입력 Context 초과, 출력 Token 한도 도달,
+구조화 출력 실패, 동적 테스트 생성·컴파일 실패와 재시도 후 복구 여부는 프로젝트별
+`validation/errorlog.md`에 다음 형식으로 누적한다.
+
+```text
+날짜|시점|이유|상세
+```
+
+`날짜`는 한국 시간 ISO 8601, `시점`은 실패한 Node 또는 세부 작업, `이유`는 기계 판독 가능한
+오류/복구 코드, `상세`는 모델·시도 횟수·토큰 사용량·예외를 기록한다. 오류 기록 실패가 원래
+Pipeline 예외를 덮어쓰지는 않는다.
 
 에셋 요청 JSON은 생성된 Unity 프로젝트의
 `Assets/GameTemplate/Generated/AssetRequests/`에도 같은 내용으로 포함된다. 이미지·사운드 Flow는
@@ -191,6 +221,11 @@ LLM이 MCP로 Unity 소스 등 생성 중인 작업 파일을 수정할 때도 `
 - `validation/final_unity_validation.log`: 에셋 적용 후 Unity 컴파일·Play Mode 실행 로그.
 - `validation/final_asset_binding_report.json`: 이번 실행의 import·registry·씬 바인딩 보고서 snapshot.
 - `validation/final_validation_result.json`: 기준별 판정, 실패 원인, `evidence` 참조와 최종 패키지 참조.
+- `validation/visual_validation_result.json`: 시각 검증 모드, 회차별 점수·finding·수정 파일과
+  Unity 재검증 결과. 비활성 실행도 `skipped` 기록을 남긴다.
+- `validation/visual_target_source_*.png`: `run_node_llm`이 직접 만든 비교 전용 원본. 게임 에셋
+  manifest 또는 Unity 적용 입력으로 사용하지 않는다.
+- `validation/visual/target.png`, `attempt_N.png`: 목표 화면과 회차별 실제 Unity 캡처.
 - `validation/game_validator_ai_result.json`: 완성된 게임에 대한 독립 Validator AI의 요구사항
   충족도, 품질 점수, 근거, 수정 권고.
 - `validation/project_context_review_attempt_N.json`: Unity 실행 전 문맥 검수의 제한된 재시도별

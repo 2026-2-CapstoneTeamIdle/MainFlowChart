@@ -213,6 +213,15 @@ class UnityAssetApplicatorTest(unittest.TestCase):
         self.assertTrue(bgm["loop"])
         self.assertEqual(bgm["unity_load_type"], "streaming")
         self.assertEqual(bgm["mixer_group"], "Music")
+        rebuild_request = self.manager.resolve_project_path(
+            self.project_id,
+            "game/unity_project/Assets/GameTemplate/Generated/GenerationRequest.json",
+        )
+        self.assertTrue(rebuild_request.is_file())
+        self.assertEqual(
+            set(json.loads(rebuild_request.read_text(encoding="utf-8"))["asset_ids"]),
+            {"player_sprite", "survivor_bgm"},
+        )
 
     @staticmethod
     def _image_item(asset_id: str, required: bool) -> dict[str, object]:

@@ -39,6 +39,7 @@ class UnityAssetApplicator:
     UNITY_PROJECT_ROOT = Path("game/unity_project")
     GENERATED_ASSET_ROOT = Path("Assets/GameTemplate/Generated/AppliedAssets")
     MANIFEST_PATH = Path("Assets/GameTemplate/Generated/AssetBindingManifest.json")
+    REBUILD_REQUEST_PATH = Path("Assets/GameTemplate/Generated/GenerationRequest.json")
     _SAFE_ID = re.compile(r"[^A-Za-z0-9_.-]+")
     _IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "tga", "psd"}
     _SOUND_EXTENSIONS = {"wav", "ogg", "mp3", "aiff", "aif"}
@@ -55,6 +56,8 @@ class UnityAssetApplicator:
         sound_draft: SoundDraft,
         image_validation: ImageValidationResult,
         sound_validation: SoundValidationResult,
+        *,
+        include_unvalidated_drafts: bool = False,
     ) -> UnityAssetApplicationResult:
         project_root = self.manager.resolve_project_path(project_id, self.UNITY_PROJECT_ROOT)
         if not (project_root / "ProjectSettings/ProjectVersion.txt").is_file():
@@ -62,12 +65,26 @@ class UnityAssetApplicator:
 
         entries: list[AssetBindingEntry] = []
         warnings: list[str] = []
+        image_assets, image_ids = self._application_selection(
+            "image",
+            image_draft,
+            image_validation,
+            include_unvalidated_drafts,
+            warnings,
+        )
+        sound_assets, sound_ids = self._application_selection(
+            "sound",
+            sound_draft,
+            sound_validation,
+            include_unvalidated_drafts,
+            warnings,
+        )
         applied_images = self._stage_assets(
             project_id,
             "image",
             image_request,
-            self._selected_assets(image_draft, image_validation),
-            set(image_validation["validated_asset_ids"]),
+            image_assets,
+            image_ids,
             entries,
             warnings,
         )
@@ -75,8 +92,8 @@ class UnityAssetApplicator:
             project_id,
             "sound",
             sound_request,
-            self._selected_assets(sound_draft, sound_validation),
-            set(sound_validation["validated_asset_ids"]),
+            sound_assets,
+            sound_ids,
             entries,
             warnings,
         )
@@ -108,12 +125,54 @@ class UnityAssetApplicator:
             manifest_relative,
             (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
         )
+        # The first Unity validation builds the scene before the parallel image/sound branches
+        # finish and deletes its original request marker. Recreate the marker so the next Unity
+        # open (including visual validation) imports the new files and rebinds the scene/prefabs.
+        self._write_mutable(
+            project_id,
+            self.UNITY_PROJECT_ROOT / self.REBUILD_REQUEST_PATH,
+            (
+                json.dumps(
+                    {
+                        "reason": "validated_assets_applied",
+                        "asset_ids": sorted(applied_ids),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n"
+            ).encode("utf-8"),
+        )
         return UnityAssetApplicationResult(
             manifest=manifest,
             manifest_path=manifest_path,
             applied_image_asset_ids=applied_images,
             applied_sound_asset_ids=applied_sounds,
         )
+
+    @classmethod
+    def _application_selection(
+        cls,
+        asset_type: str,
+        draft: ImageDraft | SoundDraft,
+        validation: ImageValidationResult | SoundValidationResult,
+        include_unvalidated_drafts: bool,
+        warnings: list[str],
+    ) -> tuple[list[dict[str, Any]], set[str]]:
+        selected = cls._selected_assets(draft, validation)
+        selected_ids = set(validation["validated_asset_ids"])
+        if not include_unvalidated_drafts:
+            return selected, selected_ids
+
+        draft_assets = [dict(asset) for asset in draft["assets"]]
+        draft_ids = {str(asset["asset_id"]) for asset in draft_assets}
+        unvalidated = sorted(draft_ids - selected_ids)
+        if unvalidated:
+            warnings.append(
+                "Diagnostic project includes generated but unvalidated "
+                f"{asset_type} assets: " + ", ".join(unvalidated)
+            )
+        return draft_assets, draft_ids
 
     @staticmethod
     def _selected_assets(

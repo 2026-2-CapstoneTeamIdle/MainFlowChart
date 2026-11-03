@@ -3,19 +3,25 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from base64 import b64encode
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from LocalAI.profiles import AI_MODEL_PROFILES, resolve_ai_settings
 from mainflow.ArtifactManager import ArtifactManager
+from MCP.image_provider import GeneratedImageData, LocalImageGenerationProvider
 from MCP.llm_config import LLMSettings
-from MCP.llm_runner import MCPToolLLMRunner
+from MCP.llm_providers import OpenAIResponsesProvider
+from MCP.llm_runner import MCPToolLLMRunner, run_node_llm
 from MCP.llm_types import (
+    ImageGenerationOptions,
+    ImageRunResult,
     LLMConversationMessage,
     LLMProviderResponse,
     LLMToolCall,
 )
 from MCP.manager import MCPManager, MCPToolDefinition
+from MCP.node_context import bind_mcp_tools
 from MCP.server import mcp
 
 
@@ -163,6 +169,54 @@ class LLMRunnerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(local.model, "local-model")
         self.assertEqual(local.base_url, "http://local-model:11434/v1")
 
+    def test_openai_settings_default_to_terra_with_low_reasoning(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "openai-key"},
+            clear=True,
+        ):
+            settings = LLMSettings.from_environment(node_name="analysis")
+
+        self.assertEqual(settings.model, "gpt-6.1-terra")
+        self.assertEqual(settings.reasoning_effort, "low")
+
+    async def test_openai_provider_uses_responses_api_shape(self) -> None:
+        settings = LLMSettings(
+            provider="openai",
+            model="gpt-6.1-terra",
+            api_key="openai-key",
+            base_url="https://api.openai.com/v1",
+            timeout_seconds=30,
+            reasoning_effort="low",
+        )
+        provider = OpenAIResponsesProvider(settings)
+        response = {
+            "id": "resp_test",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "ok"}],
+                }
+            ],
+        }
+        with patch.object(provider, "_post_json", return_value=response) as post:
+            result = await provider.complete(
+                [LLMConversationMessage(role="user", content="check")],
+                [],
+                system_prompt="review",
+                temperature=0.0,
+                require_tool=False,
+                max_tokens=2048,
+            )
+
+        payload = post.call_args.args[0]
+        self.assertEqual(payload["model"], "gpt-6.1-terra")
+        self.assertEqual(payload["reasoning"], {"effort": "low"})
+        self.assertEqual(payload["max_output_tokens"], 2048)
+        self.assertNotIn("temperature", payload)
+        self.assertEqual(result.text, "ok")
+
     def test_named_local_ai_profile_resolves_model_and_endpoint(self) -> None:
         environment = {
             "LOCAL_LLM_BASE_URL": "http://Local-AIModel:8080/v1",
@@ -182,6 +236,82 @@ class LLMRunnerTest(unittest.IsolatedAsyncioTestCase):
     def test_unknown_local_ai_profile_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             resolve_ai_settings("not-registered", "analysis")
+
+    def test_sd_turbo_profile_is_image_only(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            settings = resolve_ai_settings("sd-turbo", "generate_image", capability="image")
+
+        self.assertEqual(settings.provider, "local")
+        self.assertEqual(settings.model, "sd-turbo")
+        self.assertEqual(settings.base_url, "http://127.0.0.1:8080/v1")
+        with self.assertRaises(ValueError):
+            resolve_ai_settings("sd-turbo", "analysis")
+
+    async def test_image_output_is_saved_as_project_artifact(self) -> None:
+        png = b"\x89PNG\r\n\x1a\nnode-image"
+        generated = GeneratedImageData(png, "image/png", ".png")
+
+        async def image_node(state: dict[str, str]) -> ImageRunResult:
+            result = await run_node_llm(
+                "pixel art forest platformer",
+                ai="sd_turbo",
+                output="image",
+                image_options=ImageGenerationOptions(filename_prefix="target_scene"),
+            )
+            assert isinstance(result, ImageRunResult)
+            return result
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory) / "workspace"
+            with patch.dict(os.environ, {"MAINFLOW_WORKSPACE": str(workspace)}):
+                artifact_manager = ArtifactManager()
+                project_id = artifact_manager.create_project()
+                bound_node = bind_mcp_tools("generate_image", image_node)
+                with patch.object(
+                    LocalImageGenerationProvider,
+                    "generate",
+                    AsyncMock(return_value=(generated,)),
+                ):
+                    result = await bound_node({"project_id": project_id})
+
+                self.assertEqual(result.provider, "local")
+                self.assertEqual(result.model, "sd-turbo")
+                self.assertEqual(len(result.artifacts), 1)
+                self.assertEqual(
+                    artifact_manager.read_bytes(result.artifacts[0]),
+                    png,
+                )
+                self.assertTrue(
+                    result.artifacts[0]["relative_path"].startswith(
+                        "generated/images/target_scene_01_"
+                    )
+                )
+
+    async def test_local_image_provider_accepts_base64_response(self) -> None:
+        png = b"\x89PNG\r\n\x1a\nprovider-image"
+        settings = LLMSettings(
+            provider="local",
+            model="sd-turbo",
+            api_key=None,
+            base_url="http://127.0.0.1:8080/v1",
+            timeout_seconds=30,
+        )
+        provider = LocalImageGenerationProvider(settings)
+        with patch.object(
+            provider,
+            "_post_json",
+            return_value={"data": [{"b64_json": b64encode(png).decode("ascii")}]},
+        ) as request:
+            images = await provider.generate(
+                "pixel art tower",
+                ImageGenerationOptions(size="512x512", steps=2),
+            )
+
+        self.assertEqual(images[0].content, png)
+        payload = request.call_args.args[0]
+        self.assertEqual(payload["model"], "sd-turbo")
+        self.assertEqual(payload["step"], 2)
+        self.assertEqual(payload["response_format"], "b64_json")
 
 
 if __name__ == "__main__":
