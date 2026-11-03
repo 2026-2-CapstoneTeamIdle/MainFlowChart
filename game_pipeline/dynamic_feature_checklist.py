@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import textwrap
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -18,11 +19,17 @@ from game_pipeline.gemini_feature_generator import (
     StructuredJsonClient,
     resolve_feature_provider_from_environment,
 )
+from game_pipeline.project_context_index import (
+    build_project_context_index,
+    retrieve_prompt_api_contract,
+)
 from mainflow.contracts import FeatureRequirement, LogicAnalysis
 
 CHECKLIST_ITEM_COUNT = 30
 CHECKLIST_BATCH_SIZE = 10
 CHECKLIST_BATCH_COUNT = CHECKLIST_ITEM_COUNT // CHECKLIST_BATCH_SIZE
+TEST_METHOD_BATCH_SIZE = 10
+TEST_METHOD_BATCH_COUNT = CHECKLIST_ITEM_COUNT // TEST_METHOD_BATCH_SIZE
 DEFAULT_CHECKLIST_MODEL = "gemma4-12b-it-qat-q4-0"
 DEFAULT_TEST_CODE_MODEL = "qwen2.5-coder-7b-q5-k-m"
 GENERATED_TEST_DIRECTORY = Path("Assets/Tests/PlayMode")
@@ -81,11 +88,26 @@ CHECKLIST_SCHEMA: dict[str, Any] = {
     },
 }
 
-TEST_CODE_SCHEMA: dict[str, Any] = {
+TEST_METHOD_BATCH_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["source_code"],
-    "properties": {"source_code": {"type": "string"}},
+    "required": ["methods"],
+    "properties": {
+        "methods": {
+            "type": "array",
+            "minItems": TEST_METHOD_BATCH_SIZE,
+            "maxItems": TEST_METHOD_BATCH_SIZE,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["criterion_id", "source_code"],
+                "properties": {
+                    "criterion_id": {"type": "string"},
+                    "source_code": {"type": "string"},
+                },
+            },
+        }
+    },
 }
 
 
@@ -317,7 +339,7 @@ class DynamicFeatureChecklistGenerator:
 
 
 class UnityChecklistTestGenerator:
-    """Turn one feature checklist into one guarded C# PlayMode test fixture."""
+    """Generate bounded method batches and assemble one guarded PlayMode fixture."""
 
     def __init__(self, client: StructuredJsonClient, provider: str) -> None:
         self.client = client
@@ -330,36 +352,89 @@ class UnityChecklistTestGenerator:
         project_root: Path,
         feedback: str = "",
     ) -> str:
-        response = self.client.generate_json(
-            self._prompt(checklist, project_root, feedback), TEST_CODE_SCHEMA
-        )
-        source = response.get("source_code")
-        if not isinstance(source, str):
-            raise TypeError("Unity checklist test generator returned no source_code")
+        api_contract = _runtime_api_context(project_root, checklist)
+        generated_methods: list[str] = []
+        for batch_index in range(TEST_METHOD_BATCH_COUNT):
+            start = batch_index * TEST_METHOD_BATCH_SIZE
+            batch_criteria = checklist.criteria[start : start + TEST_METHOD_BATCH_SIZE]
+            response = self.client.generate_json(
+                self._prompt(
+                    checklist,
+                    batch_criteria,
+                    api_contract,
+                    feedback,
+                    batch_index=batch_index,
+                ),
+                TEST_METHOD_BATCH_SCHEMA,
+            )
+            raw_methods = response.get("methods")
+            if not isinstance(raw_methods, list) or len(raw_methods) != TEST_METHOD_BATCH_SIZE:
+                raise ValueError(
+                    f"Unity checklist test batch {batch_index + 1} must contain exactly "
+                    f"{TEST_METHOD_BATCH_SIZE} methods"
+                )
+            expected_ids = [criterion.criterion_id for criterion in batch_criteria]
+            for expected_id, item in zip(expected_ids, raw_methods, strict=True):
+                if not isinstance(item, Mapping):
+                    raise TypeError("Unity checklist test methods must be objects")
+                criterion_id = str(item.get("criterion_id", "")).strip()
+                source = item.get("source_code")
+                if criterion_id != expected_id:
+                    raise ValueError(
+                        f"Unity checklist test batch returned {criterion_id!r}; "
+                        f"expected {expected_id!r}"
+                    )
+                if not isinstance(source, str):
+                    raise TypeError("Unity checklist test method has no source_code")
+                generated_methods.append(_validate_test_method_source(source, expected_id))
+
+        source = _assemble_test_source(checklist, generated_methods)
         return _validate_test_source(source, checklist)
 
     @staticmethod
-    def _prompt(checklist: FeatureChecklist, project_root: Path, feedback: str) -> str:
+    def _prompt(
+        checklist: FeatureChecklist,
+        batch_criteria: tuple[ChecklistCriterion, ...],
+        api_contract: Mapping[str, Any],
+        feedback: str,
+        *,
+        batch_index: int,
+    ) -> str:
         payload = {
-            "feature_checklist": checklist.to_dict(),
+            "feature": {
+                "feature_id": checklist.feature_id,
+                "name": checklist.feature_name,
+                "description": checklist.feature_description,
+                "origin": checklist.feature_origin,
+            },
+            "criteria": [
+                {**asdict(criterion), "feature_ids": list(criterion.feature_ids)}
+                for criterion in batch_criteria
+            ],
             "required_class_name": checklist.test_class_name,
-            "available_runtime_sources": _runtime_source_context(project_root),
-            "previous_generation_error": feedback[-6000:],
+            "runtime_api_contract": api_contract,
+            "previous_generation_error": feedback[-3000:],
+            "batch": {
+                "index": batch_index + 1,
+                "count": TEST_METHOD_BATCH_COUNT,
+                "item_count": TEST_METHOD_BATCH_SIZE,
+            },
         }
-        expected_ids = [criterion.criterion_id for criterion in checklist.criteria]
+        expected_ids = [criterion.criterion_id for criterion in batch_criteria]
         return (
-            "You are a senior Unity Test Framework engineer. Return one complete C# source file "
-            "for this single feature checklist. Implement all 30 criteria as PlayMode [UnityTest] "
-            "methods. Use namespace TeamIdle.GameTemplate.DynamicFeatureTests and the exact class "
-            f'name {checklist.test_class_name}. Add [Category("FeatureChecklist")] to the '
-            "fixture. Each test method name must start with its exact criterion id, and every id "
-            "must appear in exactly one UnityTest method. Prefer public APIs shown in runtime "
-            "sources; create only the minimum deterministic objects and clean them up. Tests must "
+            f"You are a senior Unity Test Framework engineer. Create batch {batch_index + 1} of "
+            f"{TEST_METHOD_BATCH_COUNT} with EXACTLY {TEST_METHOD_BATCH_SIZE} self-contained "
+            "PlayMode [UnityTest] methods. Return a methods array in the required structured "
+            "format. Each source_code value must contain one complete method only: no using "
+            "directives, namespace, class, fields, properties, or helper methods. The host will "
+            f"assemble all batches into class {checklist.test_class_name}. Each method name must "
+            "start with its exact criterion_id, and every expected id must appear exactly once. "
+            "Use only public APIs listed in runtime_api_contract; a missing member is nonexistent. "
+            "Create the minimum deterministic objects inside each method and clean them up. Tests must "
             "assert runtime behavior, not source text. Do not use UnityEditor, file/network/process "
             "APIs, reflection to private fields, ignored tests, Assert.Pass-only tests, or waits "
-            "longer than one frame. Shared helpers are allowed. Include using NUnit.Framework, "
-            "System.Collections, UnityEngine, and UnityEngine.TestTools. Return only JSON with "
-            "source_code and no markdown.\n\n"
+            "longer than one frame. Keep setup and assertions concise to remain within the output "
+            "budget. Return only the structured JSON object and no markdown.\n\n"
             f"EXPECTED_IDS={json.dumps(expected_ids, ensure_ascii=False)}\n"
             f"INPUT={json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
         )
@@ -607,6 +682,58 @@ def _validate_test_source(source: str, checklist: FeatureChecklist) -> str:
     return normalized + "\n"
 
 
+def _validate_test_method_source(source: str, criterion_id: str) -> str:
+    normalized = source.strip()
+    if normalized.startswith("```"):
+        raise ValueError("Generated Unity test method must not contain markdown fences")
+    forbidden = (
+        "UnityEditor",
+        "System.IO",
+        "System.Net",
+        "System.Diagnostics",
+        "[Ignore",
+        "Assert.Pass",
+        "BindingFlags.NonPublic",
+        "namespace ",
+        " class ",
+        "using ",
+    )
+    padded = f" {normalized} "
+    if any(token in padded for token in forbidden):
+        raise ValueError("Generated Unity test method uses a forbidden API or declaration")
+    method_ids = re.findall(
+        r"\[UnityTest\]\s*public\s+IEnumerator\s+(DFC\d{3}_\d{2})[_A-Za-z0-9]*\s*\(",
+        normalized,
+    )
+    if method_ids != [criterion_id]:
+        raise ValueError(
+            f"Generated Unity test method must implement only {criterion_id}; got {method_ids}"
+        )
+    return normalized
+
+
+def _assemble_test_source(checklist: FeatureChecklist, methods: list[str]) -> str:
+    if len(methods) != CHECKLIST_ITEM_COUNT:
+        raise ValueError(
+            f"Unity checklist fixture requires {CHECKLIST_ITEM_COUNT} generated methods"
+        )
+    members = "\n\n".join(textwrap.indent(method, "        ") for method in methods)
+    return (
+        "using NUnit.Framework;\n"
+        "using System.Collections;\n"
+        "using UnityEngine;\n"
+        "using UnityEngine.TestTools;\n\n"
+        "namespace TeamIdle.GameTemplate.DynamicFeatureTests\n"
+        "{\n"
+        '    [Category("FeatureChecklist")]\n'
+        f"    public class {checklist.test_class_name}\n"
+        "    {\n"
+        f"{members}\n"
+        "    }\n"
+        "}\n"
+    )
+
+
 def _existing_checklist_catalog(source_root: Path) -> list[dict[str, object]]:
     catalog: list[dict[str, object]] = []
     if not source_root.is_dir():
@@ -618,19 +745,40 @@ def _existing_checklist_catalog(source_root: Path) -> list[dict[str, object]]:
     return catalog
 
 
-def _runtime_source_context(project_root: Path) -> list[dict[str, str]]:
-    sources: list[dict[str, str]] = []
-    total = 0
-    for path in sorted((project_root / "Assets").rglob("*.cs")):
-        relative = path.relative_to(project_root).as_posix()
-        if relative.startswith("Assets/Tests/") or "/Editor/" in relative:
-            continue
-        content = path.read_text(encoding="utf-8", errors="replace")
-        if total + len(content) > 48_000:
-            break
-        sources.append({"path": relative, "content": content})
-        total += len(content)
-    return sources
+def _runtime_api_context(project_root: Path, checklist: FeatureChecklist) -> dict[str, Any]:
+    """Retrieve exact public signatures instead of serializing tens of thousands of source chars."""
+
+    assets_root = project_root / "Assets"
+    if not assets_root.is_dir():
+        return {
+            "index_version": "unavailable",
+            "available_modules": {},
+            "retrieved_module_ids": [],
+            "project_types": {},
+            "rules": ["Use only standard Unity 2D and NUnit public APIs."],
+        }
+    index = build_project_context_index(assets_root)
+    module_types = index.get("module_types", {})
+    selected_module_ids = (
+        [str(module_id) for module_id in module_types] if isinstance(module_types, Mapping) else []
+    )
+    requirement_text = " ".join(
+        [
+            checklist.feature_name,
+            checklist.feature_description,
+            *(
+                f"{criterion.title} {criterion.action} {criterion.expected}"
+                for criterion in checklist.criteria
+            ),
+        ]
+    )
+    return retrieve_prompt_api_contract(
+        index,
+        selected_module_ids=selected_module_ids,
+        requirement_text=requirement_text,
+        max_module_types=8,
+        max_dependency_types=8,
+    )
 
 
 def _safe_path_segment(value: str) -> str:

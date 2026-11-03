@@ -570,16 +570,22 @@ public void BindGeneratedFeature(GeneratedFeatureBindingContext context)
             context.__enter__.return_value = response
             contexts.append(context)
 
-        with patch(
-            "game_pipeline.gemini_feature_generator.urllib.request.urlopen",
-            side_effect=contexts,
-        ) as urlopen:
+        with (
+            patch(
+                "game_pipeline.gemini_feature_generator.urllib.request.urlopen",
+                side_effect=contexts,
+            ) as urlopen,
+            patch("game_pipeline.gemini_feature_generator.append_pipeline_error") as error_log,
+        ):
             result = LocalAIJsonClient().generate_json("generate", {"type": "object"})
 
         self.assertEqual(urlopen.call_count, 2)
         self.assertEqual(result, {"generated_modules": []})
         retry_payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
         self.assertEqual(len(retry_payload["messages"]), 2)
+        reasons = [call.args[1] for call in error_log.call_args_list]
+        self.assertIn("STRUCTURED_OUTPUT_INVALID", reasons)
+        self.assertIn("STRUCTURED_OUTPUT_RECOVERED", reasons)
 
     def test_localai_salvages_complete_json_before_length_cutoff(self) -> None:
         api_response = {
@@ -597,16 +603,21 @@ public void BindGeneratedFeature(GeneratedFeatureBindingContext context)
         response_context = MagicMock()
         response_context.__enter__.return_value = response
 
-        with patch(
-            "game_pipeline.gemini_feature_generator.urllib.request.urlopen",
-            return_value=response_context,
-        ) as urlopen:
+        with (
+            patch(
+                "game_pipeline.gemini_feature_generator.urllib.request.urlopen",
+                return_value=response_context,
+            ) as urlopen,
+            patch("game_pipeline.gemini_feature_generator.append_pipeline_error") as error_log,
+        ):
             result = LocalAIJsonClient(structured_attempts=1).generate_json(
                 "generate", {"type": "object"}
             )
 
         self.assertEqual(urlopen.call_count, 1)
         self.assertEqual(result, {"generated_modules": []})
+        reasons = [call.args[1] for call in error_log.call_args_list]
+        self.assertEqual(reasons, ["MAX_OUTPUT_TOKEN_REACHED", "TOKEN_OUTPUT_RECOVERED"])
 
     def test_localai_request_includes_configured_reasoning_effort(self) -> None:
         api_response = {
@@ -653,10 +664,30 @@ public void BindGeneratedFeature(GeneratedFeatureBindingContext context)
 
     def test_localai_rejects_oversized_prompt_before_http_request(self) -> None:
         client = LocalAIJsonClient(context_window_tokens=4096, max_output_tokens=2048)
-        with patch("game_pipeline.gemini_feature_generator.urllib.request.urlopen") as urlopen:
+        with (
+            patch("game_pipeline.gemini_feature_generator.urllib.request.urlopen") as urlopen,
+            patch("game_pipeline.gemini_feature_generator.append_pipeline_error") as error_log,
+        ):
             with self.assertRaisesRegex(RuntimeError, "input budget before request"):
                 client.generate_json("x" * 20_000, {"type": "object"})
         urlopen.assert_not_called()
+        self.assertEqual(error_log.call_args.args[1], "INPUT_CONTEXT_TOKEN_OVERFLOW")
+
+    def test_localai_logs_server_side_token_rejection(self) -> None:
+        client = LocalAIJsonClient(structured_attempts=1)
+        with (
+            patch.object(
+                LocalAIJsonClient,
+                "_request_with_retry",
+                side_effect=RuntimeError("HTTP 400: max_tokens exceeds context length"),
+            ),
+            patch("game_pipeline.gemini_feature_generator.append_pipeline_error") as error_log,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "max_tokens exceeds context length"):
+                client.generate_json("generate", {"type": "object"})
+
+        self.assertEqual(error_log.call_args.args[1], "TOKEN_REQUEST_REJECTED")
+        self.assertIn("estimated_input=", error_log.call_args.args[2])
 
     def test_localai_adapts_output_budget_to_fit_feature_prompt(self) -> None:
         api_response = {

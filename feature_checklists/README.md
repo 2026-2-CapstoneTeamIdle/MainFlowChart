@@ -9,13 +9,19 @@ the originals into `workspace/<project_id>/validation/feature_checklists/origina
 annotated copies plus machine-readable results into the sibling `checked/` directory.
 
 For each concrete request, Gemma creates exactly one 30-item checklist for every final Feature,
-including requirement-dependency Features. Qwen Coder creates one matching Unity PlayMode fixture
-per checklist. Each set is saved under
+including requirement-dependency Features. Qwen Coder generates three structured batches of ten
+self-contained test methods; the host assembles them into one matching Unity PlayMode fixture per
+checklist. Only a compact, repository-derived public API contract is included in each model prompt.
+Each set is saved under
 `workspace/<project_id>/validation/feature_checklists/generated/<feature_id>/`; the C# fixtures are
 also copied to `game/unity_project/Assets/Tests/PlayMode/GeneratedFeatureChecklist_DFC*.cs`.
 Skipped or missing dynamic tests fail validation. The total required checks are therefore
 `feature count × 30`. Game repair and recompilation continue until all checks pass or the existing
 10-retry safety limit is reached.
+Dynamic checklist generation and generated-test compilation are mandatory. Either failure stops
+validation as failed; the workflow does not replace them with the repository static suite. Failure
+and recovery diagnostics are appended to
+`workspace/<project_id>/validation/errorlog.md`.
 
 The source directory can be overridden with `MAINFLOW_FEATURE_CHECKLIST_SOURCE`. This is useful
 while the documents are supplied outside Git. `MAINFLOW_FEATURE_CHECKLIST_RETRIES` controls the

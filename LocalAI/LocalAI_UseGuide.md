@@ -1,6 +1,6 @@
 # LocalAI 사용 가이드
 
-통합 버전: 1.7.0. 기본 preload는 Feature 분석용 Gemma 4 12B QAT Q4_0
+통합 버전: 1.8.0. 기본 preload는 Feature 분석용 Gemma 4 12B QAT Q4_0
 (API 이름: `gemma4-12b-it-qat-q4-0`)과 Qwen2.5-Coder-7B-Instruct Q5_K_M
 (API 이름: `qwen2.5-coder-7b-q5-k-m`)을 함께 등록한다.
 LocalAI v4.11.0 llama.cpp를 사용한다. Qwen GGUF는 약 5.44GB이고 Gemma 12B Q4 가중치는
@@ -45,12 +45,16 @@ docker compose -f compose.yaml -f LocalAI/compose.yaml logs -f Local-AIModel
 최초 다운로드가 끝난 후 등록 상태를 확인한다.
 
 ```powershell
-uv run --locked python -m LocalAI.check_connection --model qwen2.5-coder-7b-q5-k-m
-uv run --locked python -m LocalAI.check_connection --model gemma4-12b-it-qat-q4-0
+uv run --locked python -m LocalAI.check_connection `
+  --model qwen2.5-coder-7b-q5-k-m --context-tokens 16384
+uv run --locked python -m LocalAI.check_connection `
+  --model gemma4-12b-it-qat-q4-0 --context-tokens 16384
 ```
 
 Web UI: http://127.0.0.1:8080 / 호스트 API: http://127.0.0.1:8080/v1.
-연결 검사는 등록 여부만 확인하며 코드 생성 성공을 보장하지 않는다.
+연결 검사는 `/v1/models/capabilities`에서 모델 등록 여부와 서버가 실제로 보고하는 Context를
+함께 확인한다. `context_mismatch`는 MainFlow가 계산하는 입력·출력 예산과 서버 한도가 다르다는
+뜻이므로 실행 전에 반드시 수정한다. 이 검사는 코드 생성 성공 자체를 보장하지는 않는다.
 모델은 idle-capstone-local-ai-models named volume에 저장되며 기존 모델은 삭제하지 않는다.
 `Local-AIBackendSetup` 일회성 서비스는 CUDA 12 Diffusers backend를
 `idle-capstone-local-ai-backends` volume에 설치하고 SD-Turbo 설정을 쓰기 가능한 runtime 설정
@@ -87,9 +91,18 @@ Gemma의 공식 파일 이름은 `gemma-4-12b-it-qat-q4_0.gguf`이며, 사용자
 `workspace/{project_id}/validation/feature_checklists/generated/{feature_id}/`에서 확인한다.
 Condition은 문장 단위의 최대 6개 기능 요청으로 분리되고, 장르 보강은 기능 의존성과 장르 핵심
 요청으로 나뉜다. Checklist 30개 항목도 Gemma에 10개씩 3회 요청한 뒤 중복을 검사해 합친다.
+Qwen의 Unity Test 코드도 10개 메서드씩 구조화 출력으로 생성하고, 호스트가 Feature당 C# 파일
+하나로 조립한다. 입력에는 전체 C# 원문 대신 관련 public API signature만 전달한다.
 각 Feature는 Checklist 한 개와 30개 항목, Unity 테스트 파일 한 개를 가진다. Unity Editor가 없거나
 동적 C#이 3회의 생성 시도 안에 컴파일되지 않거나
 `Feature 수 × 30` 항목 중 하나라도 통과하지 못하면 게임 검증은 실패한다.
+동적 Checklist 생성 또는 컴파일 실패 시 저장소의 정적 Checklist로 우회하지 않는다.
+
+토큰 초과와 복구 이력은 실행 프로젝트의 `workspace/{project_id}/validation/errorlog.md`에서
+확인한다. 각 행은 `날짜|시점|이유|상세`이며 입력 Context 부족, `finish_reason=length`, 구조화
+JSON 실패, 동적 테스트 생성·컴파일 실패를 기록한다. 축약 재요청이나 재생성 후 성공하면
+`TOKEN_OUTPUT_RECOVERED`, `STRUCTURED_OUTPUT_RECOVERED`, `DYNAMIC_TEST_*_RECOVERED` 행이
+추가되므로 단순 실패와 자동 복구를 구분할 수 있다.
 
 ## Node 공통 이미지 생성
 
@@ -175,7 +188,7 @@ $env:LLM_DESIGN_V2_STRUCTURED_ATTEMPTS = "1"
 $env:MAINFLOW_DESIGN_V2_CUSTOMIZATION_RETRIES = "0"
 $env:LLM_FEATURE_CHECKLIST_GENERATION_MAX_OUTPUT_TOKENS = "3072"
 $env:LLM_FEATURE_CHECKLIST_GENERATION_STRUCTURED_ATTEMPTS = "1"
-$env:LLM_UNITY_CHECKLIST_TEST_GENERATION_MAX_OUTPUT_TOKENS = "8192"
+$env:LLM_UNITY_CHECKLIST_TEST_GENERATION_MAX_OUTPUT_TOKENS = "6144"
 $env:LLM_UNITY_CHECKLIST_TEST_GENERATION_STRUCTURED_ATTEMPTS = "1"
 uv run --locked python -m mainflow.run_flow --image-style "Pixel Art" --mood-style "Fantasy" --genre "플랫포머" --viewpoint "사이드뷰" --condition "벽을 타고 올라갈 수 있는 게임"
 ```

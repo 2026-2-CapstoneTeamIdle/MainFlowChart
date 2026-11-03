@@ -227,10 +227,18 @@ C# 컴파일, 전체 모듈 부착, Bootstrap 씬 조립까지 검사하고 로�
 각 Checklist에 30개 기준을 생성한다. Gemma에는 30개를 한 번에 요구하지 않고 10개씩 3회 요청한
 뒤 중복을 검사하여 합친다. 따라서 전체 기준 수는 `Feature 수 × 30`이다. 각 기준은
 `DFC{Feature 순번}_{항목 순번}`, 관련 `feature_ids`, 준비, 동작, 기대 결과, 자동 증거를 갖는다.
-모든 항목은 해당 Checklist의 Feature ID를 반드시 포함한다. Qwen Coder는 Checklist마다 별도 Unity
-Test Framework PlayMode C# 파일을 만든다. 모든 DFC가 NUnit 보고서에 존재하며 Passed여야 한다.
+모든 항목은 해당 Checklist의 Feature ID를 반드시 포함한다. Qwen Coder는 Checklist의
+테스트 메서드를 10개씩 3회의 구조화 출력으로 생성하고, 호스트가 Feature당 Unity Test
+Framework PlayMode C# 파일 하나로 조립한다. 모델에는 전체 런타임 소스 대신 결정적으로
+검색한 관련 public API signature만 제공한다. 모든 DFC가 NUnit 보고서에 존재하며 Passed여야 한다.
+동적 Checklist 생성이나 생성된 테스트의 컴파일이 실패하면 정적 Checklist로 대체하지 않고
+`DYNAMIC_FEATURE_CHECKLIST_FAILED`로 즉시 전체 실패 처리한다.
 실패하면 테스트 파일이 아니라 게임 소스만 제한적으로 수정하고 Unity 컴파일 후 다시 실행한다.
 최대 Retry는 10회이며 최종 실패는 `validate_game` 실패다.
+
+AI 토큰 및 구조화 출력 경계에서 발생한 오류는 `validation/errorlog.md`의
+`날짜|시점|이유|상세` 계약으로 누적한다. 재시도로 정상 결과를 얻은 경우에도 원래 실패 행을
+삭제하지 않고 `*_RECOVERED` 행을 추가하여 발생과 복구를 함께 추적한다.
 
 ### `final_validation` 판정
 

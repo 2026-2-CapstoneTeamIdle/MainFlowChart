@@ -158,7 +158,7 @@ class FeatureChecklistValidationTest(unittest.TestCase):
             self.assertTrue(checked.is_file())
             self.assertIn("상태: pending", checked.read_text(encoding="utf-8"))
 
-    def test_dynamic_generation_failure_falls_back_to_static_unity_tests(self) -> None:
+    def test_dynamic_generation_failure_fails_validation(self) -> None:
         class FailingGenerator:
             def generate(self, **_kwargs):
                 raise RuntimeError("simulated local checklist truncation")
@@ -191,8 +191,7 @@ class FeatureChecklistValidationTest(unittest.TestCase):
                 max_retries=0,
                 checklist_generator_factory=FailingGenerator,
             )
-            static_result = ChecklistResult("FC05", "점프", "passed", "Passed", "Tests.FC05_Jump")
-            with patch.object(workflow, "_run_tests", return_value=([static_result], "log")):
+            with patch.object(workflow, "_run_tests") as run_tests:
                 outcome = workflow.run(
                     project_root=project,
                     workspace_root=workspace,
@@ -202,16 +201,19 @@ class FeatureChecklistValidationTest(unittest.TestCase):
                     logic_analysis=logic_analysis,  # type: ignore[arg-type]
                 )
 
-            self.assertEqual(outcome.status, "passed")
+            self.assertEqual(outcome.status, "failed")
             self.assertEqual(outcome.results[0].feature_id, "DYNAMIC_CHECKLIST")
-            self.assertEqual(outcome.results[0].status, "skipped")
-            self.assertIn("static", outcome.log.lower())
+            self.assertEqual(outcome.results[0].status, "error")
+            self.assertEqual(outcome.issues[0]["code"], "DYNAMIC_FEATURE_CHECKLIST_FAILED")
+            self.assertIn("static fallback is disabled", outcome.log.lower())
+            run_tests.assert_not_called()
             records = json.loads(
                 (workspace / "validation/feature_checklists/checked/results.json").read_text(
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(records["attempts"][0]["checklist_source"], "static_fallback")
+            self.assertEqual(records["attempts"][0]["checklist_source"], "dynamic_required")
+            self.assertEqual(records["attempts"][0]["phase"], "dynamic_generation")
 
 
 if __name__ == "__main__":

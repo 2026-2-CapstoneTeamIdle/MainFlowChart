@@ -17,4 +17,5 @@
       - fit_params:false
     parameters:
       model: qwen2.5-coder-7b-instruct-q5_k_m.gguf
+      context_size: 16384
       temperature: 0.1

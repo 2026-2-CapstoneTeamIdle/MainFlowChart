@@ -11,6 +11,8 @@ from game_pipeline.dynamic_feature_checklist import (
     CHECKLIST_BATCH_COUNT,
     CHECKLIST_BATCH_SIZE,
     CHECKLIST_ITEM_COUNT,
+    TEST_METHOD_BATCH_COUNT,
+    TEST_METHOD_BATCH_SIZE,
     DynamicFeatureChecklistGenerator,
     UnityChecklistTestGenerator,
     load_generated_checklist,
@@ -33,6 +35,14 @@ class FakeStructuredClient:
             batch_index = (len(self.prompts) - 1) % CHECKLIST_BATCH_COUNT
             start = batch_index * CHECKLIST_BATCH_SIZE
             return {**self.response, "criteria": criteria[start : start + CHECKLIST_BATCH_SIZE]}
+        methods = self.response.get("methods")
+        if isinstance(methods, list) and len(methods) == CHECKLIST_ITEM_COUNT:
+            batch_index = (len(self.prompts) - 1) % TEST_METHOD_BATCH_COUNT
+            start = batch_index * TEST_METHOD_BATCH_SIZE
+            return {
+                **self.response,
+                "methods": methods[start : start + TEST_METHOD_BATCH_SIZE],
+            }
         return self.response
 
 
@@ -112,29 +122,30 @@ class DynamicFeatureChecklistTest(unittest.TestCase):
 
         generated_sources: dict[str, str] = {}
         for feature_checklist in checklist.feature_checklists:
-            methods = "\n".join(
-                "    [UnityTest]\n"
-                f"    public IEnumerator {criterion.criterion_id}_Check() "
-                "{ yield return null; Assert.That(true); }"
+            methods = [
+                {
+                    "criterion_id": criterion.criterion_id,
+                    "source_code": (
+                        "[UnityTest]\n"
+                        f"public IEnumerator {criterion.criterion_id}_Check() "
+                        "{ yield return null; Assert.That(true); }"
+                    ),
+                }
                 for criterion in feature_checklist.criteria
-            )
-            source = f"""using NUnit.Framework;
-using System.Collections;
-using UnityEngine;
-using UnityEngine.TestTools;
-namespace TeamIdle.GameTemplate.DynamicFeatureTests {{
-[Category("FeatureChecklist")]
-public class {feature_checklist.test_class_name} {{
-{methods}
-}}
-}}
-"""
+            ]
+            test_client = FakeStructuredClient({"methods": methods})
             generated_sources[feature_checklist.feature_id] = UnityChecklistTestGenerator(
-                FakeStructuredClient({"source_code": source}), "test"
+                test_client, "test"
             ).generate(
                 checklist=feature_checklist,
                 project_root=Path("missing"),
                 feedback="previous compiler diagnostic",
+            )
+            self.assertEqual(len(test_client.prompts), TEST_METHOD_BATCH_COUNT)
+            self.assertTrue(all("EXACTLY 10" in prompt for prompt in test_client.prompts))
+            self.assertTrue(all("runtime_api_contract" in prompt for prompt in test_client.prompts))
+            self.assertTrue(
+                all("available_runtime_sources" not in prompt for prompt in test_client.prompts)
             )
 
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -210,6 +221,70 @@ public class {feature_checklist.test_class_name} {{
         self.assertEqual(results[0].status, "failed")
         self.assertEqual(len(results), 60)
         self.assertTrue(all(item.status == "error" for item in results[1:]))
+
+    def test_unity_test_prompt_uses_compact_public_api_contract(self) -> None:
+        criteria = [
+            {
+                "feature_ids": ["feature-01", "requirement-dependency-01"],
+                "title": f"점프 API 검증 {index}",
+                "category": "runtime",
+                "setup": "플레이어를 생성한다.",
+                "action": "점프를 호출한다.",
+                "expected": "수직 속도가 증가한다.",
+                "evidence": "공개 속성을 읽는다.",
+            }
+            for index in range(1, CHECKLIST_ITEM_COUNT + 1)
+        ]
+        checklist = (
+            DynamicFeatureChecklistGenerator(FakeStructuredClient({"criteria": criteria}), "test")
+            .generate(
+                project_id="20261103_01",
+                logic_analysis=_logic_analysis(),
+                source_root=Path("missing"),
+            )
+            .feature_checklists[0]
+        )
+        methods = [
+            {
+                "criterion_id": criterion.criterion_id,
+                "source_code": (
+                    "[UnityTest]\n"
+                    f"public IEnumerator {criterion.criterion_id}_Check() "
+                    "{ yield return null; Assert.That(true); }"
+                ),
+            }
+            for criterion in checklist.criteria
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            runtime = project / "Assets/GameTemplate/Runtime/Platformer"
+            runtime.mkdir(parents=True)
+            (runtime / "PlatformerMovementModule.cs").write_text(
+                """namespace TeamIdle.GameTemplate.Runtime
+{
+    public class PlatformerMovementModule
+    {
+        public override string ModuleId => \"platformer_movement\";
+        public float VerticalSpeed { get; set; }
+        public void Jump() { }
+        private string SecretImplementation() => \"PRIVATE_SENTINEL\";
+    }
+}
+""",
+                encoding="utf-8",
+            )
+            client = FakeStructuredClient({"methods": methods})
+            UnityChecklistTestGenerator(client, "test").generate(
+                checklist=checklist,
+                project_root=project,
+            )
+
+        combined_prompt = "\n".join(client.prompts)
+        self.assertIn("Jump", combined_prompt)
+        self.assertIn("VerticalSpeed", combined_prompt)
+        self.assertNotIn("PRIVATE_SENTINEL", combined_prompt)
+        self.assertLess(len(combined_prompt), 45_000)
 
 
 if __name__ == "__main__":

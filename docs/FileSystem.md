@@ -15,6 +15,7 @@ workspace/                         # workspace/.gitignore로 내용 제외
    ├─ game/                        # 게임 코드, asset_requests, Unity 프로젝트, 통합 결과
    ├─ data/                        # 요청/중간 데이터와 artifact_manifest.json
    └─ validation/                  # 검증 기준서와 검증 결과
+      ├─ errorlog.md               # AI 토큰/구조화 출력/동적 검증 실패와 복구 이력
       └─ feature_checklists/
          ├─ original/              # 저장소의 30항목 기존 체크리스트 사본
          ├─ generated/             # Feature별 하위 폴더와 전체 Checklist index
@@ -126,8 +127,22 @@ workspace/{project_id}/validation/development/*.json
 파일은 `generated/{feature_id}/checklist.json`, `Checklist.md`,
 `GeneratedFeatureChecklist_DFC*.cs`에 저장한다. C# 파일은 Unity 프로젝트의
 `Assets/Tests/PlayMode/`에도 복사된다. Checklist 항목은 Gemma가 10개씩 3회 생성한 뒤 하나로
-병합한다. 전체 검증 항목 수는 `Feature 수 × 30`이며, 누락 또는
+병합한다. Qwen도 10개 테스트 메서드씩 구조화 생성하며, 호스트가 모든 배치를 위 C# 파일
+하나로 조립한다. 전체 검증 항목 수는 `Feature 수 × 30`이며, 누락 또는
 Skip된 동적 기준은 통과로 간주하지 않는다.
+
+동적 Checklist 자체의 생성 또는 생성된 Unity 테스트의 컴파일이 실패하면 정적 Checklist로
+대체하지 않고 `validate_game` 전체를 실패 처리한다. AI 입력 Context 초과, 출력 Token 한도 도달,
+구조화 출력 실패, 동적 테스트 생성·컴파일 실패와 재시도 후 복구 여부는 프로젝트별
+`validation/errorlog.md`에 다음 형식으로 누적한다.
+
+```text
+날짜|시점|이유|상세
+```
+
+`날짜`는 한국 시간 ISO 8601, `시점`은 실패한 Node 또는 세부 작업, `이유`는 기계 판독 가능한
+오류/복구 코드, `상세`는 모델·시도 횟수·토큰 사용량·예외를 기록한다. 오류 기록 실패가 원래
+Pipeline 예외를 덮어쓰지는 않는다.
 
 에셋 요청 JSON은 생성된 Unity 프로젝트의
 `Assets/GameTemplate/Generated/AssetRequests/`에도 같은 내용으로 포함된다. 이미지·사운드 Flow는

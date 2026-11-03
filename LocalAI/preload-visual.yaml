@@ -16,6 +16,7 @@
       - fit_params:false
     parameters:
       model: qwen2.5-coder-7b-instruct-q5_k_m.gguf
+      context_size: 16384
       temperature: 0.1
 
 - url: https://raw.githubusercontent.com/mudler/LocalAI/v4.11.0/gallery/qwen3.yaml
@@ -43,4 +44,5 @@
       - image_max_tokens:1024
     parameters:
       model: Qwen3VL-4B-Instruct-Q4_K_M.gguf
+      context_size: 8192
       temperature: 0.0

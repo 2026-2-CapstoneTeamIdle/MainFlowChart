@@ -28,6 +28,7 @@ from game_pipeline.dynamic_feature_checklist import (
     persist_generated_feature_test,
 )
 from game_pipeline.gemini_feature_generator import resolve_feature_provider_from_environment
+from game_pipeline.pipeline_error_log import append_pipeline_error
 from mainflow.contracts import FeatureRequirement, LogicAnalysis
 from MCP.llm_config import LLMSettings
 from MCP.llm_providers import create_llm_provider
@@ -341,7 +342,6 @@ class FeatureChecklistWorkflow:
         combined_log = ""
         final_results: list[ChecklistResult] = []
         checklist = load_generated_checklist(workspace_root)
-        dynamic_generation_error = ""
         if logic_analysis is not None:
             try:
                 checklist, generation_log = self._generate_dynamic_tests(
@@ -353,9 +353,8 @@ class FeatureChecklistWorkflow:
                     compile_validation=compile_validation,
                 )
                 combined_log += generation_log
-            except Exception as error:  # noqa: BLE001 - static catalog is the safe fallback
+            except Exception as error:  # noqa: BLE001 - persisted workflow boundary
                 dynamic_generation_error = f"{type(error).__name__}: {error}"
-                checklist = None
                 generated_test_root = project_root / GENERATED_TEST_DIRECTORY
                 if generated_test_root.is_dir():
                     for generated_test in generated_test_root.glob(
@@ -363,28 +362,54 @@ class FeatureChecklistWorkflow:
                     ):
                         generated_test.unlink(missing_ok=True)
                 combined_log += (
-                    "\n--- DYNAMIC CHECKLIST FALLBACK ---\n"
+                    "\n--- DYNAMIC CHECKLIST FAILURE ---\n"
                     f"{dynamic_generation_error}\n"
-                    "The repository-owned static Unity checklist suite will run instead.\n"
+                    "Dynamic checklist validation is required; static fallback is disabled.\n"
+                )
+                append_pipeline_error(
+                    "dynamic_feature_checklist",
+                    "DYNAMIC_CHECKLIST_FAILED",
+                    dynamic_generation_error,
+                    project_id=project_id or workspace_root.name,
                 )
                 print(
-                    "[FLOW] 동적 Feature 체크리스트 생성에 실패해 저장소의 정적 "
-                    f"Unity 체크리스트로 대체합니다: {error}"
+                    "[FLOW] 동적 Feature 체크리스트 생성 또는 컴파일에 실패해 전체 "
+                    f"검증을 실패 처리합니다: {error}"
+                )
+                failure = ChecklistResult(
+                    "DYNAMIC_CHECKLIST",
+                    "동적 Feature 체크리스트",
+                    "error",
+                    "동적 체크리스트 생성 또는 컴파일 실패: " + dynamic_generation_error,
+                    "feature_checklist.dynamic_generation",
+                )
+                history.append(
+                    {
+                        "attempt": 0,
+                        "timestamp": datetime.now(UTC).isoformat(),
+                        "phase": "dynamic_generation",
+                        "results": [failure.__dict__],
+                        "failed_features": [failure.feature_name],
+                        "dynamic_generation_error": dynamic_generation_error,
+                        "checklist_source": "dynamic_required",
+                    }
+                )
+                self._write_records(workspace_root, history, source_root)
+                return FeatureChecklistOutcome(
+                    "failed",
+                    1,
+                    [failure],
+                    [
+                        {
+                            "code": "DYNAMIC_FEATURE_CHECKLIST_FAILED",
+                            "severity": "error",
+                            "message": dynamic_generation_error,
+                        }
+                    ],
+                    combined_log,
                 )
         for attempt in range(self.max_retries + 1):
             results, run_log = self._run_tests(project_root, checklist)
-            if dynamic_generation_error:
-                results.insert(
-                    0,
-                    ChecklistResult(
-                        "DYNAMIC_CHECKLIST",
-                        "동적 Feature 체크리스트",
-                        "skipped",
-                        "AI 생성 실패로 저장소 정적 체크리스트를 실행했습니다: "
-                        + dynamic_generation_error,
-                        "feature_checklist.static_fallback",
-                    ),
-                )
             combined_log += f"\n--- FEATURE CHECKLIST ATTEMPT {attempt} ---\n{run_log}"
             final_results = results
             failures = [item for item in results if item.status in {"failed", "error"}]
@@ -394,8 +419,8 @@ class FeatureChecklistWorkflow:
                     "timestamp": datetime.now(UTC).isoformat(),
                     "results": [item.__dict__ for item in results],
                     "failed_features": sorted({item.feature_name for item in failures}),
-                    "dynamic_generation_error": dynamic_generation_error,
-                    "checklist_source": "static_fallback" if checklist is None else "dynamic",
+                    "dynamic_generation_error": "",
+                    "checklist_source": "static" if checklist is None else "dynamic",
                 }
             )
             self._write_records(workspace_root, history, source_root)
@@ -522,9 +547,23 @@ class FeatureChecklistWorkflow:
                         f"\nGenerated {feature_checklist.feature_id} Unity checklist test "
                         f"on source attempt {source_attempt}.\n"
                     )
+                    if source_attempt > 1:
+                        append_pipeline_error(
+                            f"dynamic_test_generation:{feature_checklist.feature_id}",
+                            "DYNAMIC_TEST_GENERATION_RECOVERED",
+                            f"recovered on attempt {source_attempt}/{attempts}; "
+                            f"previous_error={last_error}",
+                            project_id=project_id,
+                        )
                     return
                 except Exception as error:  # noqa: BLE001 - bounded regeneration boundary
                     last_error = f"{type(error).__name__}: {error}"
+                    append_pipeline_error(
+                        f"dynamic_test_generation:{feature_checklist.feature_id}",
+                        "DYNAMIC_TEST_GENERATION_FAILED",
+                        f"attempt={source_attempt}/{attempts}; error={last_error}",
+                        project_id=project_id,
+                    )
                     log += (
                         f"\n{feature_checklist.feature_id} test source attempt "
                         f"{source_attempt} failed: {last_error}\n"
@@ -542,6 +581,14 @@ class FeatureChecklistWorkflow:
             compile_outcome = compile_validation(project_root)
             log += f"\n--- DYNAMIC TEST COMPILE {compile_attempt} ---\n" + compile_outcome.unity_log
             if compile_outcome.status == "passed":
+                if compile_attempt > 1:
+                    append_pipeline_error(
+                        "dynamic_test_compile",
+                        "DYNAMIC_TEST_COMPILE_RECOVERED",
+                        f"recovered on attempt {compile_attempt}/{attempts}; "
+                        f"previous_error={last_error}",
+                        project_id=project_id,
+                    )
                 return checklist, log
             last_error = (
                 "; ".join(
@@ -550,6 +597,12 @@ class FeatureChecklistWorkflow:
                     if issue["severity"] == "error"
                 )
                 or "generated Unity tests did not compile"
+            )
+            append_pipeline_error(
+                "dynamic_test_compile",
+                "DYNAMIC_TEST_COMPILE_FAILED",
+                f"attempt={compile_attempt}/{attempts}; error={last_error}",
+                project_id=project_id,
             )
             if compile_attempt == attempts:
                 break
@@ -562,6 +615,12 @@ class FeatureChecklistWorkflow:
             for feature_checklist in affected or list(checklist.feature_checklists):
                 generate_feature_test(feature_checklist, diagnostics)
 
+        append_pipeline_error(
+            "dynamic_test_compile",
+            "DYNAMIC_TEST_COMPILE_UNRECOVERED",
+            f"attempts={attempts}; final_error={last_error}",
+            project_id=project_id,
+        )
         raise RuntimeError(
             f"Dynamic Unity checklist tests failed to compile after {attempts} attempts: "
             f"{last_error}"

@@ -338,7 +338,22 @@ docker compose run --rm mainflow
 MCP로 읽은 파일 내용은 모델 호출 입력에 포함되므로 Gemini/OpenAI를 선택하면 해당 내용이 외부
 API로 전송된다. 외부 전송이 불가능한 파일은 Local SLM을 사용하거나 프롬프트에서 제외해야 한다.
 
-## 8. 테스트
+## 8. MCP와 토큰 최적화
+
+MCP 도구는 필요한 파일만 느지게 읽어 **입력 토큰**을 줄이는 데 사용한다. 권장 순서는
+`list_project_files` → `search_project_text` → `read_project_text(start_line, end_line)`이다. 범위 읽기는
+한 번에 400줄로 제한되며, 모델은 검색 결과에서 필요한 줄만 추가로 요청해야 한다.
+
+`MCP_MAX_TEXT_BYTES`는 파일 입출력 안전 상한이지 모델 토큰 예산이 아니다. 전체 파일을 MCP로 읽으면
+도구 결과가 다음 모델 호출의 컨텍스트로 누적되므로, 직접 프롬프트에 파일을 넣는 것과 같은 초과가
+발생할 수 있다.
+
+MCP는 **출력 토큰** 초과를 해결하지는 못한다. `write_project_text`로 파일을 쓰더라도 전체 내용은 모델의
+도구 인자로 생성되어야 한다. 따라서 긴 C# 생성은 구조화된 작은 배치로 나누고 호스트가 조립한다.
+현재 Checklist 테스트 생성은 MCP 도구 라운드 대신 결정적 C# 인덱서로 관련 public API signature만
+선택하고, 프로젝트 문맥 검수와 완성 게임 품질 검수는 MCP의 검색·범위 읽기를 사용한다.
+
+## 9. 테스트
 
 ```powershell
 docker compose --profile test run --rm test

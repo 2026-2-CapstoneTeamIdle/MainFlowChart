@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Protocol, cast
 
 from game_pipeline.feature_contract import build_generation_contract
+from game_pipeline.pipeline_error_log import append_pipeline_error
 from game_pipeline.project_context_index import (
     build_project_context_index,
     retrieve_prompt_api_contract,
@@ -490,7 +491,9 @@ class LocalAIJsonClient:
             "DESIGN_V2": (300, 4096, 1),
             "BLUEPRINT": (180, 2048, 1),
             "FEATURE_CHECKLIST_GENERATION": (240, 3072, 1),
-            "UNITY_CHECKLIST_TEST_GENERATION": (600, 8192, 1),
+            # Ten self-contained methods are generated per structured request and then assembled
+            # by the host. A 6K cap leaves substantially more of the 16K window for API context.
+            "UNITY_CHECKLIST_TEST_GENERATION": (600, 6144, 1),
             # Code generation has its own validation retries below. Keeping transport-level
             # retries to one prevents one slow 7B response from multiplying across both layers.
             "FEATURE_CODE_GENERATION": (180, 8192, 1),
@@ -546,7 +549,7 @@ class LocalAIJsonClient:
         available_response_tokens = self.context_window_tokens - estimated_input_tokens - 512
         minimum_response_tokens = self._minimum_response_token_budget(schema)
         if available_response_tokens < minimum_response_tokens:
-            raise RuntimeError(
+            detail = (
                 "LocalAI prompt exceeds the configured input budget before request: "
                 f"estimated input={estimated_input_tokens}, available output="
                 f"{available_response_tokens} < required output={minimum_response_tokens} tokens "
@@ -554,6 +557,12 @@ class LocalAIJsonClient:
                 "Reduce retrieved project context or increase LOCAL_LLM_CONTEXT_TOKENS and the "
                 "LocalAI model context_size together."
             )
+            append_pipeline_error(
+                self.request_label,
+                "INPUT_CONTEXT_TOKEN_OVERFLOW",
+                f"model={self.model}; {detail}",
+            )
+            raise RuntimeError(detail)
         response_token_budget = min(requested_response_tokens, available_response_tokens)
         structured_mode = os.environ.get("LOCAL_LLM_STRUCTURED_MODE", "").strip().lower()
         if structured_mode not in {"", "json_schema", "json_object"}:
@@ -606,11 +615,35 @@ class LocalAIJsonClient:
                 headers=headers,
                 method="POST",
             )
-            response_body = self._request_with_retry(request)
+            try:
+                response_body = self._request_with_retry(request)
+            except RuntimeError as error:
+                normalized_error = str(error).lower()
+                reason = (
+                    "TOKEN_REQUEST_REJECTED"
+                    if any(
+                        marker in normalized_error
+                        for marker in ("token", "context length", "context window")
+                    )
+                    else "LOCALAI_REQUEST_FAILED"
+                )
+                append_pipeline_error(
+                    self.request_label,
+                    reason,
+                    f"model={self.model}; attempt={response_attempt + 1}/"
+                    f"{response_attempts}; max_output={response_token_budget}; "
+                    f"estimated_input={estimated_input_tokens}; "
+                    f"context={self.context_window_tokens}; error={error}",
+                )
+                raise
             content = ""
+            finish_reason: object = None
+            usage: object = None
             try:
                 response_payload = json.loads(response_body)
                 choice = response_payload["choices"][0]
+                finish_reason = choice.get("finish_reason")
+                usage = response_payload.get("usage")
                 content = choice["message"]["content"]
                 if not isinstance(content, str) or not content.strip():
                     raise StructuredOutputError("LocalAI returned an empty structured response")
@@ -626,9 +659,31 @@ class LocalAIJsonClient:
                 if not isinstance(result, dict):
                     raise StructuredOutputError("LocalAI structured output must be a JSON object")
                 if choice.get("finish_reason") == "length":
+                    token_detail = (
+                        f"model={self.model}; attempt={response_attempt + 1}/"
+                        f"{response_attempts}; max_output={response_token_budget}; "
+                        f"estimated_input={estimated_input_tokens}; usage={usage!r}"
+                    )
+                    append_pipeline_error(
+                        self.request_label,
+                        "MAX_OUTPUT_TOKEN_REACHED",
+                        token_detail + "; a complete leading JSON object was found",
+                    )
+                    append_pipeline_error(
+                        self.request_label,
+                        "TOKEN_OUTPUT_RECOVERED",
+                        token_detail + "; recovered and validated the complete JSON object",
+                    )
                     print(
                         f"[LLM] {self.request_label} 토큰 한도에 도달했지만 앞부분의 "
                         "완전한 JSON 객체를 복구했습니다."
+                    )
+                if last_error is not None:
+                    append_pipeline_error(
+                        self.request_label,
+                        "STRUCTURED_OUTPUT_RECOVERED",
+                        f"model={self.model}; recovered on attempt {response_attempt + 1}/"
+                        f"{response_attempts}; previous_error={last_error}",
                     )
                 print(f"[LLM] {self.request_label} 응답 완료")
                 return cast(Mapping[str, Any], result)
@@ -645,6 +700,19 @@ class LocalAIJsonClient:
                 )
                 last_error.__cause__ = error
 
+            reason = (
+                "MAX_OUTPUT_TOKEN_EXCEEDED"
+                if last_error is not None and "token limit" in str(last_error).lower()
+                else "STRUCTURED_OUTPUT_INVALID"
+            )
+            append_pipeline_error(
+                self.request_label,
+                reason,
+                f"model={self.model}; attempt={response_attempt + 1}/{response_attempts}; "
+                f"max_output={response_token_budget}; estimated_input={estimated_input_tokens}; "
+                f"finish_reason={finish_reason!r}; usage={usage!r}; error={last_error}",
+            )
+
             if response_attempt + 1 < response_attempts:
                 print(
                     f"[LLM] {self.request_label} 구조화 응답 실패: {last_error}. 축약 재요청합니다."
@@ -660,6 +728,11 @@ class LocalAIJsonClient:
                     }
                 )
         assert last_error is not None
+        append_pipeline_error(
+            self.request_label,
+            "STRUCTURED_OUTPUT_UNRECOVERED",
+            f"model={self.model}; attempts={response_attempts}; final_error={last_error}",
+        )
         raise last_error
 
     def _request_with_retry(self, request: urllib.request.Request) -> str:
