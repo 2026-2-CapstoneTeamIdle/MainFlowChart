@@ -256,7 +256,11 @@ class CodexGameHarness:
                 and pending_baseline_outcome is not None
                 and pending_baseline_evidence is not None
                 and pending_baseline_severity is not None
-                and _failure_severity(outcome) > pending_baseline_severity
+                and _repair_is_regression(
+                    pending_baseline_outcome,
+                    outcome,
+                    pending_baseline_severity,
+                )
             ):
                 regression_evidence = evidence
                 pending_snapshot.restore(project_root)
@@ -437,6 +441,9 @@ Read every file below before editing code:
 - Put every public `MonoBehaviour` in its own `.cs` file whose filename exactly matches the class
   name. Generated game modules must derive from `GameModuleBehaviour`, implement
   `IGeneratedFeatureModule`, and declare the exact `[GeneratedGameModule("module_id")]` identity.
+- Every concrete `GameModuleBehaviour` must implement
+  `protected override void OnInitialize(GameContext context)` and register itself with
+  `context.Register(this)`. Inspect the abstract base class before writing or repairing a module.
 - Never create, edit, delete, or invent Unity `.meta` files manually. Never hand-edit
   `Assets/Scenes/Bootstrap.unity`. The host-owned `ModuleComponentCatalog`,
   `PrefabSceneAssembler`, and Unity importer create component bindings and scene serialization.
@@ -633,6 +640,50 @@ def _failure_severity(outcome: UnityValidationOutcome) -> int:
         "balance_plan": 400,
         "test": 300,
     }[target]
+
+
+_VALIDATION_MILESTONES = (
+    "UNITY_MODULE_CATALOG_OK",
+    "UNITY_GENERATED_FEATURE_BINDINGS_OK",
+    "UNITY_IMPLEMENTATION_PLAN_OK",
+    "UNITY_SCENE_ASSEMBLY_OK",
+    "UNITY_GAME_BLUEPRINT_OK",
+    "UNITY_LEVEL_PLAN_OK",
+    "UNITY_GAMEPLAY_TUNING_OK",
+    "UNITY_PRESENTATION_PLAN_OK",
+    "UNITY_VALIDATION_PLAN_STATIC_OK",
+    "UNITY_TEMPLATE_BUILD_OK",
+    "UNITY_RUNTIME_SMOKE_OK",
+)
+
+
+def _validation_progress(outcome: UnityValidationOutcome) -> int:
+    """Return the furthest host-owned Unity milestone reached by this source revision."""
+
+    if outcome.status == "passed":
+        return len(_VALIDATION_MILESTONES) + 1
+    reached = [
+        index
+        for index, marker in enumerate(_VALIDATION_MILESTONES, start=1)
+        if marker in outcome.unity_log
+    ]
+    return max(reached, default=0)
+
+
+def _repair_is_regression(
+    baseline: UnityValidationOutcome,
+    candidate: UnityValidationOutcome,
+    baseline_severity: int | None = None,
+) -> bool:
+    """Reject source changes only when Unity moved backward or worsened at the same stage."""
+
+    baseline_progress = _validation_progress(baseline)
+    candidate_progress = _validation_progress(candidate)
+    if candidate_progress != baseline_progress:
+        return candidate_progress < baseline_progress
+    return _failure_severity(candidate) > (
+        _failure_severity(baseline) if baseline_severity is None else baseline_severity
+    )
 
 
 def _normalize_windows_project_permissions(project_root: Path) -> dict[str, Any]:

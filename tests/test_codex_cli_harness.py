@@ -21,7 +21,9 @@ from game_pipeline.codex_cli.harness import (
     _permission_diagnostic_failed,
     _prepare_host_owned_source_roots,
     _ProjectSourceSnapshot,
+    _repair_is_regression,
     _repair_prompt,
+    _validation_progress,
     _write_project_instructions,
     prepare_design_for_codex,
 )
@@ -274,6 +276,45 @@ def test_batch_exception_is_more_severe_than_missing_module() -> None:
     assert _failure_severity(batch_exception) > _failure_severity(missing_module)
     signature = _failure_signature(batch_exception)
     assert "FileNotFoundException" in signature
+
+
+def test_downstream_validation_failure_preserves_compile_fix() -> None:
+    compiler_failure = UnityValidationOutcome(
+        checks=[],
+        issues=[{"code": "FAILED", "severity": "error", "message": "compiler"}],
+        unity_log=(
+            "Scripts have compiler errors.\n"
+            "GeneratedFeature02Module.cs(9,25): error CS0534: missing OnInitialize"
+        ),
+    )
+    downstream_failure = UnityValidationOutcome(
+        checks=[],
+        issues=[{"code": "FAILED", "severity": "error", "message": "validation plan"}],
+        unity_log=(
+            "UNITY_MODULE_CATALOG_OK:20\n"
+            "InvalidOperationException: Validation plan is invalid or incomplete.\n"
+            "TemplateProjectBuilder threw exception."
+        ),
+    )
+
+    assert _failure_severity(downstream_failure) > _failure_severity(compiler_failure)
+    assert _validation_progress(downstream_failure) > _validation_progress(compiler_failure)
+    assert not _repair_is_regression(compiler_failure, downstream_failure)
+
+
+def test_repair_that_loses_a_validation_milestone_is_rolled_back() -> None:
+    baseline = UnityValidationOutcome(
+        checks=[],
+        issues=[{"code": "FAILED", "severity": "error", "message": "scene"}],
+        unity_log="UNITY_MODULE_CATALOG_OK:4\nUNITY_GENERATED_FEATURE_BINDINGS_OK:2",
+    )
+    candidate = UnityValidationOutcome(
+        checks=[],
+        issues=[{"code": "FAILED", "severity": "error", "message": "compiler"}],
+        unity_log="Scripts have compiler errors.\nFeature.cs(1,1): error CS1002",
+    )
+
+    assert _repair_is_regression(baseline, candidate)
 
 
 def test_source_snapshot_restores_changed_and_deleted_files(tmp_path: Path) -> None:
