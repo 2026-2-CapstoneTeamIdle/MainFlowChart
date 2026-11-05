@@ -38,7 +38,14 @@ def classify_failure(outcome: UnityValidationOutcome) -> FailureClassification:
     target: RepairTarget = "test"
     if codes & {"UNITY_EDITOR_NOT_FOUND", "UNITY_EDITOR_START_FAILED"} or any(
         token in lowered
-        for token in ("no valid unity editor license", "failed to activate", "access is denied")
+        for token in (
+            "no valid unity editor license",
+            "failed to activate",
+            "access is denied",
+            "another unity instance is running",
+            "project already open in another instance",
+            "handleprojectalreadyopeninanotherinstance",
+        )
     ):
         target = "infrastructure"
     elif any(

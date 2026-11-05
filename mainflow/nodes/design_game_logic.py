@@ -9,6 +9,8 @@ from time import monotonic
 from typing import cast
 
 from game_pipeline import (
+    CodexGameHarness,
+    CodexHarnessSettings,
     GameDevelopmentLoop,
     UnityProjectGenerator,
     attach_generated_modules,
@@ -20,7 +22,9 @@ from game_pipeline import (
     create_project_context_reviewer_from_environment,
     normalize_game_spec,
     plan_feature_mechanics,
+    prepare_design_for_codex,
     resolve_feature_provider_from_environment,
+    resolve_game_builder,
     review_feedback,
 )
 from game_pipeline.feature_contract import build_feature_contract
@@ -117,6 +121,7 @@ def design_game_logic_node(
     ]
     request_references = [image_request_reference, sound_request_reference]
     feature_provider = resolve_feature_provider_from_environment()
+    game_builder = resolve_game_builder()
     blueprint_reference = None
     development_loop = None
     implementation_tasks_reference = None
@@ -178,9 +183,17 @@ def design_game_logic_node(
         except Exception as error:  # noqa: BLE001 - optional quality enhancement
             log(f"LLM Blueprint 검증에 실패해 안전한 기본 Blueprint를 사용합니다: {error}")
 
+        if game_builder == "codex_cli":
+            design = prepare_design_for_codex(design)
+
         design["implementation_tasks"] = build_implementation_tasks(
             design,
-            time_budget_seconds=int(os.environ.get("MAINFLOW_GAME_TIME_BUDGET_SECONDS", "1800")),
+            time_budget_seconds=int(
+                os.environ.get(
+                    "MAINFLOW_GAME_TIME_BUDGET_SECONDS",
+                    "7200" if game_builder == "codex_cli" else "1800",
+                )
+            ),
         )
         development_loop = GameDevelopmentLoop(
             design["implementation_tasks"],
@@ -219,7 +232,7 @@ def design_game_logic_node(
             "HUD, transition, camera, and feedback requirements are present in presentation_plan",
         )
         feature_generator = None
-        if design["unsupported_mechanics"]:
+        if design["unsupported_mechanics"] and game_builder == "pipeline":
             log(f"기존 모듈에 없는 기능을 {feature_provider} 모델로 생성합니다.")
             feature_generator = create_feature_generator_from_environment()
             feature_budget_seconds = int(
@@ -402,7 +415,59 @@ def design_game_logic_node(
             ),
             evidence=lambda result: f"generated Unity project at {result.project_root}",
         )
-        if design["generated_modules"]:
+        codex_harness = None
+        codex_implementation = None
+        if game_builder == "codex_cli":
+            log("설치된 Codex CLI가 Unity 프로젝트 전체 문맥을 읽고 게임을 구현합니다.")
+            codex_harness = CodexGameHarness(
+                CodexHarnessSettings.from_environment(),
+                audit_root=workspace_project_root / "validation" / "codex",
+                record=lambda name, data: manager.write_json(
+                    state["project_id"],
+                    "validation",
+                    f"codex/{name}.json",
+                    data,
+                    producer="design_game_logic",
+                ),
+            )
+            codex_implementation = development_loop.run_task(
+                "project-context-review",
+                lambda: codex_harness.implement_project(
+                    project_root=generation.project_root,
+                    design=design,
+                    request=request,
+                ),
+                evidence=lambda result: (
+                    f"Codex CLI edited {len(result.final_response['changed_files'])} files in "
+                    f"{result.elapsed_seconds:.1f}s"
+                ),
+            )
+        if game_builder == "codex_cli":
+            assert codex_implementation is not None
+            context_review_report = {
+                "approved": not bool(
+                    codex_implementation.final_response["unresolved_requirements"]
+                ),
+                "summary": codex_implementation.final_response["summary"],
+                "inspected_files": codex_implementation.final_response["changed_files"],
+                "issues": [
+                    {
+                        "severity": "warning",
+                        "category": "requirement",
+                        "relative_path": "game/unity_project",
+                        "line": None,
+                        "message": item,
+                        "suggested_fix": "Pass this requirement to the Codex repair iteration.",
+                    }
+                    for item in codex_implementation.final_response["unresolved_requirements"]
+                ],
+                "provider": "codex_cli",
+                "model": os.environ.get("MAINFLOW_CODEX_MODEL", "user-default"),
+                "turns": 1,
+                "tool_calls": [],
+                "repair_applied": False,
+            }
+        elif design["generated_modules"]:
             manager.write_json(
                 state["project_id"],
                 "game",
@@ -412,7 +477,11 @@ def design_game_logic_node(
             )
 
         context_review_report: dict[str, object]
-        if design["generated_modules"]:
+        if game_builder == "codex_cli":
+            # Codex already completed this implementation-plan task above. Do not route the
+            # project through the legacy generated-module reviewer or mark the task twice.
+            pass
+        elif design["generated_modules"]:
             log("MCP로 조립된 Unity 프로젝트 문맥을 검수하고 필요한 코드를 사전 수정합니다.")
 
             def review_project_context():
@@ -591,11 +660,33 @@ def design_game_logic_node(
                 ),
             )
 
-        design, generation = development_loop.run_task(
-            "unity-playmode-validation",
-            validate_unity_project,
-            evidence=lambda _: "Unity compilation, scene assembly, and Play Mode checks passed",
-        )
+        if game_builder == "codex_cli":
+            assert codex_harness is not None
+            codex_result = development_loop.run_task(
+                "unity-playmode-validation",
+                lambda: codex_harness.validate_and_repair(
+                    project_root=generation.project_root,
+                    design=design,
+                    request=request,
+                ),
+                evidence=lambda result: (
+                    "Codex implementation passed authoritative Unity validation after "
+                    f"{len(result.repair_results)} repair iteration(s)"
+                ),
+            )
+            manager.write_json(
+                state["project_id"],
+                "validation",
+                "codex/harness_result.json",
+                codex_result.to_dict(),
+                producer="design_game_logic",
+            )
+        else:
+            design, generation = development_loop.run_task(
+                "unity-playmode-validation",
+                validate_unity_project,
+                evidence=lambda _: "Unity compilation, scene assembly, and Play Mode checks passed",
+            )
         quality_report = design.get("quality_report")
         if quality_report is not None:
             unity_generator.update_quality_report(generation.project_root, quality_report)
@@ -687,6 +778,8 @@ def design_game_logic_node(
                 f"{feature_provider} 생성 모듈: "
                 + ", ".join(module["module_id"] for module in design["generated_modules"])
             )
+        if game_builder == "codex_cli":
+            notes.append("사용자 PC의 Codex CLI Agent Harness로 전체 Unity 프로젝트 구현")
         notes.append(f"씬 Blueprint 제공자: {design['game_blueprint']['source']}")
         notes.append(
             f"개발 작업 {len(design['implementation_tasks']['tasks'])}개 실행 및 증거 기록 완료"

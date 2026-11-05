@@ -28,6 +28,12 @@ namespace TeamIdle.GameTemplate.FeatureTests
         [UnitySetUp]
         public IEnumerator SetUp()
         {
+            // GameBootstrap is intentionally DontDestroyOnLoad for a real game session. Test
+            // cases, however, reload Bootstrap.unity for every feature. Keeping the previous
+            // bootstrap alive leaves generated modules holding references to scene objects that
+            // were destroyed by the reload (for example StageGoal's BoxCollider2D).
+            yield return DestroyPersistentBootstrap();
+
             InputAdapterModule.TestInputEnabled = true;
             InputAdapterModule.TestMovement = Vector2.zero;
             InputAdapterModule.TestConfirmPressed = false;
@@ -52,7 +58,29 @@ namespace TeamIdle.GameTemplate.FeatureTests
             InputAdapterModule.TestDashPressed = false;
             Time.timeScale = 1f;
             AudioListener.volume = 1f;
+            yield return DestroyPersistentBootstrap();
+        }
+
+        private static IEnumerator DestroyPersistentBootstrap()
+        {
+            var bootstrap = GameBootstrap.Instance;
+            if (bootstrap != null)
+            {
+                // Stop child Update/FixedUpdate callbacks immediately, before their referenced
+                // scene objects can disappear at the end of this frame.
+                bootstrap.gameObject.SetActive(false);
+                Object.Destroy(bootstrap.gameObject);
+            }
+
+            // Destroy is applied at the end of the frame. Waiting twice also gives OnDestroy and
+            // module Shutdown callbacks a frame in which to release scene-object references.
             yield return null;
+            yield return null;
+            Assert.That(
+                GameBootstrap.Instance,
+                Is.Null,
+                "The previous persistent GameBootstrap must be removed between feature tests."
+            );
         }
 
         [UnityTest]

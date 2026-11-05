@@ -126,6 +126,31 @@ def test_generation_request_rejects_custom_style_without_file():
         )
 
 
+def test_generation_request_accepts_codex_cli_builder():
+    service = _load_service_module()
+    request = service.GenerationRequest(
+        mode="generate",
+        game_builder="codex_cli",
+        **_request_payload(),
+    )
+    assert request.game_builder == "codex_cli"
+
+
+def test_codex_builder_environment_disables_api_backed_planning():
+    service = _load_service_module()
+    environment = {
+        "MAINFLOW_CONDITION_FEATURE_PROVIDER": "openai",
+        "MAINFLOW_DESIGN_V2_PROVIDER": "local",
+    }
+    service._configure_game_builder_environment(environment, "codex_cli")
+    assert environment["MAINFLOW_GAME_BUILDER"] == "codex_cli"
+    assert environment["MAINFLOW_CONDITION_FEATURE_PROVIDER"] == "off"
+    assert environment["MAINFLOW_GENRE_FEATURE_PROVIDER"] == "off"
+    assert environment["MAINFLOW_DESIGN_V2_PROVIDER"] == "deterministic"
+    assert environment["MAINFLOW_BLUEPRINT_PROVIDER"] == "deterministic"
+    assert environment["MAINFLOW_CODEX_STATIC_CHECKLISTS"] == "1"
+
+
 def test_workflow_summary_extracts_failed_stage_and_features(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

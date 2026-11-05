@@ -224,6 +224,7 @@ class UploadedImage(BaseModel):
 
 class GenerationRequest(BaseModel):
     mode: Literal["generate", "test-generate"]
+    game_builder: Literal["pipeline", "codex_cli"] = "pipeline"
     image_style: str
     mood_style: str
     genre: str
@@ -257,6 +258,7 @@ class WorkflowJob:
     mode: str
     request_file: Path
     job_root: Path
+    game_builder: str = "pipeline"
     status: str = "analyzing_features"
     stage: str = "condition_feature_analysis"
     logs: list[str] = field(default_factory=list)
@@ -442,7 +444,13 @@ class WorkflowJobManager:
             request_payload["custom_image_path"] = str(custom_path)
         request_file = job_root / "request.json"
         _atomic_write_json(request_file, request_payload)
-        job = WorkflowJob(job_id, request.mode, request_file, job_root)
+        job = WorkflowJob(
+            job_id=job_id,
+            mode=request.mode,
+            request_file=request_file,
+            job_root=job_root,
+            game_builder=request.game_builder,
+        )
         with self.lock:
             self.jobs[job_id] = job
         job.append_log(f"[WEB] 작업 {job_id}의 Feature 분석을 시작합니다.")
@@ -499,7 +507,9 @@ class WorkflowJobManager:
             "--output-file",
             str(preview_path),
         ]
-        return_code = self._stream_process(job, command)
+        environment = self.settings.process_environment()
+        _configure_game_builder_environment(environment, job.game_builder)
+        return_code = self._stream_process(job, command, environment)
         if return_code != 0 or not preview_path.is_file():
             self._fail(job, "Condition → Feature 분석 프로세스가 실패했습니다.")
             return
@@ -531,6 +541,7 @@ class WorkflowJobManager:
             return
         environment = self.settings.process_environment()
         environment["MAINFLOW_APPROVED_LOGIC_ANALYSIS"] = str(approved_logic_path)
+        _configure_game_builder_environment(environment, job.game_builder)
         command = [
             sys.executable,
             "-m",
@@ -616,6 +627,17 @@ def _save_custom_image(job_root: Path, upload: UploadedImage) -> Path:
     destination = job_root / f"{stem}{suffix}"
     destination.write_bytes(content)
     return destination
+
+
+def _configure_game_builder_environment(environment: dict[str, str], game_builder: str) -> None:
+    environment["MAINFLOW_GAME_BUILDER"] = game_builder
+    if game_builder != "codex_cli":
+        return
+    environment["MAINFLOW_CONDITION_FEATURE_PROVIDER"] = "off"
+    environment["MAINFLOW_GENRE_FEATURE_PROVIDER"] = "off"
+    environment["MAINFLOW_DESIGN_V2_PROVIDER"] = "deterministic"
+    environment["MAINFLOW_BLUEPRINT_PROVIDER"] = "deterministic"
+    environment["MAINFLOW_CODEX_STATIC_CHECKLISTS"] = "1"
 
 
 def _atomic_write_json(path: Path, payload: object) -> None:

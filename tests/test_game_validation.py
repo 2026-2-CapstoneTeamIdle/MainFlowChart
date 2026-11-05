@@ -26,6 +26,8 @@ from mainflow.contracts import (
     WorkflowState,
 )
 from mainflow.langgraph_game_flow_skeleton import build_graph
+from mainflow.nodes import analysis_node, logic_analysis_node, parse_input_node, user_input_node
+from mainflow.nodes.design_game_logic import design_game_logic_node
 from mainflow.nodes.validate_game import validate_game_node
 
 
@@ -285,6 +287,66 @@ class ValidateGameNodeTest(unittest.TestCase):
 
 
 class GameFailureIsolationTest(unittest.TestCase):
+    def test_codex_builder_does_not_complete_context_review_twice(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory) / "workspace"
+            harness = MagicMock()
+            implementation = MagicMock()
+            implementation.elapsed_seconds = 1.0
+            implementation.final_response = {
+                "summary": "implemented",
+                "changed_files": ["Assets/Game.cs"],
+                "unresolved_requirements": [],
+            }
+            harness.implement_project.return_value = implementation
+            validation = MagicMock()
+            validation.repair_results = []
+            validation.to_dict.return_value = {
+                "provider": "codex_cli",
+                "validation_attempts": [{"status": "passed"}],
+            }
+            harness.validate_and_repair.return_value = validation
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "MAINFLOW_WORKSPACE": str(workspace),
+                        "MAINFLOW_GAME_BUILDER": "codex_cli",
+                        "MAINFLOW_CONDITION_FEATURE_PROVIDER": "off",
+                        "MAINFLOW_GENRE_FEATURE_PROVIDER": "off",
+                        "MAINFLOW_DESIGN_V2_PROVIDER": "deterministic",
+                        "MAINFLOW_BLUEPRINT_PROVIDER": "deterministic",
+                    },
+                ),
+                patch(
+                    "mainflow.nodes.design_game_logic.CodexHarnessSettings.from_environment",
+                    return_value=MagicMock(),
+                ),
+                patch(
+                    "mainflow.nodes.design_game_logic.CodexGameHarness",
+                    return_value=harness,
+                ),
+            ):
+                state = cast(
+                    WorkflowState,
+                    {
+                        "image_style": "Pixel Art",
+                        "mood_style": "Fantasy",
+                        "genre": "플랫포머",
+                        "viewpoint": "사이드뷰",
+                        "condition": "시간을 되돌려 발판을 통과한 뒤 목적지에 도달한다.",
+                    },
+                )
+                for node in (user_input_node, parse_input_node, analysis_node, logic_analysis_node):
+                    state.update(node(state))
+                state.update(design_game_logic_node(state))
+
+                draft = ArtifactManager().read_json(state["game_logic_draft"])
+
+            self.assertEqual(draft["status"], "generated")
+            harness.implement_project.assert_called_once()
+            harness.validate_and_repair.assert_called_once()
+
     def test_one_generated_feature_failure_does_not_skip_later_features(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             workspace = Path(temporary_directory) / "workspace"

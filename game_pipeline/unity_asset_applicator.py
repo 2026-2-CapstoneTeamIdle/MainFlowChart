@@ -7,7 +7,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
@@ -31,6 +31,7 @@ class UnityAssetApplicationResult:
     manifest_path: Path
     applied_image_asset_ids: list[str]
     applied_sound_asset_ids: list[str]
+    suppressed_placeholder_image_asset_ids: list[str]
 
 
 class UnityAssetApplicator:
@@ -41,8 +42,8 @@ class UnityAssetApplicator:
     MANIFEST_PATH = Path("Assets/GameTemplate/Generated/AssetBindingManifest.json")
     REBUILD_REQUEST_PATH = Path("Assets/GameTemplate/Generated/GenerationRequest.json")
     _SAFE_ID = re.compile(r"[^A-Za-z0-9_.-]+")
-    _IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "tga", "psd"}
-    _SOUND_EXTENSIONS = {"wav", "ogg", "mp3", "aiff", "aif"}
+    _IMAGE_EXTENSIONS: ClassVar[set[str]] = {"png", "jpg", "jpeg", "tga", "psd"}
+    _SOUND_EXTENSIONS: ClassVar[set[str]] = {"wav", "ogg", "mp3", "aiff", "aif"}
 
     def __init__(self, manager: ArtifactManager) -> None:
         self.manager = manager
@@ -58,6 +59,7 @@ class UnityAssetApplicator:
         sound_validation: SoundValidationResult,
         *,
         include_unvalidated_drafts: bool = False,
+        exclude_placeholder_images: bool = False,
     ) -> UnityAssetApplicationResult:
         project_root = self.manager.resolve_project_path(project_id, self.UNITY_PROJECT_ROOT)
         if not (project_root / "ProjectSettings/ProjectVersion.txt").is_file():
@@ -65,13 +67,24 @@ class UnityAssetApplicator:
 
         entries: list[AssetBindingEntry] = []
         warnings: list[str] = []
-        image_assets, image_ids = self._application_selection(
-            "image",
-            image_draft,
-            image_validation,
-            include_unvalidated_drafts,
-            warnings,
-        )
+        suppressed_placeholder_image_ids: set[str] = set()
+        if exclude_placeholder_images and "generator=placeholder" in image_draft["notes"]:
+            image_assets, image_ids = [], set()
+            suppressed_placeholder_image_ids = {
+                str(asset["asset_id"]) for asset in image_draft["assets"]
+            }
+            warnings.append(
+                "Placeholder image assets were intentionally not applied; Unity keeps its "
+                "clean primitive visuals until a real image backend is configured."
+            )
+        else:
+            image_assets, image_ids = self._application_selection(
+                "image",
+                image_draft,
+                image_validation,
+                include_unvalidated_drafts,
+                warnings,
+            )
         sound_assets, sound_ids = self._application_selection(
             "sound",
             sound_draft,
@@ -106,7 +119,10 @@ class UnityAssetApplicator:
             if item["required"]
         ]
         missing_required = sorted(
-            item["asset_id"] for item in required_items if item["asset_id"] not in applied_ids
+            item["asset_id"]
+            for item in required_items
+            if item["asset_id"] not in applied_ids
+            and item["asset_id"] not in suppressed_placeholder_image_ids
         )
         if missing_required:
             warnings.append("Required assets not applied: " + ", ".join(missing_required))
@@ -117,6 +133,7 @@ class UnityAssetApplicator:
             "image_style": image_request["image_style"],
             "entries": sorted(entries, key=lambda item: (item["asset_type"], item["asset_id"])),
             "missing_required_asset_ids": missing_required,
+            "suppressed_placeholder_image_asset_ids": sorted(suppressed_placeholder_image_ids),
             "warnings": warnings,
         }
         manifest_relative = self.UNITY_PROJECT_ROOT / self.MANIFEST_PATH
@@ -148,6 +165,7 @@ class UnityAssetApplicator:
             manifest_path=manifest_path,
             applied_image_asset_ids=applied_images,
             applied_sound_asset_ids=applied_sounds,
+            suppressed_placeholder_image_asset_ids=sorted(suppressed_placeholder_image_ids),
         )
 
     @classmethod

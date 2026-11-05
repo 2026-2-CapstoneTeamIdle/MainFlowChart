@@ -229,6 +229,21 @@ class FinalValidationTest(unittest.TestCase):
             next(c for c in result["checks"] if c["criterion_id"] == "sound-mood")["passed"]
         )
 
+    def test_procedural_sound_waives_provider_dependent_mood_evidence(self):
+        payload = self.manager.read_json(self.state["sound_validation_result"])
+        payload["checks"] = []
+        payload["fallback_asset_ids"] = ["jump"]
+        self.put("sound_validation_result", payload)
+
+        result = self.run_final()
+
+        self.assertEqual(result["status"], "passed")
+        sound_mood = next(
+            check for check in result["checks"] if check["criterion_id"] == "sound-mood"
+        )
+        self.assertTrue(sound_mood["passed"])
+        self.assertIn("no real asset provider", sound_mood["message"])
+
     def test_required_asset_missing_fails(self):
         payload = self.manager.read_json(self.state["game_logic_draft"])
         payload["required_image_asset_ids"] = ["missing"]

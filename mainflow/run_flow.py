@@ -36,6 +36,22 @@ def configure_console_encoding() -> None:
             reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
+def configure_game_builder_environment(game_builder: str | None) -> None:
+    if game_builder is None:
+        return
+    normalized = game_builder.replace("-", "_")
+    os.environ["MAINFLOW_GAME_BUILDER"] = normalized
+    if normalized != "codex_cli":
+        return
+    # The Codex harness reads project files directly. Keep preliminary contracts deterministic so
+    # this mode never silently falls back to LocalAI or an API-key-backed provider.
+    os.environ["MAINFLOW_CONDITION_FEATURE_PROVIDER"] = "off"
+    os.environ["MAINFLOW_GENRE_FEATURE_PROVIDER"] = "off"
+    os.environ["MAINFLOW_DESIGN_V2_PROVIDER"] = "deterministic"
+    os.environ["MAINFLOW_BLUEPRINT_PROVIDER"] = "deterministic"
+    os.environ["MAINFLOW_CODEX_STATIC_CHECKLISTS"] = "1"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run MainFlowChart without a desktop GUI.",
@@ -50,6 +66,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--genre", choices=GAME_GENRES)
     parser.add_argument("--viewpoint", choices=VIEWPOINTS)
     parser.add_argument("--condition")
+    parser.add_argument(
+        "--game-builder",
+        choices=("pipeline", "codex-cli"),
+        help=(
+            "Select the existing per-feature generation pipeline or let the installed Codex CLI "
+            "implement the whole generated Unity project."
+        ),
+    )
     parser.add_argument(
         "--custom-image",
         type=Path,
@@ -154,6 +178,9 @@ def main() -> int:
         parser.error("--game-test cannot be combined with --skip-visual-validation")
     if arguments.workspace:
         os.environ["MAINFLOW_WORKSPACE"] = str(arguments.workspace.resolve())
+    configure_game_builder_environment(
+        arguments.game_builder or os.environ.get("MAINFLOW_GAME_BUILDER")
+    )
     if arguments.game_test:
         os.environ["MAINFLOW_VISUAL_VALIDATION"] = "1"
     elif arguments.visual_validation is not None:

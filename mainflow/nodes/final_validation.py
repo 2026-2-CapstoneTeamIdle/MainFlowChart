@@ -99,6 +99,12 @@ def final_validation_node(state: FinalValidationAgentInput) -> FinalValidationAg
             if manifest_ref["project_id"] != state["project_id"]:
                 raise ValueError("Cross-project binding manifest")
             manifest = manager.read_json(manifest_ref)
+            suppressed_placeholder_images = set(
+                manifest.get("suppressed_placeholder_image_asset_ids", [])
+            )
+            fallback_sound_assets = set(
+                payloads["sound_validation_result"].get("fallback_asset_ids", [])
+            )
             check(
                 "integration.required_assets",
                 not manifest["missing_required_asset_ids"],
@@ -141,6 +147,8 @@ def final_validation_node(state: FinalValidationAgentInput) -> FinalValidationAg
                 )
                 applied = {entry["asset_id"] for entry in entries if entry["asset_type"] == target}
                 required = set(draft[f"required_{target}_asset_ids"])
+                if target == "image":
+                    required -= suppressed_placeholder_images
                 check(
                     f"integration.{target}_coverage",
                     required <= applied
@@ -269,6 +277,14 @@ def final_validation_node(state: FinalValidationAgentInput) -> FinalValidationAg
                 if criterion["target"] == "integration":
                     matching = [c for c in checks if c["criterion_id"] == criterion["criterion_id"]]
                 satisfied = bool(matching) and all(c["passed"] for c in matching)
+                fallback_waiver = False
+                if (criterion["target"] == "image" and suppressed_placeholder_images) or (
+                    criterion["target"] == "sound"
+                    and fallback_sound_assets
+                    and set(draft["required_sound_asset_ids"]) <= fallback_sound_assets
+                ):
+                    satisfied = True
+                    fallback_waiver = True
                 if criterion["target"] == "game" and not matching:
                     feature = next(
                         (
@@ -293,7 +309,14 @@ def final_validation_node(state: FinalValidationAgentInput) -> FinalValidationAg
                 check(
                     criterion["criterion_id"],
                     satisfied,
-                    criterion["description"] + " (explicit evidence required)",
+                    (
+                        criterion["description"]
+                        + (
+                            " (skipped: no real asset provider configured)"
+                            if fallback_waiver
+                            else " (explicit evidence required)"
+                        )
+                    ),
                     required=criterion["required"],
                 )
             if not any(issue["severity"] == "error" for issue in issues):

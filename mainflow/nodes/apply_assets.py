@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import cast
 
 from game_pipeline import UnityAssetApplicator, UnityProjectGenerator
@@ -14,7 +15,6 @@ from mainflow.contracts import (
     GameLogicDraft,
     ImageDraft,
     ImageValidationResult,
-    IntegratedGame,
     SoundDraft,
     SoundValidationResult,
 )
@@ -62,6 +62,11 @@ def apply_assets_to_game_node(
     # 사운드 파일은 sound_draft.assets[].artifact로 찾는다. 요청서의 suggested_filename은
     # 항상 .wav지만 ELEVENLABS_OUTPUT_FORMAT=mp3_*이면 실제 파일은 .mp3다.
     game_failed = game_draft["status"] == "failed"
+    exclude_placeholder_images = os.environ.get(
+        "MAINFLOW_GAME_BUILDER", "pipeline"
+    ).strip().lower() in {"codex", "codex-cli", "codex_cli"}
+    if exclude_placeholder_images and "generator=placeholder" in image_draft["notes"]:
+        log("  - 실제 이미지 백엔드가 없어 placeholder 이미지는 Unity에 적용하지 않습니다.")
     try:
         application = UnityAssetApplicator(manager).apply(
             state["project_id"],
@@ -72,6 +77,7 @@ def apply_assets_to_game_node(
             image_validation,
             sound_validation,
             include_unvalidated_drafts=game_failed,
+            exclude_placeholder_images=exclude_placeholder_images,
         )
         manifest_reference = manager.write_json(
             state["project_id"],
@@ -114,9 +120,12 @@ def apply_assets_to_game_node(
             "asset_binding_manifest": manifest_reference,
             "applied_image_asset_ids": application.applied_image_asset_ids,
             "applied_sound_asset_ids": application.applied_sound_asset_ids,
+            "suppressed_placeholder_image_asset_ids": (
+                application.suppressed_placeholder_image_asset_ids
+            ),
             "notes": notes,
         }
-    except Exception as error:  # noqa: BLE001 - preserve downstream workflow isolation
+    except Exception as error:
         if not game_failed:
             raise
         integrated_game = {
@@ -126,9 +135,12 @@ def apply_assets_to_game_node(
             "game_artifacts": [],
             "applied_image_asset_ids": [],
             "applied_sound_asset_ids": [],
+            "suppressed_placeholder_image_asset_ids": [],
             "notes": [
-                "게임 생성 실패 후 진단용 Unity 프로젝트에도 에셋을 적용하지 못함: "
-                f"{type(error).__name__}: {error}"
+                (
+                    "게임 생성 실패 후 진단용 Unity 프로젝트에도 에셋을 적용하지 못함: "
+                    f"{type(error).__name__}: {error}"
+                )
             ],
         }
     return {

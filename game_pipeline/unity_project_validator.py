@@ -696,6 +696,10 @@ class UnityProjectValidator:
 
         tokens = (
             "error CS",
+            "another Unity instance is running",
+            "project already open in another instance",
+            "HandleProjectAlreadyOpenInAnotherInstance",
+            "No valid Unity Editor license found",
             "ArgumentException:",
             "InvalidOperationException:",
             "NullReferenceException:",

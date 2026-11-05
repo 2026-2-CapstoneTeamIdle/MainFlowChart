@@ -112,6 +112,23 @@ class GameQualityTest(unittest.TestCase):
         self.assertEqual(classify_failure(compile_error)["target"], "code")
         self.assertEqual(classify_failure(editor_binding_error)["target"], "binding")
 
+    def test_classifies_project_lock_as_infrastructure(self) -> None:
+        locked = UnityValidationOutcome(
+            issues=[
+                {
+                    "code": "UNITY_BATCH_VALIDATION_FAILED",
+                    "severity": "error",
+                    "message": "exit=1073741845, missing=UNITY_TEMPLATE_BUILD_OK",
+                }
+            ],
+            unity_log=(
+                "It looks like another Unity instance is running with this project open.\n"
+                "HandleProjectAlreadyOpenInAnotherInstance"
+            ),
+        )
+
+        self.assertEqual(classify_failure(locked)["target"], "infrastructure")
+
     def test_runtime_no_progress_bridges_gap_near_stopped_player(self) -> None:
         design = build_game_logic_design(normalize_game_spec("플랫포머"))
         platforms = sorted(

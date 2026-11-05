@@ -58,6 +58,9 @@ namespace TeamIdle.GameTemplate.Editor
         private static PrototypeHazard hazard;
         private static PrototypeGoal goalActor;
         private static float healthBeforeHazard;
+        private static bool hazardContactStarted;
+        private static bool hazardDamageObserved;
+        private static float hazardTestStartedAt;
         private static readonly HashSet<string> PassedScenarios = new(StringComparer.Ordinal);
         private static readonly PlaytestMetrics Metrics = new();
         private static float runStartedAt;
@@ -113,6 +116,9 @@ namespace TeamIdle.GameTemplate.Editor
             playerHealth = null;
             collectibles = Array.Empty<PrototypeCollectible>();
             collectibleIndex = 0;
+            hazardContactStarted = false;
+            hazardDamageObserved = false;
+            hazardTestStartedAt = 0f;
             PassedScenarios.Clear();
             Metrics.completed = false;
             Metrics.elapsed_seconds = 0f;
@@ -705,8 +711,22 @@ namespace TeamIdle.GameTemplate.Editor
             routeTimeoutSeconds = Mathf.Clamp(routeDistance / 3f + 10f, 12f, 60f);
             routeLastProgressAt = Time.timeSinceLevelLoad;
             RouteObstacleXs.Clear();
+            var firstPlatform = true;
             foreach (var zone in levelPlan.zones)
             {
+                foreach (var platform in zone.platforms)
+                {
+                    if (!firstPlatform)
+                    {
+                        // Platform edges and upward steps are traversal obstacles too. The old
+                        // smoke runner only anticipated hazards and enemies, so it could walk
+                        // directly into the vertical face of a higher landing and remain stuck.
+                        RouteObstacleXs.Add(platform.x - platform.width * 0.5f);
+                    }
+
+                    firstPlatform = false;
+                }
+
                 foreach (var hazardPlan in zone.hazards)
                 {
                     RouteObstacleXs.Add(hazardPlan.x);
@@ -739,7 +759,7 @@ namespace TeamIdle.GameTemplate.Editor
             foreach (var obstacleX in RouteObstacleXs)
             {
                 var distance = obstacleX - position.x;
-                if (distance >= 0f && distance < 3f && playerBody.linearVelocity.y < 1f)
+                if (distance >= 0f && distance < 2f && playerBody.linearVelocity.y < 1f)
                 {
                     playerBody.linearVelocity = new Vector2(playerBody.linearVelocity.x, 12f);
                     break;
@@ -933,7 +953,22 @@ namespace TeamIdle.GameTemplate.Editor
             traversalPhase = 12;
             playerHealth.SetMaximum(playerHealth.Maximum);
             healthBeforeHazard = playerHealth.Current;
-            TeleportPlayer(hazard.transform.position);
+            hazardContactStarted = false;
+            hazardDamageObserved = false;
+            hazardTestStartedAt = Time.timeSinceLevelLoad;
+            playerHealth.Changed -= OnHazardHealthChanged;
+            playerHealth.Changed += OnHazardHealthChanged;
+            phaseStartedAt = Time.timeSinceLevelLoad;
+        }
+
+        private static void OnHazardHealthChanged(float current, float maximum)
+        {
+            // A lethal hit may synchronously recover and refill health before the next validator
+            // tick. Preserve the transient decrease instead of sampling only the final value.
+            if (current < healthBeforeHazard || current < maximum)
+            {
+                hazardDamageObserved = true;
+            }
         }
 
         private static void BeginGoalTest()
@@ -982,11 +1017,51 @@ namespace TeamIdle.GameTemplate.Editor
 
             if (traversalPhase == 12)
             {
-                if (playerHealth.Current >= healthBeforeHazard)
+                if (hazardDamageObserved)
                 {
+                    playerHealth.Changed -= OnHazardHealthChanged;
+                    // Contact damage and death recovery are separate requirements. A normal
+                    // hazard may deal only one point, so force the remaining health to zero after
+                    // proving contact damage, then verify checkpoint recovery independently.
+                    if (
+                        playerHealth.IsAlive
+                        && Vector3.Distance(
+                            player.transform.position,
+                            stageController.CurrentCheckpoint
+                        ) > 0.75f
+                    )
+                    {
+                        playerHealth.Damage(playerHealth.Current);
+                    }
+                    traversalPhase = 14;
+                    phaseStartedAt = Time.timeSinceLevelLoad;
+                    return;
+                }
+
+                if (Time.timeSinceLevelLoad - hazardTestStartedAt >= 6f)
+                {
+                    playerHealth.Changed -= OnHazardHealthChanged;
                     Finish(false, "runtime.hazard_damage: player health did not decrease");
                     return;
                 }
+
+                if (!hazardContactStarted)
+                {
+                    healthBeforeHazard = playerHealth.Current;
+                    hazardContactStarted = true;
+                    TeleportPlayer(hazard.transform.position);
+                    return;
+                }
+
+                // Invulnerability or an active dash may legitimately reject this trigger entry.
+                // Move out before retrying so the next contact produces a fresh OnTriggerEnter2D.
+                hazardContactStarted = false;
+                TeleportPlayer(hazard.transform.position + Vector3.up * 4f);
+                return;
+            }
+
+            if (traversalPhase == 14)
+            {
                 Metrics.deaths++;
                 if (
                     Vector3.Distance(player.transform.position, stageController.CurrentCheckpoint)
@@ -1101,6 +1176,8 @@ namespace TeamIdle.GameTemplate.Editor
             SessionState.SetBool(Active, false);
             InputAdapterModule.TestInputEnabled = false;
             InputAdapterModule.TestDashPressed = false;
+            if (playerHealth != null)
+                playerHealth.Changed -= OnHazardHealthChanged;
             if (testWall != null)
                 UnityEngine.Object.Destroy(testWall);
             EditorApplication.update -= Tick;

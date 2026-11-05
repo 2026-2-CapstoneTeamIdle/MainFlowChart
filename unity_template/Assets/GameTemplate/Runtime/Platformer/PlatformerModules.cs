@@ -27,8 +27,19 @@ namespace TeamIdle.GameTemplate.Platformer
         [SerializeField]
         private float jumpBufferSeconds = 0.15f;
 
+        [SerializeField]
+        private float coyoteTimeSeconds = 0.2f;
+
+        [SerializeField]
+        private float blockedSpeedThreshold = 0.1f;
+
+        [SerializeField]
+        private float forwardObstacleDistance = 0.55f;
+
         private InputAdapterModule input;
         private float jumpQueuedUntil = float.NegativeInfinity;
+        private float groundedUntil = float.NegativeInfinity;
+        private bool blockedJumpAvailable;
 
         public override string ModuleId => "platformer_movement";
 
@@ -69,15 +80,53 @@ namespace TeamIdle.GameTemplate.Platformer
                 return;
             }
 
+            var movementX = input.Movement.x;
             var velocity = target.linearVelocity;
-            velocity.x = input.Movement.x * moveSpeed;
+            var wasBlocked =
+                Mathf.Abs(movementX) > 0.1f && Mathf.Abs(velocity.x) <= blockedSpeedThreshold;
+            velocity.x = movementX * moveSpeed;
             target.linearVelocity = velocity;
 
-            if (Time.time <= jumpQueuedUntil && IsGrounded())
+            if (IsGrounded())
+            {
+                groundedUntil = Time.time + coyoteTimeSeconds;
+                blockedJumpAvailable = true;
+            }
+
+            var bufferedJump = Time.time <= jumpQueuedUntil;
+            var canUseGroundJump = Time.time <= groundedUntil;
+            var canUseBlockedJump =
+                blockedJumpAvailable && wasBlocked && HasForwardObstacle(movementX);
+            if (bufferedJump && (canUseGroundJump || canUseBlockedJump))
             {
                 target.linearVelocity = new Vector2(target.linearVelocity.x, jumpVelocity);
                 jumpQueuedUntil = float.NegativeInfinity;
+                groundedUntil = float.NegativeInfinity;
+                blockedJumpAvailable = false;
             }
+        }
+
+        private bool HasForwardObstacle(float movementX)
+        {
+            if (Mathf.Abs(movementX) <= 0.1f)
+            {
+                return false;
+            }
+
+            var direction = movementX > 0f ? Vector2.right : Vector2.left;
+            foreach (
+                var hit in Physics2D.RaycastAll(target.position, direction, forwardObstacleDistance)
+            )
+            {
+                if (hit.collider == null || hit.collider.isTrigger || hit.rigidbody == target)
+                {
+                    continue;
+                }
+
+                return true;
+            }
+
+            return false;
         }
 
         private bool IsGrounded()

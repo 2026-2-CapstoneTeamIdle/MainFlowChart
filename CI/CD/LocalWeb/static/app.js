@@ -135,6 +135,7 @@ async function startJob(mode) {
     const form = new FormData(requestForm);
     const payload = {
       mode,
+      game_builder: form.get("game_builder"),
       image_style: form.get("image_style"), mood_style: form.get("mood_style"),
       genre: form.get("genre"), viewpoint: form.get("viewpoint"),
       condition: form.get("condition"),
