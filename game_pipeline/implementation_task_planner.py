@@ -12,8 +12,8 @@ def build_implementation_tasks(
     *,
     time_budget_seconds: int = 1_800,
 ) -> ImplementationTaskPlan:
-    if not 60 <= time_budget_seconds <= 3_600:
-        raise ValueError("Game development time budget must be between 60 and 3600 seconds")
+    if not 60 <= time_budget_seconds <= 21_600:
+        raise ValueError("Game development time budget must be between 60 and 21600 seconds")
 
     tasks: list[ImplementationTask] = [
         _task(

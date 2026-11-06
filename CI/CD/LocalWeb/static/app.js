@@ -11,6 +11,8 @@ const workflowLog = document.querySelector("#workflow-log");
 const phaseBadge = document.querySelector("#phase-badge");
 const jobState = document.querySelector("#job-state");
 const toast = document.querySelector("#toast");
+const openUnityButton = document.querySelector("#open-unity-button");
+const stopButton = document.querySelector("#stop-button");
 
 const providerLabels = { local: "LocalAI", openai: "OpenAI API", gemini: "Gemini API", vastai: "Vast.ai", placeholder: "Placeholder", procedural: "Procedural", elevenlabs: "ElevenLabs API" };
 let currentJobId = null;
@@ -135,6 +137,7 @@ async function startJob(mode) {
     const form = new FormData(requestForm);
     const payload = {
       mode,
+      game_builder: form.get("game_builder"),
       image_style: form.get("image_style"), mood_style: form.get("mood_style"),
       genre: form.get("genre"), viewpoint: form.get("viewpoint"),
       condition: form.get("condition"),
@@ -164,7 +167,7 @@ async function refreshJob() {
   try {
     const job = await api(`/api/jobs/${currentJobId}`);
     renderJob(job);
-    if (["completed", "failed"].includes(job.status)) window.clearInterval(pollTimer);
+    if (["completed", "failed", "cancelled"].includes(job.status)) window.clearInterval(pollTimer);
   } catch (error) {
     window.clearInterval(pollTimer);
     showToast(error.message, true);
@@ -174,7 +177,8 @@ async function refreshJob() {
 function renderJob(job) {
   const stateLabels = {
     analyzing_features: "Feature 분석 중", awaiting_confirmation: "사용자 승인 대기",
-    running: "게임 생성 중", completed: "완료", failed: "실패",
+    running: "게임 생성 중", cancelling: "중단 중", cancelled: "취소됨",
+    completed: "완료", failed: "실패",
   };
   const label = stateLabels[job.status] || job.status;
   jobState.textContent = label;
@@ -187,10 +191,43 @@ function renderJob(job) {
   } else {
     featurePanel.classList.add("is-hidden");
   }
-  setRunButtons(!["completed", "failed"].includes(job.status));
+  const active = ["analyzing_features", "awaiting_confirmation", "running", "cancelling"].includes(job.status);
+  setRunButtons(active);
+  stopButton.classList.toggle("is-hidden", !active);
+  stopButton.disabled = job.status === "cancelling";
   document.querySelector("#confirm-button").disabled = job.status !== "awaiting_confirmation";
   document.querySelector("#reject-button").disabled = job.status !== "awaiting_confirmation";
+  const canOpenUnity = ["completed", "failed"].includes(job.status) && Boolean(job.project_id);
+  openUnityButton.classList.toggle("is-hidden", !canOpenUnity);
+  openUnityButton.disabled = !canOpenUnity;
   if (job.status === "failed" && job.error) showToast(job.error, true);
+}
+
+async function stopJob() {
+  if (!currentJobId) return;
+  stopButton.disabled = true;
+  try {
+    const job = await api(`/api/jobs/${currentJobId}/cancel`, { method: "POST", body: "{}" });
+    renderJob(job);
+    window.clearInterval(pollTimer);
+    showToast("작업을 중단했습니다.");
+  } catch (error) {
+    stopButton.disabled = false;
+    showToast(error.message, true);
+  }
+}
+
+async function openUnityEditor() {
+  if (!currentJobId) return;
+  openUnityButton.disabled = true;
+  try {
+    await api(`/api/jobs/${currentJobId}/open-unity`, { method: "POST", body: "{}" });
+    showToast("Unity Editor를 열었습니다.");
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    openUnityButton.disabled = false;
+  }
 }
 
 function renderFeatures(features) {
@@ -254,4 +291,6 @@ document.querySelector("#generate-button").addEventListener("click", () => start
 document.querySelector("#test-generate-button").addEventListener("click", () => startJob("test-generate"));
 document.querySelector("#confirm-button").addEventListener("click", () => decide("confirm"));
 document.querySelector("#reject-button").addEventListener("click", () => decide("reject"));
+openUnityButton.addEventListener("click", openUnityEditor);
+stopButton.addEventListener("click", stopJob);
 initialize();

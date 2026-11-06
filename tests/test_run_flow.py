@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -111,6 +112,39 @@ class RunFlowExitTest(unittest.TestCase):
             self.assertEqual(buffer.getvalue().decode("utf-8").splitlines(), ["한글 — Unicode"])
         finally:
             stream.close_without_closing_buffer()
+
+    def test_game_builder_cli_option_sets_codex_harness_environment(self):
+        state = {
+            key: key
+            for key in (
+                "project_id",
+                "game_validation_result",
+                "image_draft",
+                "sound_draft",
+                "final_validation_result",
+                "game_validator_ai_result",
+            )
+        }
+        manager = MagicMock()
+        manager.read_json.side_effect = [
+            {"status": "passed"},
+            {},
+            {},
+            {"status": "passed"},
+            {"status": "passed"},
+        ]
+        with (
+            patch("mainflow.run_flow.load_request", return_value={}),
+            patch("mainflow.run_flow.build_graph") as graph,
+            patch("mainflow.run_flow.ArtifactManager", return_value=manager),
+            patch("sys.argv", ["mainflow", "--game-builder", "codex-cli"]),
+            patch("sys.stdout", new_callable=io.StringIO),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            graph.return_value.invoke.return_value = state
+            manager.ensure_project.return_value = "workspace/test"
+            self.assertEqual(main(), 0)
+            self.assertEqual(os.environ["MAINFLOW_GAME_BUILDER"], "codex_cli")
 
     def test_quiet_result_writes_full_json_without_printing_it(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

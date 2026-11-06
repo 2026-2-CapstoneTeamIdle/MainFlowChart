@@ -4,6 +4,18 @@ from game_pipeline.blueprint_planner import (
     GameBlueprintPlanner,
     create_blueprint_planner_from_environment,
 )
+from game_pipeline.claude_code import (
+    ClaudeCodeGameHarness,
+    ClaudeCodeHarnessSettings,
+    run_claude_code_quality_review,
+)
+from game_pipeline.codex_cli import (
+    CodexGameHarness,
+    CodexHarnessSettings,
+    run_codex_quality_review,
+)
+from game_pipeline.codex_cli.config import resolve_game_builder
+from game_pipeline.codex_cli.harness import prepare_design_for_codex
 from game_pipeline.design_catalog import build_game_logic_design, normalize_game_spec
 from game_pipeline.design_v2 import build_design_v2, validate_design_v2
 from game_pipeline.design_v2_planner import (
@@ -55,6 +67,10 @@ from game_pipeline.unity_project_validator import (
 )
 
 __all__ = [
+    "ClaudeCodeGameHarness",
+    "ClaudeCodeHarnessSettings",
+    "CodexGameHarness",
+    "CodexHarnessSettings",
     "FeatureMechanicPlan",
     "GameBlueprintPlanner",
     "GameDevelopmentLoop",
@@ -90,8 +106,12 @@ __all__ = [
     "create_project_context_reviewer_from_environment",
     "normalize_game_spec",
     "plan_feature_mechanics",
+    "prepare_design_for_codex",
     "resolve_feature_provider_from_environment",
+    "resolve_game_builder",
     "retrieve_prompt_api_contract",
     "review_feedback",
+    "run_claude_code_quality_review",
+    "run_codex_quality_review",
     "validate_design_v2",
 ]

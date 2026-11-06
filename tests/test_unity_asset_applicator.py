@@ -223,6 +223,35 @@ class UnityAssetApplicatorTest(unittest.TestCase):
             {"player_sprite", "survivor_bgm"},
         )
 
+        placeholder_draft = cast(
+            ImageDraft,
+            {**image_draft, "notes": ["generator=placeholder"]},
+        )
+        placeholder_result = UnityAssetApplicator(self.manager).apply(
+            self.project_id,
+            image_request,
+            sound_request,
+            placeholder_draft,
+            sound_draft,
+            image_validation,
+            sound_validation,
+            exclude_placeholder_images=True,
+        )
+        self.assertEqual(placeholder_result.applied_image_asset_ids, [])
+        self.assertEqual(
+            placeholder_result.suppressed_placeholder_image_asset_ids,
+            ["enemy_sprite", "player_sprite"],
+        )
+        self.assertEqual(placeholder_result.manifest["missing_required_asset_ids"], [])
+        self.assertNotIn(
+            "player_sprite",
+            {entry["asset_id"] for entry in placeholder_result.manifest["entries"]},
+        )
+        self.assertIn(
+            "Placeholder image assets",
+            " ".join(placeholder_result.manifest["warnings"]),
+        )
+
     @staticmethod
     def _image_item(asset_id: str, required: bool) -> dict[str, object]:
         return {

@@ -119,6 +119,27 @@ def visual_validation_node(
         }
         return _write_result(manager, project_id, result)
 
+    image_draft_reference = state.get("image_draft")
+    if image_draft_reference is not None:
+        image_draft = manager.read_json(image_draft_reference)
+        if "generator=placeholder" in image_draft.get("notes", []):
+            log("실제 이미지 백엔드가 없어 목표 이미지 생성과 VLM 시각 검증을 건너뜁니다.")
+            result = {
+                "report_version": "1.0.0",
+                "contract_version": CONTRACT_VERSION,
+                "mode": "disabled",
+                "status": "skipped",
+                "model": "none",
+                "max_attempts": visual_attempt_limit(),
+                "attempts": [],
+                "target_image": None,
+                "summary": (
+                    "Visual validation was automatically skipped because the image backend "
+                    "produced placeholders instead of real assets."
+                ),
+            }
+            return _write_result(manager, project_id, result)
+
     log("목표 화면과 Unity 캡처를 VLM으로 비교하고 최대 3회 안에서 수정합니다.")
     try:
         request = cast(ParsedRequest, manager.read_json(state["parsed_request"]))

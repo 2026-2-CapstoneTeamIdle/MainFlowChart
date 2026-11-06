@@ -202,6 +202,17 @@ class ValidateSoundNodeTest(unittest.TestCase):
         )
         self.assertTrue(all(check["passed"] for check in result["checks"]))
 
+    def test_procedural_fallback_passes_technical_validation(self):
+        result, profile = self.run_node(
+            [("bgm", impact(), "procedural")],
+            [item("bgm", "배경 음악", "배경 음악")],
+        )
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["validated_asset_ids"], ["bgm"])
+        self.assertEqual(result["fallback_asset_ids"], ["bgm"])
+        self.assertNotIn("sound-not-placeholder", profile["assets"][0]["failed"])
+
     def test_missing_required_asset_fails(self):
         result, _ = self.run_node(
             [("hit", impact(), "elevenlabs")],

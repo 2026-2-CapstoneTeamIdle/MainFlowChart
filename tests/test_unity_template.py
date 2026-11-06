@@ -12,6 +12,16 @@ TEMPLATE_ROOT = REPOSITORY_ROOT / "unity_template"
 
 
 class UnityTemplateTest(unittest.TestCase):
+    def test_feature_checklist_resets_persistent_bootstrap_between_tests(self) -> None:
+        checklist_tests = (
+            TEMPLATE_ROOT / "Assets/Tests/PlayMode/FeatureChecklistTests.cs"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("yield return DestroyPersistentBootstrap();", checklist_tests)
+        self.assertIn("bootstrap.gameObject.SetActive(false);", checklist_tests)
+        self.assertIn("Object.Destroy(bootstrap.gameObject);", checklist_tests)
+        self.assertIn("GameBootstrap.Instance", checklist_tests)
+
     def test_template_metadata_matches_pipeline_contract(self) -> None:
         metadata = json.loads((TEMPLATE_ROOT / "template.json").read_text(encoding="utf-8"))
 
@@ -80,6 +90,9 @@ class UnityTemplateTest(unittest.TestCase):
         runtime_smoke = (
             TEMPLATE_ROOT / "Assets/GameTemplate/Editor/RuntimeSmokeValidator.cs"
         ).read_text(encoding="utf-8")
+        platformer_movement = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Runtime/Platformer/PlatformerModules.cs"
+        ).read_text(encoding="utf-8")
         level_plan = (TEMPLATE_ROOT / "Assets/GameTemplate/Editor/LevelPlan.cs").read_text(
             encoding="utf-8"
         )
@@ -126,7 +139,16 @@ class UnityTemplateTest(unittest.TestCase):
         self.assertIn("routeTimeoutSeconds", runtime_smoke)
         self.assertIn("routeDistance / 3f + 10f", runtime_smoke)
         self.assertIn("runtime.route_no_progress", runtime_smoke)
+        self.assertIn("hazardContactStarted", runtime_smoke)
+        self.assertIn("hazardDamageObserved", runtime_smoke)
+        self.assertIn("playerHealth.Changed += OnHazardHealthChanged", runtime_smoke)
+        self.assertIn("Time.timeSinceLevelLoad - hazardTestStartedAt >= 6f", runtime_smoke)
+        self.assertIn("playerHealth.Damage(playerHealth.Current)", runtime_smoke)
         self.assertIn("enemy.transform.position.x - enemy.Range", runtime_smoke)
+        self.assertIn("platform.x - platform.width * 0.5f", runtime_smoke)
+        self.assertIn("blockedJumpAvailable", platformer_movement)
+        self.assertIn("HasForwardObstacle", platformer_movement)
+        self.assertIn("groundedUntil", platformer_movement)
         self.assertIn("collectibles[collectibleIndex] == null", runtime_smoke)
         self.assertIn("PresentationSceneAssembler.AssemblePlatformer", assembler)
         self.assertIn("ApplyBlueprintEntities", assembler)
@@ -174,7 +196,9 @@ class UnityTemplateTest(unittest.TestCase):
 
         self.assertIn("private void Update()", movement)
         self.assertIn("jumpQueuedUntil = Time.time + jumpBufferSeconds", movement)
-        self.assertIn("Time.time <= jumpQueuedUntil && IsGrounded()", movement)
+        self.assertIn("var bufferedJump = Time.time <= jumpQueuedUntil", movement)
+        self.assertIn("var canUseGroundJump = Time.time <= groundedUntil", movement)
+        self.assertIn("canUseGroundJump || canUseBlockedJump", movement)
         self.assertIn("Physics2D.OverlapCircleAll", movement)
         self.assertIn("overlap.attachedRigidbody == target", movement)
         fixed_update = movement.split("private void FixedUpdate()", maxsplit=1)[1]

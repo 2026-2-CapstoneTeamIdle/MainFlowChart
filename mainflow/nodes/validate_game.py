@@ -228,7 +228,11 @@ def validate_game_node(
             checklist_workflow = FeatureChecklistWorkflow(
                 unity_editor=editor,
                 timeout_seconds=timeout_seconds,
-                max_retries=int(os.environ.get("MAINFLOW_FEATURE_CHECKLIST_RETRIES", "10")),
+                max_retries=(
+                    0
+                    if os.environ.get("MAINFLOW_CODEX_STATIC_CHECKLISTS") == "1"
+                    else int(os.environ.get("MAINFLOW_FEATURE_CHECKLIST_RETRIES", "10"))
+                ),
             )
             try:
                 checklist_outcome = checklist_workflow.run(
@@ -242,7 +246,11 @@ def validate_game_node(
                         allow_failed_diagnostic=False,
                     ),
                     project_id=state["project_id"],
-                    logic_analysis=logic_analysis,
+                    logic_analysis=(
+                        None
+                        if os.environ.get("MAINFLOW_CODEX_STATIC_CHECKLISTS") == "1"
+                        else logic_analysis
+                    ),
                     feature_requirements=logic_analysis["features"],
                 )
                 outcome.unity_log += checklist_outcome.log

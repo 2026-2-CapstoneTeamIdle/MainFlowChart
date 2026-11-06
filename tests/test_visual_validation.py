@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
-import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,8 +16,12 @@ from game_pipeline.visual_validation import (
     visual_attempt_limit,
     visual_validation_enabled,
 )
+from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import CONTRACT_VERSION
-from mainflow.nodes.visual_validation import RunNodeLLMVisualTargetGenerator
+from mainflow.nodes.visual_validation import (
+    RunNodeLLMVisualTargetGenerator,
+    visual_validation_node,
+)
 from MCP import ImageRunResult
 from MCP.llm_types import LLMProviderResponse
 
@@ -68,6 +72,34 @@ class _Repair:
 
 
 class VisualValidationTest(unittest.TestCase):
+    def test_placeholder_image_backend_skips_visual_provider_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ArtifactManager(directory)
+            project_id = manager.create_project()
+            image_draft = manager.write_json(
+                project_id,
+                "image",
+                "image_draft.json",
+                {
+                    "contract_version": CONTRACT_VERSION,
+                    "assets": [],
+                    "notes": ["generator=placeholder"],
+                },
+                producer="test",
+            )
+            state = {"project_id": project_id, "image_draft": image_draft}
+
+            with (
+                patch.dict("os.environ", {"MAINFLOW_VISUAL_VALIDATION": "1"}, clear=True),
+                patch("mainflow.nodes.visual_validation.ArtifactManager", return_value=manager),
+                patch("mainflow.nodes.visual_validation.VisualValidationWorkflow") as workflow,
+            ):
+                reference = visual_validation_node(state)["visual_validation_result"]
+
+            result = manager.read_json(reference)
+            self.assertEqual((result["mode"], result["status"]), ("disabled", "skipped"))
+            workflow.assert_not_called()
+
     def test_vlm_retries_incomplete_checklist_response(self) -> None:
         checklist_ids = tuple(f"VC{index:02d}" for index in range(1, 11))
         responses = []

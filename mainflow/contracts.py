@@ -467,6 +467,7 @@ class GameLogicDesign(TypedDict):
     game_blueprint: GameBlueprint
     design_v2: DesignV2Bundle
     quality_report: NotRequired[GameQualityReport]
+    codex_harness_requirements: NotRequired[list[str]]
 
 
 class ParsedRequest(TypedDict):
@@ -657,6 +658,7 @@ class SoundValidationResult(TypedDict):
     issues: list[ValidationIssue]
     validated_asset_ids: list[str]
     validated_assets: NotRequired[ValidatedAssetManifest]
+    fallback_asset_ids: NotRequired[list[str]]
 
 
 class AssetBindingEntry(TypedDict):
@@ -685,6 +687,7 @@ class AssetBindingManifest(TypedDict):
     image_style: ImageStyle
     entries: list[AssetBindingEntry]
     missing_required_asset_ids: list[str]
+    suppressed_placeholder_image_asset_ids: NotRequired[list[str]]
     warnings: list[str]
 
 
@@ -695,6 +698,7 @@ class IntegratedGame(TypedDict):
     game_artifacts: list[ArtifactReference]
     applied_image_asset_ids: list[str]
     applied_sound_asset_ids: list[str]
+    suppressed_placeholder_image_asset_ids: NotRequired[list[str]]
     notes: list[str]
     asset_binding_manifest: NotRequired[ArtifactReference]
 
@@ -994,6 +998,7 @@ class VisualValidationAgentInput(TypedDict):
     logic_analysis: ArtifactReference
     game_logic_draft: ArtifactReference
     game_validation_result: ArtifactReference
+    image_draft: NotRequired[ArtifactReference]
     integrated_game: NotRequired[ArtifactReference]
 
 
