@@ -17,6 +17,8 @@ from typing import Any, Literal, cast, get_args
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from mainflow.contracts import GameGenre, ImageStyle, MoodStyle, Viewpoint
+from mainflow.request_compatibility import validate_genre_condition_compatibility
+from mainflow.unity_editor_launcher import open_unity_project
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 WORKSPACE_ROOT = Path(os.environ.get("MAINFLOW_WORKSPACE", REPOSITORY_ROOT / "workspace")).resolve()
@@ -27,6 +29,7 @@ SECRETS_PATH = LOCAL_WEB_STATE_ROOT / "secrets.env"
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_LOG_LINES = 10_000
+CANCELLED_RETURN_CODE = -2
 MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
 SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -224,7 +227,7 @@ class UploadedImage(BaseModel):
 
 class GenerationRequest(BaseModel):
     mode: Literal["generate", "test-generate"]
-    game_builder: Literal["pipeline", "codex_cli"] = "pipeline"
+    game_builder: Literal["pipeline", "codex_cli", "claude_code"] = "pipeline"
     image_style: str
     mood_style: str
     genre: str
@@ -247,6 +250,7 @@ class GenerationRequest(BaseModel):
         self.condition = self.condition.strip()
         if not self.condition:
             raise ValueError("condition must not be empty")
+        validate_genre_condition_compatibility(self.genre, self.condition)
         if self.image_style == "Custom" and self.custom_image is None:
             raise ValueError("Custom image style requires a PNG/JPG reference")
         return self
@@ -266,6 +270,7 @@ class WorkflowJob:
     preview_project_id: str | None = None
     project_id: str | None = None
     error: str | None = None
+    cancel_requested: bool = False
     process: subprocess.Popen[str] | None = None
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
@@ -291,6 +296,7 @@ class WorkflowJob:
                 "preview_project_id": self.preview_project_id,
                 "project_id": self.project_id,
                 "error": self.error,
+                "cancel_requested": self.cancel_requested,
                 "logs": list(self.logs),
             }
 
@@ -485,9 +491,52 @@ class WorkflowJobManager:
             job.stage = "condition_feature_analysis"
             job.features = []
             job.error = None
+            job.cancel_requested = False
         job.append_log("[WEB] Feature 구성을 거절했습니다. Condition 분석을 다시 실행합니다.")
         self._start_preview(job)
         return job
+
+    def cancel(self, job_id: str) -> WorkflowJob:
+        job = self.get(job_id)
+        with job.lock:
+            if job.status in {"completed", "failed"}:
+                raise ValueError("이미 종료된 작업은 중단할 수 없습니다.")
+            if job.status == "cancelled":
+                return job
+            job.cancel_requested = True
+            job.status = "cancelling"
+            job.stage = "cancelling"
+            process = job.process
+        job.append_log("[WEB] 사용자가 작업 중단을 요청했습니다. 자식 프로세스를 정리합니다.")
+        if process is not None:
+            _terminate_process_tree(process)
+        with job.lock:
+            job.status = "cancelled"
+            job.stage = "cancelled"
+            job.error = None
+        job.append_log("[WEB] 작업이 중단되었습니다.")
+        return job
+
+    def open_unity_editor(self, job_id: str) -> Path:
+        job = self.get(job_id)
+        with job.lock:
+            if job.status not in {"completed", "failed"}:
+                raise ValueError("게임 생성이 끝난 뒤 Unity Editor를 열 수 있습니다.")
+            project_id = job.project_id
+        if project_id is None:
+            raise FileNotFoundError("생성된 Unity 프로젝트 ID를 확인할 수 없습니다.")
+        project_root = (WORKSPACE_ROOT / project_id / "game" / "unity_project").resolve()
+        try:
+            project_root.relative_to(WORKSPACE_ROOT.resolve())
+        except ValueError as error:
+            raise ValueError("Unity 프로젝트 경로가 Workspace 밖을 가리킵니다.") from error
+        if not (project_root / "ProjectSettings/ProjectVersion.txt").is_file():
+            raise FileNotFoundError("생성된 Unity 프로젝트를 찾을 수 없습니다.")
+        opened = open_unity_project(project_root)
+        if opened is None:
+            raise RuntimeError("Unity Editor 경로를 찾지 못했거나 실행에 실패했습니다.")
+        job.append_log(f"[WEB] Unity Editor로 프로젝트를 엽니다: {opened}")
+        return opened
 
     def _start_preview(self, job: WorkflowJob) -> None:
         thread = threading.Thread(target=self._run_preview, args=(job,), daemon=True)
@@ -510,6 +559,8 @@ class WorkflowJobManager:
         environment = self.settings.process_environment()
         _configure_game_builder_environment(environment, job.game_builder)
         return_code = self._stream_process(job, command, environment)
+        if _is_cancelled(job):
+            return
         if return_code != 0 or not preview_path.is_file():
             self._fail(job, "Condition → Feature 분석 프로세스가 실패했습니다.")
             return
@@ -532,7 +583,9 @@ class WorkflowJobManager:
     def _run_generation(self, job: WorkflowJob) -> None:
         preview_path = job.job_root / "feature_preview.json"
         result_path = job.job_root / "workflow_result.json"
+        unity_project_report = job.job_root / "unity_project_path.txt"
         result_path.unlink(missing_ok=True)
+        unity_project_report.unlink(missing_ok=True)
         try:
             preview = json.loads(preview_path.read_text(encoding="utf-8"))
             approved_logic_path = Path(preview["logic_analysis_path"]).resolve()
@@ -541,6 +594,7 @@ class WorkflowJobManager:
             return
         environment = self.settings.process_environment()
         environment["MAINFLOW_APPROVED_LOGIC_ANALYSIS"] = str(approved_logic_path)
+        environment["MAINFLOW_UNITY_PROJECT_REPORT_FILE"] = str(unity_project_report)
         _configure_game_builder_environment(environment, job.game_builder)
         command = [
             sys.executable,
@@ -560,8 +614,12 @@ class WorkflowJobManager:
             command.append("--visual-validation")
         return_code = self._stream_process(job, command, environment)
         summary = _summarize_workflow_result(result_path, return_code)
+        if summary["project_id"] is None:
+            summary["project_id"] = _project_id_from_unity_report(unity_project_report)
         with job.lock:
             job.project_id = summary["project_id"]
+        if _is_cancelled(job):
+            return
         _append_workflow_summary(job, summary)
         if return_code != 0:
             self._fail(job, "게임 생성에 실패했습니다. 위의 결과 요약을 확인하세요.")
@@ -579,6 +637,14 @@ class WorkflowJobManager:
         environment: dict[str, str] | None = None,
     ) -> int:
         runtime_environment = environment or self.settings.process_environment()
+        with job.lock:
+            if job.cancel_requested:
+                return CANCELLED_RETURN_CODE
+        process_options: dict[str, Any] = {}
+        if os.name == "nt":
+            process_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            process_options["start_new_session"] = True
         process = subprocess.Popen(
             command,
             cwd=REPOSITORY_ROOT,
@@ -589,9 +655,13 @@ class WorkflowJobManager:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            **process_options,
         )
         with job.lock:
             job.process = process
+            cancel_immediately = job.cancel_requested
+        if cancel_immediately:
+            _terminate_process_tree(process)
         assert process.stdout is not None
         for line in process.stdout:
             job.append_log(line)
@@ -603,10 +673,37 @@ class WorkflowJobManager:
     @staticmethod
     def _fail(job: WorkflowJob, message: str) -> None:
         with job.lock:
+            if job.cancel_requested or job.status == "cancelled":
+                return
             job.status = "failed"
             job.stage = "failed"
             job.error = message
         job.append_log(f"[WEB][ERROR] {message}")
+
+
+def _is_cancelled(job: WorkflowJob) -> bool:
+    with job.lock:
+        return job.cancel_requested or job.status in {"cancelling", "cancelled"}
+
+
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            result = subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            if result.returncode != 0 and process.poll() is None:
+                process.kill()
+        else:
+            os.killpg(process.pid, 15)
+    except (OSError, subprocess.TimeoutExpired):
+        process.kill()
 
 
 def _save_custom_image(job_root: Path, upload: UploadedImage) -> Path:
@@ -631,7 +728,7 @@ def _save_custom_image(job_root: Path, upload: UploadedImage) -> Path:
 
 def _configure_game_builder_environment(environment: dict[str, str], game_builder: str) -> None:
     environment["MAINFLOW_GAME_BUILDER"] = game_builder
-    if game_builder != "codex_cli":
+    if game_builder not in {"codex_cli", "claude_code"}:
         return
     environment["MAINFLOW_CONDITION_FEATURE_PROVIDER"] = "off"
     environment["MAINFLOW_GENRE_FEATURE_PROVIDER"] = "off"
@@ -776,6 +873,24 @@ def _summarize_workflow_result(result_path: Path, return_code: int) -> dict[str,
         combined = f"파이프라인이 종료 코드 {return_code}로 실패했습니다."
     summary["error_summary"] = _compact_log_text(combined, max_length=900)
     return summary
+
+
+def _project_id_from_unity_report(report_path: Path) -> str | None:
+    if not report_path.is_file():
+        return None
+    try:
+        project_root = Path(report_path.read_text(encoding="utf-8").strip()).resolve()
+        relative = project_root.relative_to(WORKSPACE_ROOT.resolve())
+    except (OSError, ValueError):
+        return None
+    if len(relative.parts) != 3 or relative.parts[1:] != ("game", "unity_project"):
+        return None
+    project_id = relative.parts[0]
+    if not re.fullmatch(r"\d{8}_\d{2,}", project_id):
+        return None
+    if not (project_root / "ProjectSettings/ProjectVersion.txt").is_file():
+        return None
+    return project_id
 
 
 def _error_messages(validation: dict[str, Any]) -> list[str]:

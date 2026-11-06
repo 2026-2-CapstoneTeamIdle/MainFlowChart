@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 from typing import cast
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -134,6 +135,102 @@ def test_generation_request_accepts_codex_cli_builder():
         **_request_payload(),
     )
     assert request.game_builder == "codex_cli"
+
+
+def test_generation_request_accepts_claude_code_builder():
+    service = _load_service_module()
+    request = service.GenerationRequest(
+        mode="generate",
+        game_builder="claude_code",
+        **_request_payload(),
+    )
+    assert request.game_builder == "claude_code"
+
+
+def test_generation_request_rejects_explicit_conflicting_genre():
+    service = _load_service_module()
+    with pytest.raises(ValueError, match="장르 '뱀서류'.*'플랫포머'"):
+        service.GenerationRequest(
+            mode="generate",
+            game_builder="codex_cli",
+            image_style="Pixel Art",
+            mood_style="Fantasy",
+            genre="뱀서류",
+            viewpoint="사이드뷰",
+            condition="붕괴하는 탑을 탈출하는 액션 플랫포머 게임",
+        )
+
+
+def test_recovers_project_id_from_failed_workflow_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    service = _load_service_module()
+    workspace = tmp_path / "workspace"
+    project = workspace / "20261105_77" / "game" / "unity_project"
+    (project / "ProjectSettings").mkdir(parents=True)
+    (project / "ProjectSettings" / "ProjectVersion.txt").write_text(
+        "m_EditorVersion: 6000.0.71f1\n", encoding="utf-8"
+    )
+    report = tmp_path / "unity_project_path.txt"
+    report.write_text(str(project), encoding="utf-8")
+    monkeypatch.setattr(service, "WORKSPACE_ROOT", workspace.resolve())
+
+    assert service._project_id_from_unity_report(report) == "20261105_77"
+
+
+def test_cancel_stops_running_process_tree_and_preserves_cancelled_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    service = _load_service_module()
+    job_root = tmp_path / "job"
+    job_root.mkdir()
+    request_file = job_root / "request.json"
+    request_file.write_text("{}", encoding="utf-8")
+    process = Mock(pid=1234)
+    process.poll.return_value = None
+    job = service.WorkflowJob(
+        job_id="job-id",
+        mode="generate",
+        request_file=request_file,
+        job_root=job_root,
+        status="running",
+        stage="workflow",
+        process=process,
+    )
+    manager = object.__new__(service.WorkflowJobManager)
+    manager.jobs = {job.job_id: job}
+    manager.lock = service.threading.RLock()
+
+    with patch.object(service, "_terminate_process_tree") as terminate:
+        result = manager.cancel(job.job_id)
+
+    terminate.assert_called_once_with(process)
+    assert result.status == "cancelled"
+    assert result.stage == "cancelled"
+    assert result.cancel_requested is True
+    service.WorkflowJobManager._fail(result, "late worker failure")
+    assert result.status == "cancelled"
+
+
+def test_cancel_awaiting_confirmation_does_not_need_process(tmp_path: Path):
+    service = _load_service_module()
+    job_root = tmp_path / "job"
+    job_root.mkdir()
+    request_file = job_root / "request.json"
+    request_file.write_text("{}", encoding="utf-8")
+    job = service.WorkflowJob(
+        job_id="job-id",
+        mode="generate",
+        request_file=request_file,
+        job_root=job_root,
+        status="awaiting_confirmation",
+        stage="feature_confirmation",
+    )
+    manager = object.__new__(service.WorkflowJobManager)
+    manager.jobs = {job.job_id: job}
+    manager.lock = service.threading.RLock()
+
+    assert manager.cancel(job.job_id).status == "cancelled"
 
 
 def test_codex_builder_environment_disables_api_backed_planning():

@@ -124,10 +124,11 @@ class CodexHarnessResult:
     implementation: CodexCliResult
     repair_results: tuple[CodexCliResult, ...]
     validation_attempts: tuple[dict[str, Any], ...]
+    provider: str = "codex_cli"
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "provider": "codex_cli",
+            "provider": self.provider,
             "preflight": self.preflight.to_dict(),
             "implementation": self.implementation.final_response,
             "repair_results": [result.final_response for result in self.repair_results],
@@ -173,11 +174,22 @@ class CodexGameHarness:
         *,
         audit_root: Path,
         record: Recorder | None = None,
+        runner: Any | None = None,
+        preflight_runner: Callable[[Any], CodexPreflightResult] = run_codex_preflight,
+        provider: str = "codex_cli",
+        agent_label: str = "Codex",
+        instruction_filename: str = "AGENTS.md",
+        total_timeout_environment: str = "MAINFLOW_CODEX_TOTAL_TIMEOUT_SECONDS",
     ) -> None:
         self.settings = settings
         self.audit_root = audit_root.resolve()
         self.record = record
-        self.runner = CodexCliRunner(settings)
+        self.runner = runner or CodexCliRunner(settings)
+        self.preflight_runner = preflight_runner
+        self.provider = provider
+        self.agent_label = agent_label
+        self.instruction_filename = instruction_filename
+        self.total_timeout_environment = total_timeout_environment
         self.preflight: CodexPreflightResult | None = None
         self.implementation: CodexCliResult | None = None
 
@@ -188,14 +200,26 @@ class CodexGameHarness:
         design: GameLogicDesign,
         request: ParsedRequest,
     ) -> CodexCliResult:
-        self.preflight = run_codex_preflight(self.settings)
-        self._record("codex_preflight", self.preflight.to_dict())
+        self.preflight = self.preflight_runner(self.settings)
+        self._record(f"{self.provider}_preflight", self.preflight.to_dict())
         _prepare_host_owned_source_roots(project_root)
         initial_permissions = _normalize_windows_project_permissions(project_root)
-        self._record("codex_project_permissions_before_implementation", initial_permissions)
-        _require_normalized_permissions(initial_permissions, "before Codex implementation")
-        _write_project_instructions(project_root, design, request)
-        prompt = _implementation_prompt(design, request)
+        self._record(
+            f"{self.provider}_project_permissions_before_implementation", initial_permissions
+        )
+        _require_normalized_permissions(
+            initial_permissions, f"before {self.agent_label} implementation"
+        )
+        _write_project_instructions(
+            project_root,
+            design,
+            request,
+            agent_label=self.agent_label,
+            filename=self.instruction_filename,
+        )
+        prompt = _implementation_prompt(
+            design, request, instruction_filename=self.instruction_filename
+        )
         self.implementation = self.runner.run(
             project_root=project_root,
             prompt=prompt,
@@ -203,9 +227,11 @@ class CodexGameHarness:
             audit_directory=self.audit_root / "implementation",
         )
         permission_report = _normalize_windows_project_permissions(project_root)
-        self._record("codex_project_permissions_after_implementation", permission_report)
-        _require_normalized_permissions(permission_report, "after Codex implementation")
-        self._record("codex_implementation", self.implementation.final_response)
+        self._record(f"{self.provider}_project_permissions_after_implementation", permission_report)
+        _require_normalized_permissions(
+            permission_report, f"after {self.agent_label} implementation"
+        )
+        self._record(f"{self.provider}_implementation", self.implementation.final_response)
         return self.implementation
 
     def validate_and_repair(
@@ -216,7 +242,7 @@ class CodexGameHarness:
         request: ParsedRequest,
     ) -> CodexHarnessResult:
         if self.preflight is None or self.implementation is None:
-            raise RuntimeError("Codex implementation must run before validation")
+            raise RuntimeError(f"{self.agent_label} implementation must run before validation")
         validator = UnityProjectValidator(
             mode=os.environ.get("MAINFLOW_UNITY_VALIDATION_MODE", "required"),
             unity_editor=os.environ.get("UNITY_EDITOR_PATH"),
@@ -242,12 +268,12 @@ class CodexGameHarness:
                 "unity_log": outcome.unity_log,
             }
             attempts.append(evidence)
-            self._record(f"codex_validation_attempt_{attempt}", evidence)
+            self._record(f"{self.provider}_validation_attempt_{attempt}", evidence)
             raw_classification = classify_failure(outcome)
             if raw_classification["target"] == "infrastructure":
                 raise RuntimeError(
                     "Unity validation could not start because of a host infrastructure "
-                    "problem; Codex source repair was skipped: "
+                    f"problem; {self.agent_label} source repair was skipped: "
                     f"{outcome.issues}"
                 )
             regression_evidence: dict[str, Any] | None = None
@@ -266,7 +292,7 @@ class CodexGameHarness:
                 pending_snapshot.restore(project_root)
                 permission_report = _normalize_windows_project_permissions(project_root)
                 self._record(
-                    f"codex_repair_rollback_{attempt}",
+                    f"{self.provider}_repair_rollback_{attempt}",
                     {
                         "reason": "repair introduced a more severe Unity failure",
                         "baseline": _bounded_feedback(pending_baseline_evidence),
@@ -291,21 +317,24 @@ class CodexGameHarness:
                     self.implementation,
                     tuple(repairs),
                     tuple(attempts),
+                    self.provider,
                 )
             signature = _failure_signature(outcome)
             signatures[signature] = signatures.get(signature, 0) + 1
             if attempt >= self.settings.max_repairs:
                 raise RuntimeError(
-                    f"Codex Unity validation failed after {attempt} repairs: {outcome.issues}; "
+                    f"{self.agent_label} Unity validation failed after {attempt} repairs: "
+                    f"{outcome.issues}; "
                     f"diagnostics={_signature_diagnostics(outcome.unity_log)}"
                 )
             if signatures[signature] >= 3:
                 raise RuntimeError(
-                    "Codex repair stopped because the same Unity failure repeated three times: "
+                    f"{self.agent_label} repair stopped because the same Unity failure repeated "
+                    "three times: "
                     f"{outcome.issues}; diagnostics={_signature_diagnostics(outcome.unity_log)}"
                 )
             if time.monotonic() - started >= self.settings.total_timeout_seconds:
-                raise TimeoutError("MAINFLOW_CODEX_TOTAL_TIMEOUT_SECONDS was exhausted")
+                raise TimeoutError(f"{self.total_timeout_environment} was exhausted")
             feedback = _bounded_feedback(evidence)
             if regression_evidence is not None:
                 feedback["rolled_back_regression"] = _bounded_feedback(regression_evidence)
@@ -331,9 +360,11 @@ class CodexGameHarness:
                 raise
             permission_report = _normalize_windows_project_permissions(project_root)
             repairs.append(repair)
-            self._record(f"codex_repair_{attempt + 1}", repair.final_response)
-            self._record(f"codex_repair_permissions_{attempt + 1}", permission_report)
-            _require_normalized_permissions(permission_report, f"after Codex repair {attempt + 1}")
+            self._record(f"{self.provider}_repair_{attempt + 1}", repair.final_response)
+            self._record(f"{self.provider}_repair_permissions_{attempt + 1}", permission_report)
+            _require_normalized_permissions(
+                permission_report, f"after {self.agent_label} repair {attempt + 1}"
+            )
         raise AssertionError("unreachable")
 
     def _record(self, name: str, value: Any) -> None:
@@ -342,13 +373,16 @@ class CodexGameHarness:
 
 
 def prepare_design_for_codex(design: GameLogicDesign) -> GameLogicDesign:
-    """Let the template assemble known modules while Codex owns all missing mechanics."""
+    """Let the template assemble known modules while a CLI agent owns missing mechanics."""
 
     unsupported = list(design["unsupported_mechanics"])
     design["codex_harness_requirements"] = unsupported
     design["unsupported_mechanics"] = []
     design["generated_modules"] = []
     return design
+
+
+prepare_design_for_agent_harness = prepare_design_for_codex
 
 
 def run_codex_quality_review(
@@ -398,7 +432,12 @@ HOST EVIDENCE:
 
 
 def _write_project_instructions(
-    project_root: Path, design: GameLogicDesign, request: ParsedRequest
+    project_root: Path,
+    design: GameLogicDesign,
+    request: ParsedRequest,
+    *,
+    agent_label: str = "Codex",
+    filename: str = "AGENTS.md",
 ) -> None:
     requirements = design.get("codex_harness_requirements", [])
     text = f"""# Generated Unity project agent instructions
@@ -411,7 +450,7 @@ Implement a playable Unity 2D vertical slice for this exact request:
 
 - Genre: {request["genre"]}
 - Viewpoint: {request["viewpoint"]}
-- Missing mechanics assigned to Codex: {json.dumps(requirements, ensure_ascii=False)}
+- Missing mechanics assigned to {agent_label}: {json.dumps(requirements, ensure_ascii=False)}
 
 ## Required context
 
@@ -456,14 +495,19 @@ Read every file below before editing code:
 - Do not launch Unity Editor, Unity Hub, `Unity.exe`, a Unity batch-mode process, or a command
   that opens this project. Do not use the Unity CLI/pipeline/MCP to connect to or start an Editor.
   The host process exclusively owns Unity compilation, Play Mode tests, licensing, and project
-  locking after this Codex turn finishes.
+  locking after this {agent_label} turn finishes.
 - You may perform read-only/static inspection that does not start Unity. Report recommended Unity
   checks in the structured result instead of running them yourself.
 """
-    (project_root / "AGENTS.md").write_text(text, encoding="utf-8", newline="\n")
+    (project_root / filename).write_text(text, encoding="utf-8", newline="\n")
 
 
-def _implementation_prompt(design: GameLogicDesign, request: ParsedRequest) -> str:
+def _implementation_prompt(
+    design: GameLogicDesign,
+    request: ParsedRequest,
+    *,
+    instruction_filename: str = "AGENTS.md",
+) -> str:
     requirements = design.get("codex_harness_requirements", [])
     return f"""Build the complete playable Unity game in the current project.
 
@@ -472,7 +516,7 @@ Genre: {request["genre"]}
 Viewpoint: {request["viewpoint"]}
 Explicit missing mechanics: {json.dumps(requirements, ensure_ascii=False)}
 
-Follow AGENTS.md. First inspect the project and all generated design contracts. Then implement the
+Follow {instruction_filename}. First inspect the project and all generated design contracts. Then implement the
 entire connected gameplay loop, not isolated sample scripts. Verify initialization values, scene
 bindings, camera, controls, HUD, damage, progression, win/loss conditions, content counts, and the
 user's requested mechanics. Reuse sound/image binding IDs instead of inventing incompatible IDs.

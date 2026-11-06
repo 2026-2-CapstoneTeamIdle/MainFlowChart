@@ -130,6 +130,8 @@ def test_prepare_design_routes_only_missing_mechanics_to_codex() -> None:
 def test_game_builder_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MAINFLOW_GAME_BUILDER", "codex-cli")
     assert resolve_game_builder() == "codex_cli"
+    monkeypatch.setenv("MAINFLOW_GAME_BUILDER", "claude-code")
+    assert resolve_game_builder() == "claude_code"
     monkeypatch.setenv("MAINFLOW_GAME_BUILDER", "unknown")
     with pytest.raises(ValueError, match="MAINFLOW_GAME_BUILDER"):
         resolve_game_builder()

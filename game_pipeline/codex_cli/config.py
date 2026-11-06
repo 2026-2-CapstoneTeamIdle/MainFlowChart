@@ -10,10 +10,16 @@ from pathlib import Path
 
 def resolve_game_builder() -> str:
     value = os.environ.get("MAINFLOW_GAME_BUILDER", "pipeline").strip().lower()
-    aliases = {"codex": "codex_cli", "codex-cli": "codex_cli", "default": "pipeline"}
+    aliases = {
+        "codex": "codex_cli",
+        "codex-cli": "codex_cli",
+        "claude": "claude_code",
+        "claude-code": "claude_code",
+        "default": "pipeline",
+    }
     normalized = aliases.get(value, value)
-    if normalized not in {"pipeline", "codex_cli"}:
-        raise ValueError("MAINFLOW_GAME_BUILDER must be 'pipeline' or 'codex_cli'")
+    if normalized not in {"pipeline", "codex_cli", "claude_code"}:
+        raise ValueError("MAINFLOW_GAME_BUILDER must be 'pipeline', 'codex_cli', or 'claude_code'")
     return normalized
 
 

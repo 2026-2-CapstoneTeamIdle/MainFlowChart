@@ -64,7 +64,14 @@ def apply_assets_to_game_node(
     game_failed = game_draft["status"] == "failed"
     exclude_placeholder_images = os.environ.get(
         "MAINFLOW_GAME_BUILDER", "pipeline"
-    ).strip().lower() in {"codex", "codex-cli", "codex_cli"}
+    ).strip().lower() in {
+        "codex",
+        "codex-cli",
+        "codex_cli",
+        "claude",
+        "claude-code",
+        "claude_code",
+    }
     if exclude_placeholder_images and "generator=placeholder" in image_draft["notes"]:
         log("  - 실제 이미지 백엔드가 없어 placeholder 이미지는 Unity에 적용하지 않습니다.")
     try:

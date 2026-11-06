@@ -104,3 +104,32 @@ def reject_job(job_id: str) -> dict[str, object]:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.post("/api/jobs/{job_id}/cancel", status_code=202)
+def cancel_job(job_id: str) -> dict[str, object]:
+    """Stop feature analysis or game generation and its child process tree."""
+
+    try:
+        return job_manager.cancel(job_id).snapshot()
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.post("/api/jobs/{job_id}/open-unity")
+def open_job_unity_project(job_id: str) -> dict[str, str]:
+    """Open a completed or failed job's generated project in Unity Editor."""
+
+    try:
+        project_root = job_manager.open_unity_editor(job_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+    return {"status": "opened", "project_root": str(project_root)}

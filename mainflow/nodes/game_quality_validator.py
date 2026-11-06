@@ -8,6 +8,7 @@ from typing import Any, cast
 from game_pipeline import (
     create_game_quality_validator_from_environment,
     resolve_feature_provider_from_environment,
+    run_claude_code_quality_review,
     run_codex_quality_review,
 )
 from mainflow.ArtifactManager import ArtifactManager
@@ -61,6 +62,15 @@ def game_quality_validator_node(
             report = cast(
                 GameValidatorAIResult,
                 run_codex_quality_review(
+                    project_root=manager.ensure_project(state["project_id"]),
+                    project_id=state["project_id"],
+                    evidence=evidence,
+                ),
+            )
+        elif os.environ.get("MAINFLOW_GAME_BUILDER", "").strip().lower() == "claude_code":
+            report = cast(
+                GameValidatorAIResult,
+                run_claude_code_quality_review(
                     project_root=manager.ensure_project(state["project_id"]),
                     project_id=state["project_id"],
                     evidence=evidence,

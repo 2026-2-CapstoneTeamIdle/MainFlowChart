@@ -9,6 +9,8 @@ from time import monotonic
 from typing import cast
 
 from game_pipeline import (
+    ClaudeCodeGameHarness,
+    ClaudeCodeHarnessSettings,
     CodexGameHarness,
     CodexHarnessSettings,
     GameDevelopmentLoop,
@@ -183,7 +185,8 @@ def design_game_logic_node(
         except Exception as error:  # noqa: BLE001 - optional quality enhancement
             log(f"LLM Blueprint 검증에 실패해 안전한 기본 Blueprint를 사용합니다: {error}")
 
-        if game_builder == "codex_cli":
+        agent_harness_enabled = game_builder in {"codex_cli", "claude_code"}
+        if agent_harness_enabled:
             design = prepare_design_for_codex(design)
 
         design["implementation_tasks"] = build_implementation_tasks(
@@ -191,7 +194,7 @@ def design_game_logic_node(
             time_budget_seconds=int(
                 os.environ.get(
                     "MAINFLOW_GAME_TIME_BUDGET_SECONDS",
-                    "7200" if game_builder == "codex_cli" else "1800",
+                    "7200" if agent_harness_enabled else "1800",
                 )
             ),
         )
@@ -415,41 +418,50 @@ def design_game_logic_node(
             ),
             evidence=lambda result: f"generated Unity project at {result.project_root}",
         )
-        codex_harness = None
-        codex_implementation = None
-        if game_builder == "codex_cli":
-            log("설치된 Codex CLI가 Unity 프로젝트 전체 문맥을 읽고 게임을 구현합니다.")
-            codex_harness = CodexGameHarness(
-                CodexHarnessSettings.from_environment(),
-                audit_root=workspace_project_root / "validation" / "codex",
+        agent_harness = None
+        agent_implementation = None
+        if agent_harness_enabled:
+            is_claude = game_builder == "claude_code"
+            agent_label = "Claude Code" if is_claude else "Codex CLI"
+            audit_name = "claude_code" if is_claude else "codex"
+            log(f"설치된 {agent_label}가 Unity 프로젝트 전체 문맥을 읽고 게임을 구현합니다.")
+            harness_type = ClaudeCodeGameHarness if is_claude else CodexGameHarness
+            settings = (
+                ClaudeCodeHarnessSettings.from_environment()
+                if is_claude
+                else CodexHarnessSettings.from_environment()
+            )
+            agent_harness = harness_type(
+                settings,
+                audit_root=workspace_project_root / "validation" / audit_name,
                 record=lambda name, data: manager.write_json(
                     state["project_id"],
                     "validation",
-                    f"codex/{name}.json",
+                    f"{audit_name}/{name}.json",
                     data,
                     producer="design_game_logic",
                 ),
             )
-            codex_implementation = development_loop.run_task(
+            agent_implementation = development_loop.run_task(
                 "project-context-review",
-                lambda: codex_harness.implement_project(
+                lambda: agent_harness.implement_project(
                     project_root=generation.project_root,
                     design=design,
                     request=request,
                 ),
                 evidence=lambda result: (
-                    f"Codex CLI edited {len(result.final_response['changed_files'])} files in "
+                    f"{agent_label} edited {len(result.final_response['changed_files'])} files in "
                     f"{result.elapsed_seconds:.1f}s"
                 ),
             )
-        if game_builder == "codex_cli":
-            assert codex_implementation is not None
+        if agent_harness_enabled:
+            assert agent_implementation is not None
             context_review_report = {
                 "approved": not bool(
-                    codex_implementation.final_response["unresolved_requirements"]
+                    agent_implementation.final_response["unresolved_requirements"]
                 ),
-                "summary": codex_implementation.final_response["summary"],
-                "inspected_files": codex_implementation.final_response["changed_files"],
+                "summary": agent_implementation.final_response["summary"],
+                "inspected_files": agent_implementation.final_response["changed_files"],
                 "issues": [
                     {
                         "severity": "warning",
@@ -457,12 +469,17 @@ def design_game_logic_node(
                         "relative_path": "game/unity_project",
                         "line": None,
                         "message": item,
-                        "suggested_fix": "Pass this requirement to the Codex repair iteration.",
+                        "suggested_fix": (
+                            "Pass this requirement to the CLI agent repair iteration."
+                        ),
                     }
-                    for item in codex_implementation.final_response["unresolved_requirements"]
+                    for item in agent_implementation.final_response["unresolved_requirements"]
                 ],
-                "provider": "codex_cli",
-                "model": os.environ.get("MAINFLOW_CODEX_MODEL", "user-default"),
+                "provider": game_builder,
+                "model": os.environ.get(
+                    "MAINFLOW_CLAUDE_MODEL" if is_claude else "MAINFLOW_CODEX_MODEL",
+                    "user-default",
+                ),
                 "turns": 1,
                 "tool_calls": [],
                 "repair_applied": False,
@@ -477,8 +494,8 @@ def design_game_logic_node(
             )
 
         context_review_report: dict[str, object]
-        if game_builder == "codex_cli":
-            # Codex already completed this implementation-plan task above. Do not route the
+        if agent_harness_enabled:
+            # The CLI agent already completed this implementation-plan task above. Do not route the
             # project through the legacy generated-module reviewer or mark the task twice.
             pass
         elif design["generated_modules"]:
@@ -660,25 +677,25 @@ def design_game_logic_node(
                 ),
             )
 
-        if game_builder == "codex_cli":
-            assert codex_harness is not None
-            codex_result = development_loop.run_task(
+        if agent_harness_enabled:
+            assert agent_harness is not None
+            agent_result = development_loop.run_task(
                 "unity-playmode-validation",
-                lambda: codex_harness.validate_and_repair(
+                lambda: agent_harness.validate_and_repair(
                     project_root=generation.project_root,
                     design=design,
                     request=request,
                 ),
                 evidence=lambda result: (
-                    "Codex implementation passed authoritative Unity validation after "
+                    "CLI agent implementation passed authoritative Unity validation after "
                     f"{len(result.repair_results)} repair iteration(s)"
                 ),
             )
             manager.write_json(
                 state["project_id"],
                 "validation",
-                "codex/harness_result.json",
-                codex_result.to_dict(),
+                f"{audit_name}/harness_result.json",
+                agent_result.to_dict(),
                 producer="design_game_logic",
             )
         else:
@@ -778,8 +795,11 @@ def design_game_logic_node(
                 f"{feature_provider} 생성 모듈: "
                 + ", ".join(module["module_id"] for module in design["generated_modules"])
             )
-        if game_builder == "codex_cli":
-            notes.append("사용자 PC의 Codex CLI Agent Harness로 전체 Unity 프로젝트 구현")
+        if agent_harness_enabled:
+            notes.append(
+                f"사용자 PC의 {'Claude Code' if game_builder == 'claude_code' else 'Codex CLI'} "
+                "Agent Harness로 전체 Unity 프로젝트 구현"
+            )
         notes.append(f"씬 Blueprint 제공자: {design['game_blueprint']['source']}")
         notes.append(
             f"개발 작업 {len(design['implementation_tasks']['tasks'])}개 실행 및 증거 기록 완료"
