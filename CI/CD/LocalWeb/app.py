@@ -23,7 +23,7 @@ job_manager = WorkflowJobManager(settings_store)
 app = FastAPI(
     title="MainFlowChart Local Web",
     description="Local-only web shell for the MainFlowChart workflow.",
-    version="1.1.0",
+    version="1.2.0",
 )
 app.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
 

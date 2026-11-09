@@ -4,6 +4,8 @@ const requestForm = document.querySelector("#request-form");
 const imageStyle = document.querySelector("#image-style");
 const customImage = document.querySelector("#custom-image");
 const modelGrid = document.querySelector("#model-grid");
+const modelSettingsContent = document.querySelector("#model-settings-content");
+const modelSettingsToggle = document.querySelector("#model-settings-toggle");
 const featurePanel = document.querySelector("#feature-panel");
 const featureList = document.querySelector("#feature-list");
 const featureCount = document.querySelector("#feature-count");
@@ -14,6 +16,7 @@ const toast = document.querySelector("#toast");
 const openUnityButton = document.querySelector("#open-unity-button");
 const previewButton = document.querySelector("#preview-button");
 const stopButton = document.querySelector("#stop-button");
+const copyLogButton = document.querySelector("#copy-log-button");
 
 const providerLabels = { local: "LocalAI", openai: "OpenAI API", gemini: "Gemini API", vastai: "Vast.ai", placeholder: "Placeholder", procedural: "Procedural", elevenlabs: "ElevenLabs API" };
 let currentJobId = null;
@@ -30,6 +33,39 @@ function updateCustomImageState() {
   const customSelected = imageStyle.value === "Custom";
   customImage.disabled = !customSelected;
   if (!customSelected) customImage.value = "";
+}
+
+function setModelSettingsExpanded(expanded) {
+  modelSettingsContent.hidden = !expanded;
+  modelSettingsToggle.setAttribute("aria-expanded", String(expanded));
+  modelSettingsToggle.textContent = expanded ? "설정 접기" : "설정 펼치기";
+}
+
+async function copyWorkflowLog() {
+  const text = workflowLog.textContent || "";
+  if (!text.trim()) {
+    showToast("복사할 작업 로그가 없습니다.", true);
+    return;
+  }
+  let fallback = null;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      fallback = document.createElement("textarea");
+      fallback.value = text;
+      fallback.setAttribute("readonly", "");
+      fallback.className = "clipboard-fallback";
+      document.body.append(fallback);
+      fallback.select();
+      if (!document.execCommand("copy")) throw new Error("clipboard copy rejected");
+    }
+    showToast("작업 로그를 클립보드에 복사했습니다.");
+  } catch (_error) {
+    showToast("로그를 복사하지 못했습니다. 로그를 선택해 직접 복사하세요.", true);
+  } finally {
+    fallback?.remove();
+  }
 }
 
 async function api(path, options = {}) {
@@ -331,6 +367,17 @@ async function initialize() {
 }
 
 imageStyle.addEventListener("change", updateCustomImageState);
+modelSettingsToggle.addEventListener("click", () => {
+  setModelSettingsExpanded(modelSettingsToggle.getAttribute("aria-expanded") !== "true");
+});
+copyLogButton.addEventListener("click", copyWorkflowLog);
+workflowLog.addEventListener("keydown", (event) => {
+  const selection = window.getSelection()?.toString() || "";
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c" && !selection) {
+    event.preventDefault();
+    copyWorkflowLog();
+  }
+});
 requestForm.addEventListener("submit", (event) => event.preventDefault());
 document.querySelector("#save-models").addEventListener("click", () => saveModels().catch((error) => showToast(error.message, true)));
 document.querySelector("#generate-button").addEventListener("click", () => startJob("generate"));

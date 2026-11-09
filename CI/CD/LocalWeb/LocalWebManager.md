@@ -1,6 +1,6 @@
 # Local Web Manager
 
-버전: **1.1.0**
+버전: **1.2.0**
 
 `CI/CD/LocalWeb`은 MainFlowChart를 `http://127.0.0.1:8000`에서 설정하고 실행하는 로컬
 전용 웹 서비스다. 메인 LangGraph의 Edge는 바꾸지 않으며, 웹 계층이 Feature 승인 단계를
@@ -9,6 +9,7 @@
 ## 제공 기능
 
 - 실제 프로젝트 역할별 AI Provider/Model 선택
+- AI 모델 설정 영역 기본 접힘 및 토글 표시
 - LocalAI 등록 모델 목록 선택
 - OpenAI, Gemini, Vast.ai, ElevenLabs API 키의 서버 전용 저장
 - 실제 게임 이미지 에셋 백엔드(Placeholder/LocalAI/OpenAI)와 사운드 백엔드
@@ -18,6 +19,7 @@
 - Confirm 시 표시된 Feature를 고정하여 생성 계속
 - Reject 시 Condition → Feature 분석 재실행
 - 분석, 생성, 컴파일, 기능 검증, 시각 검증의 진행 로그 표시
+- 개발 로그 버튼 복사 및 로그 포커스 상태의 `Ctrl+C` 전체 복사
 - 종료 시 `프로젝트 ID / 실패 단계 / 실패 Feature / 오류 요약`만 화면에 표시하고 전체
   Workflow JSON은 작업 파일로 별도 보존
 - 게임 생성 성공 후 Unity WebGL Preview 자동 빌드
@@ -127,7 +129,7 @@ uv run --locked python -m uvicorn --app-dir "CI/CD/LocalWeb" app:app `
 
 ## 사용 순서
 
-1. `기능별 AI 설정`에서 각 역할의 Provider와 Model을 고른다.
+1. `기능별 AI 설정`의 `설정 펼치기`를 누르고 각 역할의 Provider와 Model을 고른다.
 2. API Provider를 선택했다면 `API 인증 정보`에 해당 키를 입력한다.
 3. `설정 저장`을 누른다.
 4. 이미지 스타일, 분위기, 장르, 시점, Condition을 입력한다.
