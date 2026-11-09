@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from mainflow.contracts import GameGenre, ImageStyle, MoodStyle, Viewpoint
 from mainflow.request_compatibility import validate_genre_condition_compatibility
 from mainflow.unity_editor_launcher import open_unity_project
+from mainflow.webgl_preview import WebGLPreviewBuildError, build_webgl_preview
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 WORKSPACE_ROOT = Path(os.environ.get("MAINFLOW_WORKSPACE", REPOSITORY_ROOT / "workspace")).resolve()
@@ -32,6 +33,7 @@ MAX_LOG_LINES = 10_000
 CANCELLED_RETURN_CODE = -2
 MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
 SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
+PROJECT_ID_PATTERN = re.compile(r"^\d{8}_\d{2,}$")
 
 LOCAL_TEXT_MODELS = (
     "gemma4-12b-it-qat-q4-0",
@@ -271,6 +273,10 @@ class WorkflowJob:
     project_id: str | None = None
     error: str | None = None
     cancel_requested: bool = False
+    preview_status: str = "unavailable"
+    preview_url: str | None = None
+    preview_error: str | None = None
+    preview_cancel_requested: bool = False
     process: subprocess.Popen[str] | None = None
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
@@ -297,6 +303,9 @@ class WorkflowJob:
                 "project_id": self.project_id,
                 "error": self.error,
                 "cancel_requested": self.cancel_requested,
+                "preview_status": self.preview_status,
+                "preview_url": self.preview_url,
+                "preview_error": self.preview_error,
                 "logs": list(self.logs),
             }
 
@@ -499,14 +508,28 @@ class WorkflowJobManager:
     def cancel(self, job_id: str) -> WorkflowJob:
         job = self.get(job_id)
         with job.lock:
-            if job.status in {"completed", "failed"}:
+            if job.preview_status == "building":
+                job.preview_cancel_requested = True
+                process = job.process
+                cancel_preview = True
+            elif job.status in {"completed", "failed"}:
                 raise ValueError("이미 종료된 작업은 중단할 수 없습니다.")
-            if job.status == "cancelled":
+            elif job.status == "cancelled":
                 return job
-            job.cancel_requested = True
-            job.status = "cancelling"
-            job.stage = "cancelling"
-            process = job.process
+            else:
+                cancel_preview = False
+                job.cancel_requested = True
+                job.status = "cancelling"
+                job.stage = "cancelling"
+                process = job.process
+        if cancel_preview:
+            job.append_log("[WEBGL] 사용자가 Preview 빌드 중단을 요청했습니다.")
+            if process is not None:
+                _terminate_process_tree(process)
+            with job.lock:
+                job.preview_status = "cancelled"
+                job.preview_error = None
+            return job
         job.append_log("[WEB] 사용자가 작업 중단을 요청했습니다. 자식 프로세스를 정리합니다.")
         if process is not None:
             _terminate_process_tree(process)
@@ -516,6 +539,93 @@ class WorkflowJobManager:
             job.error = None
         job.append_log("[WEB] 작업이 중단되었습니다.")
         return job
+
+    def build_webgl(self, job_id: str) -> WorkflowJob:
+        """Start or retry the post-generation WebGL Preview build."""
+
+        job = self.get(job_id)
+        self._start_webgl_build(job)
+        return job
+
+    def _start_webgl_build(self, job: WorkflowJob) -> None:
+        with job.lock:
+            if job.status not in {"completed", "failed"}:
+                raise ValueError("게임 생성이 종료된 작업만 WebGL Preview를 빌드할 수 있습니다.")
+            if not job.project_id:
+                raise ValueError("WebGL Preview를 만들 프로젝트 ID가 없습니다.")
+            if job.preview_status == "building":
+                raise ValueError("WebGL Preview 빌드가 이미 진행 중입니다.")
+            job.preview_status = "building"
+            job.preview_url = None
+            job.preview_error = None
+            job.preview_cancel_requested = False
+        if job.status == "failed":
+            job.append_log("[WEBGL] 검증에 실패한 진단용 프로젝트의 Preview 빌드를 시작합니다.")
+        else:
+            job.append_log("[WEBGL] 로컬 플레이용 WebGL Preview 빌드를 시작합니다.")
+        thread = threading.Thread(target=self._run_webgl_build, args=(job,), daemon=True)
+        thread.start()
+
+    def _run_webgl_build(self, job: WorkflowJob) -> None:
+        with job.lock:
+            project_id = job.project_id
+        assert project_id is not None
+        project_root = (WORKSPACE_ROOT / project_id / "game" / "unity_project").resolve()
+        output_root = (WORKSPACE_ROOT / project_id / "game" / "webgl").resolve()
+        validation_path = (
+            WORKSPACE_ROOT / project_id / "validation" / "webgl_preview_build.json"
+        ).resolve()
+
+        def remember_process(process: subprocess.Popen[str] | None) -> None:
+            with job.lock:
+                job.process = process
+
+        def preview_cancelled() -> bool:
+            with job.lock:
+                return job.preview_cancel_requested
+
+        try:
+            _require_within_workspace(project_root)
+            _require_within_workspace(output_root)
+            result = build_webgl_preview(
+                project_root,
+                output_root,
+                on_log=job.append_log,
+                on_process=remember_process,
+                is_cancelled=preview_cancelled,
+            )
+            with job.lock:
+                if job.preview_cancel_requested:
+                    return
+                job.preview_status = "ready"
+                job.preview_url = f"/preview/{project_id}/"
+                job.preview_error = None
+            _atomic_write_json(
+                validation_path,
+                {
+                    "status": "passed",
+                    "project_id": project_id,
+                    "output_root": str(result.output_root),
+                    "unity_editor": str(result.editor),
+                    "elapsed_seconds": round(result.elapsed_seconds, 3),
+                },
+            )
+            job.append_log("[WEBGL] Preview 플레이 준비가 끝났습니다.")
+        except (OSError, ValueError, WebGLPreviewBuildError) as error:
+            with job.lock:
+                if job.preview_cancel_requested:
+                    return
+                job.preview_status = "failed"
+                job.preview_error = str(error)
+            _atomic_write_json(
+                validation_path,
+                {
+                    "status": "failed",
+                    "project_id": project_id,
+                    "error": str(error),
+                },
+            )
+            job.append_log(f"[WEBGL][ERROR] {error}")
 
     def open_unity_editor(self, job_id: str) -> Path:
         job = self.get(job_id)
@@ -595,6 +705,7 @@ class WorkflowJobManager:
         environment = self.settings.process_environment()
         environment["MAINFLOW_APPROVED_LOGIC_ANALYSIS"] = str(approved_logic_path)
         environment["MAINFLOW_UNITY_PROJECT_REPORT_FILE"] = str(unity_project_report)
+        environment["MAINFLOW_OPEN_UNITY_EDITOR"] = "0"
         _configure_game_builder_environment(environment, job.game_builder)
         command = [
             sys.executable,
@@ -629,6 +740,13 @@ class WorkflowJobManager:
             job.stage = "completed"
             job.project_id = summary["project_id"]
         job.append_log("[WEB] 게임 생성 파이프라인이 완료되었습니다.")
+        try:
+            self._start_webgl_build(job)
+        except ValueError as error:
+            with job.lock:
+                job.preview_status = "failed"
+                job.preview_error = str(error)
+            job.append_log(f"[WEBGL][ERROR] {error}")
 
     def _stream_process(
         self,
@@ -684,6 +802,33 @@ class WorkflowJobManager:
 def _is_cancelled(job: WorkflowJob) -> bool:
     with job.lock:
         return job.cancel_requested or job.status in {"cancelling", "cancelled"}
+
+
+def resolve_webgl_preview_file(project_id: str, asset_path: str = "index.html") -> Path:
+    """Resolve one published Preview asset without exposing the rest of Workspace."""
+
+    if not PROJECT_ID_PATTERN.fullmatch(project_id):
+        raise ValueError("올바르지 않은 프로젝트 ID입니다.")
+    preview_root = (WORKSPACE_ROOT / project_id / "game" / "webgl").resolve()
+    _require_within_workspace(preview_root)
+    relative = asset_path.strip("/") or "index.html"
+    candidate = (preview_root / relative).resolve()
+    try:
+        candidate.relative_to(preview_root)
+    except ValueError as error:
+        raise ValueError("Preview 경로가 WebGL 출력 폴더 밖을 가리킵니다.") from error
+    if candidate.is_dir():
+        candidate = candidate / "index.html"
+    if not candidate.is_file():
+        raise FileNotFoundError(f"WebGL Preview 파일을 찾을 수 없습니다: {relative}")
+    return candidate
+
+
+def _require_within_workspace(path: Path) -> None:
+    try:
+        path.resolve().relative_to(WORKSPACE_ROOT.resolve())
+    except ValueError as error:
+        raise ValueError("경로가 Workspace 밖을 가리킵니다.") from error
 
 
 def _terminate_process_tree(process: subprocess.Popen[str]) -> None:

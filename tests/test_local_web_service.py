@@ -233,6 +233,87 @@ def test_cancel_awaiting_confirmation_does_not_need_process(tmp_path: Path):
     assert manager.cancel(job.job_id).status == "cancelled"
 
 
+def test_cancel_webgl_preview_preserves_completed_game_state(tmp_path: Path):
+    service = _load_service_module()
+    job_root = tmp_path / "job"
+    job_root.mkdir()
+    request_file = job_root / "request.json"
+    request_file.write_text("{}", encoding="utf-8")
+    process = Mock(pid=1234)
+    process.poll.return_value = None
+    job = service.WorkflowJob(
+        job_id="job-id",
+        mode="generate",
+        request_file=request_file,
+        job_root=job_root,
+        status="completed",
+        stage="completed",
+        project_id="20261109_03",
+        preview_status="building",
+        process=process,
+    )
+    manager = object.__new__(service.WorkflowJobManager)
+    manager.jobs = {job.job_id: job}
+    manager.lock = service.threading.RLock()
+
+    with patch.object(service, "_terminate_process_tree") as terminate:
+        result = manager.cancel(job.job_id)
+
+    terminate.assert_called_once_with(process)
+    assert result.status == "completed"
+    assert result.preview_status == "cancelled"
+    assert result.preview_cancel_requested is True
+
+
+def test_failed_job_can_start_diagnostic_webgl_preview(tmp_path: Path):
+    service = _load_service_module()
+    job_root = tmp_path / "job"
+    job_root.mkdir()
+    request_file = job_root / "request.json"
+    request_file.write_text("{}", encoding="utf-8")
+    job = service.WorkflowJob(
+        job_id="job-id",
+        mode="generate",
+        request_file=request_file,
+        job_root=job_root,
+        status="failed",
+        stage="failed",
+        project_id="20261109_08",
+        error="runtime validation failed",
+    )
+    manager = object.__new__(service.WorkflowJobManager)
+    manager.jobs = {job.job_id: job}
+    manager.lock = service.threading.RLock()
+    thread = Mock()
+
+    with patch.object(service.threading, "Thread", return_value=thread):
+        result = manager.build_webgl(job.job_id)
+
+    thread.start.assert_called_once_with()
+    assert result.status == "failed"
+    assert result.preview_status == "building"
+    assert result.error == "runtime validation failed"
+    assert "진단용 프로젝트" in result.logs[-1]
+
+
+def test_preview_file_resolution_is_confined_to_webgl_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    service = _load_service_module()
+    workspace = tmp_path / "workspace"
+    preview = workspace / "20261109_03" / "game" / "webgl"
+    preview.mkdir(parents=True)
+    index = preview / "index.html"
+    index.write_text("preview", encoding="utf-8")
+    monkeypatch.setattr(service, "WORKSPACE_ROOT", workspace.resolve())
+
+    assert service.resolve_webgl_preview_file("20261109_03") == index.resolve()
+    with pytest.raises(ValueError, match="WebGL 출력 폴더 밖"):
+        service.resolve_webgl_preview_file("20261109_03", "../../unity_project/secret.txt")
+    with pytest.raises(ValueError, match="프로젝트 ID"):
+        service.resolve_webgl_preview_file("../escape")
+
+
 def test_codex_builder_environment_disables_api_backed_planning():
     service = _load_service_module()
     environment = {

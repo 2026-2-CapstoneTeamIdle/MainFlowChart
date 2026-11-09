@@ -5,13 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from service import (
     GenerationRequest,
     LocalWebSettingsStore,
     ModelSettingsUpdate,
     WorkflowJobManager,
+    resolve_webgl_preview_file,
 )
 
 LOCAL_WEB_ROOT = Path(__file__).resolve().parent
@@ -22,7 +23,7 @@ job_manager = WorkflowJobManager(settings_store)
 app = FastAPI(
     title="MainFlowChart Local Web",
     description="Local-only web shell for the MainFlowChart workflow.",
-    version="1.0.1",
+    version="1.1.0",
 )
 app.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
 
@@ -133,3 +134,51 @@ def open_job_unity_project(job_id: str) -> dict[str, str]:
     except RuntimeError as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
     return {"status": "opened", "project_root": str(project_root)}
+
+
+@app.post("/api/jobs/{job_id}/build-webgl", status_code=202)
+def build_job_webgl_preview(job_id: str) -> dict[str, object]:
+    """Retry a completed job's WebGL Preview build."""
+
+    try:
+        return job_manager.build_webgl(job_id).snapshot()
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.get("/preview/{project_id}", include_in_schema=False)
+def redirect_preview(project_id: str) -> RedirectResponse:
+    """Normalize Preview URLs so Unity's relative asset paths resolve correctly."""
+
+    return RedirectResponse(url=f"/preview/{project_id}/", status_code=307)
+
+
+@app.get("/preview/{project_id}/", include_in_schema=False)
+def preview_index(project_id: str) -> FileResponse:
+    """Serve the generated WebGL player shell."""
+
+    return _preview_response(project_id, "index.html")
+
+
+@app.get("/preview/{project_id}/{asset_path:path}", include_in_schema=False)
+def preview_asset(project_id: str, asset_path: str) -> FileResponse:
+    """Serve only files contained in the project's published WebGL directory."""
+
+    return _preview_response(project_id, asset_path)
+
+
+def _preview_response(project_id: str, asset_path: str) -> FileResponse:
+    try:
+        path = resolve_webgl_preview_file(project_id, asset_path)
+    except (ValueError, FileNotFoundError) as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    media_types = {
+        ".wasm": "application/wasm",
+        ".js": "text/javascript",
+        ".data": "application/octet-stream",
+        ".json": "application/json",
+    }
+    headers = {"Cache-Control": "no-store" if path.name == "index.html" else "public, max-age=3600"}
+    return FileResponse(path, media_type=media_types.get(path.suffix.lower()), headers=headers)

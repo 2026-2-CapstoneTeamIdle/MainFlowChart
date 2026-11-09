@@ -12,10 +12,12 @@ const phaseBadge = document.querySelector("#phase-badge");
 const jobState = document.querySelector("#job-state");
 const toast = document.querySelector("#toast");
 const openUnityButton = document.querySelector("#open-unity-button");
+const previewButton = document.querySelector("#preview-button");
 const stopButton = document.querySelector("#stop-button");
 
 const providerLabels = { local: "LocalAI", openai: "OpenAI API", gemini: "Gemini API", vastai: "Vast.ai", placeholder: "Placeholder", procedural: "Procedural", elevenlabs: "ElevenLabs API" };
 let currentJobId = null;
+let currentJob = null;
 let pollTimer = null;
 
 function showToast(message, error = false) {
@@ -167,7 +169,12 @@ async function refreshJob() {
   try {
     const job = await api(`/api/jobs/${currentJobId}`);
     renderJob(job);
-    if (["completed", "failed", "cancelled"].includes(job.status)) window.clearInterval(pollTimer);
+    const previewFinished = ["ready", "failed", "cancelled"].includes(job.preview_status);
+    if (job.status === "cancelled"
+        || (job.status === "failed" && job.preview_status !== "building")
+        || (job.status === "completed" && previewFinished)) {
+      window.clearInterval(pollTimer);
+    }
   } catch (error) {
     window.clearInterval(pollTimer);
     showToast(error.message, true);
@@ -175,6 +182,7 @@ async function refreshJob() {
 }
 
 function renderJob(job) {
+  currentJob = job;
   const stateLabels = {
     analyzing_features: "Feature 분석 중", awaiting_confirmation: "사용자 승인 대기",
     running: "게임 생성 중", cancelling: "중단 중", cancelled: "취소됨",
@@ -191,16 +199,36 @@ function renderJob(job) {
   } else {
     featurePanel.classList.add("is-hidden");
   }
-  const active = ["analyzing_features", "awaiting_confirmation", "running", "cancelling"].includes(job.status);
+  const previewBuilding = job.preview_status === "building";
+  const active = ["analyzing_features", "awaiting_confirmation", "running", "cancelling"].includes(job.status) || previewBuilding;
   setRunButtons(active);
   stopButton.classList.toggle("is-hidden", !active);
   stopButton.disabled = job.status === "cancelling";
   document.querySelector("#confirm-button").disabled = job.status !== "awaiting_confirmation";
   document.querySelector("#reject-button").disabled = job.status !== "awaiting_confirmation";
-  const canOpenUnity = ["completed", "failed"].includes(job.status) && Boolean(job.project_id);
+  const canOpenUnity = ["completed", "failed"].includes(job.status) && Boolean(job.project_id) && !previewBuilding;
   openUnityButton.classList.toggle("is-hidden", !canOpenUnity);
   openUnityButton.disabled = !canOpenUnity;
+  renderPreviewButton(job);
   if (job.status === "failed" && job.error) showToast(job.error, true);
+}
+
+function renderPreviewButton(job) {
+  const canPreview = ["completed", "failed"].includes(job.status) && Boolean(job.project_id);
+  previewButton.classList.toggle("is-hidden", !canPreview);
+  previewButton.disabled = !canPreview || job.preview_status === "building";
+  if (job.preview_status === "ready") {
+    previewButton.textContent = "Preview 플레이";
+    previewButton.title = job.status === "failed"
+      ? "검증에 실패한 현재 Unity 프로젝트를 WebGL로 실행합니다."
+      : "완성된 WebGL 게임을 새 탭에서 실행합니다.";
+  } else if (job.preview_status === "building") {
+    previewButton.textContent = "WebGL Preview 빌드 중…";
+    previewButton.title = "Unity가 WebGL 플레이어를 빌드하고 있습니다.";
+  } else {
+    previewButton.textContent = job.preview_status === "unavailable" ? "Preview 빌드" : "Preview 다시 빌드";
+    previewButton.title = job.preview_error || "WebGL Preview 빌드를 다시 시도합니다.";
+  }
 }
 
 async function stopJob() {
@@ -227,6 +255,24 @@ async function openUnityEditor() {
     showToast(error.message, true);
   } finally {
     openUnityButton.disabled = false;
+  }
+}
+
+async function openOrBuildPreview() {
+  if (!currentJobId || !currentJob) return;
+  if (currentJob.preview_status === "ready" && currentJob.preview_url) {
+    window.open(currentJob.preview_url, "_blank", "noopener,noreferrer");
+    return;
+  }
+  previewButton.disabled = true;
+  try {
+    const job = await api(`/api/jobs/${currentJobId}/build-webgl`, { method: "POST", body: "{}" });
+    renderJob(job);
+    startPolling();
+    showToast("WebGL Preview 빌드를 시작했습니다.");
+  } catch (error) {
+    previewButton.disabled = false;
+    showToast(error.message, true);
   }
 }
 
@@ -292,5 +338,6 @@ document.querySelector("#test-generate-button").addEventListener("click", () => 
 document.querySelector("#confirm-button").addEventListener("click", () => decide("confirm"));
 document.querySelector("#reject-button").addEventListener("click", () => decide("reject"));
 openUnityButton.addEventListener("click", openUnityEditor);
+previewButton.addEventListener("click", openOrBuildPreview);
 stopButton.addEventListener("click", stopJob);
 initialize();

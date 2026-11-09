@@ -51,6 +51,7 @@ button { min-height: 46px; padding: 0 18px; border-radius: 11px; color: #fff; fo
 button:hover:not(:disabled) { transform: translateY(-1px); }
 button:disabled { cursor: not-allowed; opacity: .45; }
 .primary-button { background: linear-gradient(135deg, #427ce8, #6558dd); }
+.preview-button { background: linear-gradient(135deg, #00a878, #1686a8); }
 .test-button { background: #1d6b58; }
 .secondary-button { background: #1a2740; color: #a9c1ef; }
 .danger-button { background: #5b2633; color: #ffbdc7; }

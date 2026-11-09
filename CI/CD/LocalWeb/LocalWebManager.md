@@ -1,6 +1,6 @@
 # Local Web Manager
 
-버전: **1.0.1**
+버전: **1.1.0**
 
 `CI/CD/LocalWeb`은 MainFlowChart를 `http://127.0.0.1:8000`에서 설정하고 실행하는 로컬
 전용 웹 서비스다. 메인 LangGraph의 Edge는 바꾸지 않으며, 웹 계층이 Feature 승인 단계를
@@ -20,6 +20,10 @@
 - 분석, 생성, 컴파일, 기능 검증, 시각 검증의 진행 로그 표시
 - 종료 시 `프로젝트 ID / 실패 단계 / 실패 Feature / 오류 요약`만 화면에 표시하고 전체
   Workflow JSON은 작업 파일로 별도 보존
+- 게임 생성 성공 후 Unity WebGL Preview 자동 빌드
+- Preview 준비 후 `Preview 플레이` 버튼으로 새 브라우저 탭에서 게임 실행
+- Preview 빌드 실패/중단 상태를 게임 생성 결과와 분리하고 화면에서 재시도
+- 검증 실패 작업도 Unity 프로젝트가 생성되었다면 진단용 WebGL Preview 수동 빌드·실행
 
 ## Generate 모드 차이
 
@@ -96,6 +100,31 @@ uv run --locked python -m uvicorn --app-dir "CI/CD/LocalWeb" app:app `
 
 실행을 끝낼 때는 터미널에서 `Ctrl+C`를 누른다.
 
+### WebGL Preview 사전 조건
+
+Preview는 생성된 Unity 프로젝트를 실제 WebGL 플레이어로 빌드한다. LocalWeb을 실행하는
+컴퓨터에 다음 항목이 필요하다.
+
+1. Unity Editor
+2. 같은 Editor 버전의 **WebGL Build Support** 모듈
+3. 해당 컴퓨터에서 활성화된 Unity 라이선스
+
+Editor를 자동으로 찾지 못하면 LocalWeb 서버를 시작한 PowerShell에서 경로를 지정한다.
+프로젝트 버전의 Editor에 WebGL 모듈이 없고 다른 설치 Editor에 모듈이 있으면, 명시적인
+`UNITY_EDITOR_PATH`가 없는 경우 WebGL 모듈이 있는 최신 Editor를 자동으로 사용한다.
+
+```powershell
+$env:UNITY_EDITOR_PATH = "C:\Program Files\Unity\Hub\Editor\6000.3.20f1\Editor\Unity.exe"
+$env:MAINFLOW_WEBGL_BUILD_TIMEOUT_SECONDS = "1200"
+uv run --locked python -m uvicorn --app-dir "CI/CD/LocalWeb" app:app `
+  --host 127.0.0.1 --port 8000 --reload
+```
+
+현재 Linux 기반 LocalWeb Docker 이미지에는 Unity Editor와 라이선스가 포함되어 있지 않다.
+따라서 Docker에서 일반 생성 기능은 사용할 수 있지만 WebGL Preview 빌드는 실패 사유를
+로그에 표시한다. Preview까지 사용하려면 위처럼 Windows 호스트에서 LocalWeb을 직접
+실행하거나, 별도의 Unity Build Server/라이선스가 포함된 실행 환경을 연결해야 한다.
+
 ## 사용 순서
 
 1. `기능별 AI 설정`에서 각 역할의 Provider와 Model을 고른다.
@@ -110,6 +139,11 @@ uv run --locked python -m uvicorn --app-dir "CI/CD/LocalWeb" app:app `
    - `장르 필수`: 선택한 장르의 기본 플레이에 필요한 기능
 8. 목록이 맞으면 Confirm, 다시 분석하려면 Reject를 누른다.
 9. 완료 또는 실패까지 하단 로그를 확인한다.
+10. 생성 성공 후 WebGL 빌드가 끝나면 `Preview 플레이`를 눌러 새 탭에서 게임을 실행한다.
+    빌드가 실패하거나 중단되면 같은 버튼으로 다시 빌드할 수 있다.
+11. 게임 검증이 실패했더라도 프로젝트 ID와 Unity 프로젝트가 남아 있으면
+    `Preview 다시 빌드`를 눌러 현재 실패 상태의 게임을 직접 확인할 수 있다. 이 Preview는
+    디버깅 편의 기능이며 실패한 검증 결과를 성공으로 바꾸지는 않는다.
 
 ## 생성 파일
 
@@ -125,6 +159,11 @@ workspace/
 │     └─ workflow.log
 ├─ {preview_project_id}/       # Feature 분석 Artifact
 └─ {generated_project_id}/     # Confirm 이후 실제 생성 프로젝트
+   ├─ game/
+   │  ├─ unity_project/
+   │  └─ webgl/                # LocalWeb이 제공하는 WebGL Preview
+   └─ validation/
+      └─ webgl_preview_build.json
 ```
 
 Reject할 때마다 분석 근거를 보존하기 위해 새로운 Preview 프로젝트가 생긴다. Confirm 이후
@@ -146,6 +185,8 @@ Reject할 때마다 분석 근거를 보존하기 위해 새로운 Preview 프�
 | GET | `/api/jobs/{job_id}` | 상태, Feature, 로그 조회 |
 | POST | `/api/jobs/{job_id}/confirm` | 승인된 Feature로 생성 계속 |
 | POST | `/api/jobs/{job_id}/reject` | Feature 분석 재실행 |
+| POST | `/api/jobs/{job_id}/build-webgl` | 완료된 프로젝트의 Preview 빌드/재시도 |
+| GET | `/preview/{project_id}/` | 빌드된 WebGL 게임 실행 |
 
 OpenAPI 문서는 `http://127.0.0.1:8000/docs`에서 확인한다.
 
@@ -157,3 +198,5 @@ OpenAPI 문서는 `http://127.0.0.1:8000/docs`에서 확인한다.
   응답 시간이 크게 증가할 수 있다.
 - `test-Generate`의 Visual Checklist는 Unity 화면 캡처를 사용하므로 그래픽 렌더링 가능한
   Unity 실행 환경이 필요하다.
+- WebGL Preview 빌드 중에는 같은 Unity 프로젝트를 Editor로 열 수 없다. LocalWeb은 자동
+  Editor 실행을 끄고 Preview가 끝난 뒤 `Unity Editor 열기` 버튼을 활성화한다.
