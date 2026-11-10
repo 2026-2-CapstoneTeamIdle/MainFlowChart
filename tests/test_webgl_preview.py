@@ -107,6 +107,17 @@ def test_webgl_build_command_targets_webgl(tmp_path: Path):
     )
 
 
+def test_webgl_preview_syncs_project_local_template(tmp_path: Path):
+    project = _unity_project(tmp_path)
+
+    webgl_preview._sync_preview_support(project)
+
+    builder = project / "Assets/GameTemplate/Editor/WebGLPreviewBuilder.cs"
+    template = project / "Assets/WebGLTemplates/TeamIdlePreview/index.html"
+    assert "PROJECT:TeamIdlePreview" in builder.read_text(encoding="utf-8")
+    assert "LOADER_FILENAME" in template.read_text(encoding="utf-8")
+
+
 def test_webgl_preview_uses_installed_editor_with_webgl_module(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

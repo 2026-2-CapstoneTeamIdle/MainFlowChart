@@ -10,6 +10,7 @@ namespace TeamIdle.GameTemplate.Editor
     public static class WebGLPreviewBuilder
     {
         private const string OutputArgument = "-webGLPreviewOutput";
+        private const string PreviewTemplate = "PROJECT:TeamIdlePreview";
 
         public static void BuildForPreview()
         {
@@ -27,11 +28,13 @@ namespace TeamIdle.GameTemplate.Editor
 
             Directory.CreateDirectory(outputPath);
             var previousCompression = PlayerSettings.WebGL.compressionFormat;
+            var previousTemplate = PlayerSettings.WebGL.template;
             try
             {
                 // LocalWeb serves this loopback-only preview directly. Uncompressed output avoids
                 // browser failures caused by missing Content-Encoding headers on static servers.
                 PlayerSettings.WebGL.compressionFormat = WebGLCompressionFormat.Disabled;
+                SelectPreviewTemplate();
                 var report = BuildPipeline.BuildPlayer(
                     new BuildPlayerOptions
                     {
@@ -54,8 +57,30 @@ namespace TeamIdle.GameTemplate.Editor
             finally
             {
                 PlayerSettings.WebGL.compressionFormat = previousCompression;
+                PlayerSettings.WebGL.template = previousTemplate;
                 AssetDatabase.SaveAssets();
             }
+        }
+
+        private static void SelectPreviewTemplate()
+        {
+            var templateIndex = Path.Combine(
+                Application.dataPath,
+                "WebGLTemplates",
+                "TeamIdlePreview",
+                "index.html"
+            );
+            if (!File.Exists(templateIndex))
+            {
+                throw new FileNotFoundException(
+                    "The LocalWeb project template is missing its WebGL preview page.",
+                    templateIndex
+                );
+            }
+
+            // Use a project-local template so headless builds never depend on Unity Hub's
+            // application template cache or an Editor installation-specific template path.
+            PlayerSettings.WebGL.template = PreviewTemplate;
         }
 
         private static string ReadRequiredArgument(string argumentName)

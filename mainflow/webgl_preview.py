@@ -16,6 +16,9 @@ from queue import Empty, Queue
 from game_pipeline.unity_project_validator import UnityProjectValidator
 
 WEBGL_SUCCESS_MARKER = "UNITY_WEBGL_PREVIEW_OK:"
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+_PREVIEW_BUILDER_RELATIVE_PATH = Path("Assets/GameTemplate/Editor/WebGLPreviewBuilder.cs")
+_PREVIEW_TEMPLATE_RELATIVE_PATH = Path("Assets/WebGLTemplates/TeamIdlePreview")
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,8 @@ def build_webgl_preview(
                 "UNITY_EDITOR_PATH로 지정하세요."
             )
         editor = fallback
+
+    _sync_preview_support(project)
 
     timeout = timeout_seconds or _timeout_seconds()
     staging = output.parent / f".{output.name}-staging-{uuid.uuid4().hex}"
@@ -176,6 +181,27 @@ def _build_command(editor: Path, project_root: Path, output_root: Path) -> list[
         "-logFile",
         "-",
     ]
+
+
+def _sync_preview_support(project_root: Path) -> None:
+    """Install repository-owned preview tooling into old and new generated projects."""
+
+    source_root = _REPOSITORY_ROOT / "unity_template"
+    source_builder = source_root / _PREVIEW_BUILDER_RELATIVE_PATH
+    source_template = source_root / _PREVIEW_TEMPLATE_RELATIVE_PATH
+    if not source_builder.is_file() or not (source_template / "index.html").is_file():
+        raise WebGLPreviewBuildError("LocalWeb WebGL Preview 지원 파일을 찾지 못했습니다.")
+
+    destination_builder = project_root / _PREVIEW_BUILDER_RELATIVE_PATH
+    destination_template = project_root / _PREVIEW_TEMPLATE_RELATIVE_PATH
+    try:
+        destination_builder.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_builder, destination_builder)
+        shutil.copytree(source_template, destination_template, dirs_exist_ok=True)
+    except OSError as error:
+        raise WebGLPreviewBuildError(
+            f"Unity 프로젝트에 WebGL Preview 지원 파일을 준비하지 못했습니다: {error}"
+        ) from error
 
 
 def _read_project_version(project_root: Path) -> str | None:
