@@ -72,6 +72,9 @@ docker compose run --rm mainflow `
 
 - `MAINFLOW_OPENAI_IMAGE_MODEL`: 모델, 기본값 `gpt-image-2.5-sunburst` (`gpt-image-1`은 2026-10-23 서비스 종료)
 - `MAINFLOW_OPENAI_IMAGE_QUALITY`: `low | medium | high`, 기본값 `medium`
+- `MAINFLOW_APPLY_IMAGE_ASSETS`: `off | on`, 기본값 `off`. `off`이면 이미지는 생성·검증까지만 하고
+  Unity 프로젝트에는 적용하지 않는다. 생성 결과는 `workspace/{project_id}/generated/images/`에 남고,
+  Unity는 기본 도형으로 표시되며 최종 검증은 이미지 적용 항목을 면제한다. 사운드는 그대로 적용된다.
 - `Custom` 스타일의 참고 이미지(`reference_image`)는 이미지 편집 endpoint로 함께 전달한다.
 - 결과가 안전 필터에 차단되면 프롬프트를 바꿔 최대 3회 시도하고, 실패는 draft `notes`에 남긴다.
 

@@ -610,6 +610,7 @@ class GameFailureIsolationTest(unittest.TestCase):
                     {
                         "MAINFLOW_WORKSPACE": str(workspace),
                         "MAINFLOW_UNITY_VALIDATION_MODE": "static",
+                        "MAINFLOW_APPLY_IMAGE_ASSETS": "on",
                         "SOUND_PROVIDER": "procedural",
                         "SOUND_BGM_SECONDS": "4",
                     },

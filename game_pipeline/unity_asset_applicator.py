@@ -60,6 +60,7 @@ class UnityAssetApplicator:
         *,
         include_unvalidated_drafts: bool = False,
         exclude_placeholder_images: bool = False,
+        skip_image_application: bool = False,
     ) -> UnityAssetApplicationResult:
         project_root = self.manager.resolve_project_path(project_id, self.UNITY_PROJECT_ROOT)
         if not (project_root / "ProjectSettings/ProjectVersion.txt").is_file():
@@ -67,8 +68,19 @@ class UnityAssetApplicator:
 
         entries: list[AssetBindingEntry] = []
         warnings: list[str] = []
+        # Suppressed images are generated but deliberately left out of Unity, so the
+        # required-asset and final image checks waive them instead of failing.
         suppressed_placeholder_image_ids: set[str] = set()
-        if exclude_placeholder_images and "generator=placeholder" in image_draft["notes"]:
+        if skip_image_application:
+            image_assets, image_ids = [], set()
+            suppressed_placeholder_image_ids = {
+                str(asset["asset_id"]) for asset in image_draft["assets"]
+            }
+            warnings.append(
+                "Image application is disabled; generated images stay in generated/images and "
+                "Unity keeps its primitive visuals."
+            )
+        elif exclude_placeholder_images and "generator=placeholder" in image_draft["notes"]:
             image_assets, image_ids = [], set()
             suppressed_placeholder_image_ids = {
                 str(asset["asset_id"]) for asset in image_draft["assets"]
