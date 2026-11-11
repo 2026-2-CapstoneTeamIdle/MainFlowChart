@@ -342,8 +342,24 @@ class GameFailureIsolationTest(unittest.TestCase):
                 state.update(design_game_logic_node(state))
 
                 draft = ArtifactManager().read_json(state["game_logic_draft"])
+                image_request = ArtifactManager().read_json(state["image_asset_request"])
 
             self.assertEqual(draft["status"], "generated")
+            image_ids = [item["asset_id"] for item in image_request["assets"]]
+            self.assertEqual(
+                image_ids,
+                [
+                    "platformer_player",
+                    "platformer_tileset",
+                    "platformer_enemy",
+                    "platformer_hazard",
+                    "platformer_collectible",
+                    "platformer_checkpoint",
+                    "platformer_goal",
+                    "stage_background",
+                ],
+            )
+            self.assertEqual(set(draft["required_image_asset_ids"]), set(image_ids))
             harness.implement_project.assert_called_once()
             harness.validate_and_repair.assert_called_once()
 
@@ -594,6 +610,7 @@ class GameFailureIsolationTest(unittest.TestCase):
                     {
                         "MAINFLOW_WORKSPACE": str(workspace),
                         "MAINFLOW_UNITY_VALIDATION_MODE": "static",
+                        "MAINFLOW_APPLY_IMAGE_ASSETS": "on",
                         "SOUND_PROVIDER": "procedural",
                         "SOUND_BGM_SECONDS": "4",
                     },

@@ -20,6 +20,15 @@ from mainflow.contracts import (
 )
 from mainflow.nodes._common import log
 
+APPLY_IMAGE_ASSETS_ENVIRONMENT_KEY = "MAINFLOW_APPLY_IMAGE_ASSETS"
+
+
+def image_application_enabled() -> bool:
+    """Return whether generated images are applied to Unity (default: off)."""
+
+    value = os.environ.get(APPLY_IMAGE_ASSETS_ENVIRONMENT_KEY, "off").strip().lower()
+    return value in {"on", "true", "1", "yes"}
+
 
 # Node 계약
 # - 이전 Node: validate_image + validate_sound (join)
@@ -72,7 +81,14 @@ def apply_assets_to_game_node(
         "claude-code",
         "claude_code",
     }
-    if exclude_placeholder_images and "generator=placeholder" in image_draft["notes"]:
+    # MAINFLOW_APPLY_IMAGE_ASSETS=on으로 켜기 전까지 이미지는 생성만 하고 Unity에 적용하지 않는다.
+    skip_image_application = not image_application_enabled()
+    if skip_image_application:
+        log(
+            "  - MAINFLOW_APPLY_IMAGE_ASSETS가 꺼져 있어 생성된 이미지는 "
+            "generated/images에만 두고 Unity에 적용하지 않습니다."
+        )
+    elif exclude_placeholder_images and "generator=placeholder" in image_draft["notes"]:
         log("  - 실제 이미지 백엔드가 없어 placeholder 이미지는 Unity에 적용하지 않습니다.")
     try:
         application = UnityAssetApplicator(manager).apply(
@@ -85,6 +101,7 @@ def apply_assets_to_game_node(
             sound_validation,
             include_unvalidated_drafts=game_failed,
             exclude_placeholder_images=exclude_placeholder_images,
+            skip_image_application=skip_image_application,
         )
         manifest_reference = manager.write_json(
             state["project_id"],

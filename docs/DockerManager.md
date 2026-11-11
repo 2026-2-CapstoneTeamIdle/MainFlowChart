@@ -72,6 +72,9 @@ docker compose run --rm mainflow `
 
 - `MAINFLOW_OPENAI_IMAGE_MODEL`: 모델, 기본값 `gpt-image-2.5-sunburst` (`gpt-image-1`은 2026-10-23 서비스 종료)
 - `MAINFLOW_OPENAI_IMAGE_QUALITY`: `low | medium | high`, 기본값 `medium`
+- `MAINFLOW_APPLY_IMAGE_ASSETS`: `off | on`, 기본값 `off`. `off`이면 이미지는 생성·검증까지만 하고
+  Unity 프로젝트에는 적용하지 않는다. 생성 결과는 `workspace/{project_id}/generated/images/`에 남고,
+  Unity는 기본 도형으로 표시되며 최종 검증은 이미지 적용 항목을 면제한다. 사운드는 그대로 적용된다.
 - `Custom` 스타일의 참고 이미지(`reference_image`)는 이미지 편집 endpoint로 함께 전달한다.
 - 결과가 안전 필터에 차단되면 프롬프트를 바꿔 최대 3회 시도하고, 실패는 draft `notes`에 남긴다.
 
@@ -79,6 +82,23 @@ docker compose run --rm mainflow `
 요청의 `generation_spec`에 명시한다. 생성 결과는 `unity_binding_key`를 에셋 필드로 그대로 반환하며,
 생성하지 못한 필수 에셋은 draft의 `missing_required_asset_ids`에 기록한다. 타일셋 기본 규격은
 32×32 타일 4열×4행(전체 128×128)이다.
+
+장르 기본 템플릿은 핵심 이미지(예: 플랫포머의 플레이어·타일셋)만 정의한다. `design_game_logic`은 레벨
+설계에 실제로 배치된 오브젝트 종류를 확인해 이미지 요청을 자동으로 추가한다
+(`game_pipeline/scene_visual_assets.py`). 추가 에셋은 선택(`required: false`)이라 생성에 실패해도
+Unity의 기본 도형으로 대체될 뿐 실행 전체가 실패하지 않는다.
+
+| 에셋 ID | 추가 조건 | Unity 오브젝트 |
+|---|---|---|
+| `platformer_enemy` | 레벨에 적 배치 | `PatrolEnemy_N` (애니메이션 시트 포함) |
+| `platformer_hazard` | 레벨에 함정 배치 | `Hazard_N` |
+| `platformer_collectible` | 레벨에 수집물 배치 | `Collectible_N` |
+| `platformer_checkpoint` | 레벨에 체크포인트 배치 | `Checkpoint_N` |
+| `platformer_goal` | 플랫포머 | `StageGoal` |
+| `stage_background` | 기본 템플릿에 배경 이미지가 없는 장르 | `Background` |
+
+Unity의 `GeneratedAssetBinder`는 생성된 스프라이트를 오브젝트에 연결할 때 기존 오브젝트 크기(충돌 범위)
+안에 비율을 유지해 맞춘다. 배경은 화면을 채우도록 맞춘다. 타일셋은 기존 방식대로 연결한다.
 
 ```powershell
 $env:MAINFLOW_IMAGE_BACKEND = "openai"

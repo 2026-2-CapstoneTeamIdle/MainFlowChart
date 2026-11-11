@@ -118,11 +118,11 @@ namespace TeamIdle.GameTemplate.Editor
                     }
 
                     registryAssets.Add((entry.asset_id, sprite));
-                    if (BindSprite(entry.asset_id, sprite, generatedRoot))
+                    if (BindSprite(entry, sprite, generatedRoot))
                     {
                         report.scene_bound_asset_ids.Add(entry.asset_id);
                     }
-                    BindGeneratedPrefab(entry.asset_id, sprite, report);
+                    BindGeneratedPrefab(entry, sprite, report);
                 }
                 else if (entry.asset_type == "sound")
                 {
@@ -203,6 +203,15 @@ namespace TeamIdle.GameTemplate.Editor
             importer.spritePixelsPerUnit = Mathf.Max(1, entry.pixels_per_unit);
             importer.alphaIsTransparency = entry.transparent;
             importer.mipmapEnabled = false;
+            if (entry.sprite_mode != "multiple")
+            {
+                // Sliced draw mode (used to fit generated art into the planned object size)
+                // needs a full-rect mesh.
+                var textureSettings = new TextureImporterSettings();
+                importer.ReadTextureSettings(textureSettings);
+                textureSettings.spriteMeshType = SpriteMeshType.FullRect;
+                importer.SetTextureSettings(textureSettings);
+            }
             importer.filterMode =
                 imageStyle == "Pixel Art" ? FilterMode.Point : FilterMode.Bilinear;
             importer.SaveAndReimport();
@@ -354,26 +363,81 @@ namespace TeamIdle.GameTemplate.Editor
             importer.SaveAndReimport();
         }
 
-        private static bool BindSprite(string assetId, Sprite sprite, Transform generatedRoot)
+        private static bool BindSprite(BindingEntry entry, Sprite sprite, Transform generatedRoot)
         {
-            var names = SceneObjectNames(assetId);
+            var names = SceneObjectNames(entry.asset_id);
             var bound = false;
             foreach (var renderer in generatedRoot.GetComponentsInChildren<SpriteRenderer>(true))
             {
                 if (names.Any(name => RendererNameMatches(renderer.name, name)))
                 {
-                    renderer.sprite = sprite;
+                    AssignSprite(renderer, sprite, entry.kind);
                     bound = true;
                 }
             }
             return bound;
         }
 
+        // Scene objects are built from a 1x1-unit placeholder scaled to their gameplay size,
+        // and their colliders were sized from that placeholder. Swapping in generated art
+        // must keep that footprint, so the new sprite is drawn inside the old visual box
+        // (aspect-fit, or aspect-fill for backgrounds) through SpriteRenderer.size instead of
+        // changing the transform scale, which would also resize colliders and child anchors.
+        private static void AssignSprite(SpriteRenderer renderer, Sprite sprite, string kind)
+        {
+            var previous = renderer.sprite;
+            if (kind == "tileset" || previous == null)
+            {
+                renderer.sprite = sprite;
+                return;
+            }
+
+            var scale = renderer.transform.localScale;
+            var previousSize =
+                renderer.drawMode == SpriteDrawMode.Simple
+                    ? (Vector2)previous.bounds.size
+                    : renderer.size;
+            var box = new Vector2(
+                previousSize.x * Mathf.Abs(scale.x),
+                previousSize.y * Mathf.Abs(scale.y)
+            );
+            var natural = (Vector2)sprite.bounds.size;
+            renderer.sprite = sprite;
+            if (
+                box.x <= 0f
+                || box.y <= 0f
+                || natural.x <= 0f
+                || natural.y <= 0f
+                || Mathf.Approximately(scale.x, 0f)
+                || Mathf.Approximately(scale.y, 0f)
+            )
+            {
+                return;
+            }
+
+            var fit =
+                kind == "background"
+                    ? Mathf.Max(box.x / natural.x, box.y / natural.y)
+                    : Mathf.Min(box.x / natural.x, box.y / natural.y);
+            renderer.drawMode = SpriteDrawMode.Sliced;
+            renderer.size = new Vector2(
+                natural.x * fit / Mathf.Abs(scale.x),
+                natural.y * fit / Mathf.Abs(scale.y)
+            );
+        }
+
+        // Keep in sync with game_pipeline/scene_visual_assets.py, which requests these images.
         private static string[] SceneObjectNames(string assetId) =>
             assetId switch
             {
                 "player_sprite" or "platformer_player" => new[] { "Player" },
                 "platformer_tileset" => new[] { "Ground", "Platform_" },
+                "platformer_enemy" => new[] { "PatrolEnemy_" },
+                "platformer_hazard" => new[] { "Hazard_" },
+                "platformer_collectible" => new[] { "Collectible_" },
+                "platformer_checkpoint" => new[] { "Checkpoint_" },
+                "platformer_goal" => new[] { "StageGoal" },
+                "stage_background" => new[] { "Background" },
                 "tower_sprite" => new[] { "Tower" },
                 "card_frame" or "card_art" => new[] { "CardSlot_" },
                 "novel_background" => new[] { "SceneBackground" },
@@ -388,9 +452,13 @@ namespace TeamIdle.GameTemplate.Editor
                 ? rendererName.StartsWith(target, StringComparison.Ordinal)
                 : rendererName == target;
 
-        private static void BindGeneratedPrefab(string assetId, Sprite sprite, BindingReport report)
+        private static void BindGeneratedPrefab(
+            BindingEntry entry,
+            Sprite sprite,
+            BindingReport report
+        )
         {
-            var path = assetId switch
+            var path = entry.asset_id switch
             {
                 "enemy_sprite" =>
                     $"{PrefabSceneAssembler.GeneratedPrefabRoot}/SurvivorEnemy.prefab",
@@ -410,9 +478,9 @@ namespace TeamIdle.GameTemplate.Editor
                 var renderer = root.GetComponentInChildren<SpriteRenderer>(true);
                 if (renderer != null)
                 {
-                    renderer.sprite = sprite;
+                    AssignSprite(renderer, sprite, entry.kind);
                     PrefabUtility.SaveAsPrefabAsset(root, path);
-                    report.scene_bound_asset_ids.Add(assetId);
+                    report.scene_bound_asset_ids.Add(entry.asset_id);
                 }
             }
             finally

@@ -252,6 +252,31 @@ class UnityAssetApplicatorTest(unittest.TestCase):
             " ".join(placeholder_result.manifest["warnings"]),
         )
 
+        skipped_result = UnityAssetApplicator(self.manager).apply(
+            self.project_id,
+            image_request,
+            sound_request,
+            image_draft,
+            sound_draft,
+            image_validation,
+            sound_validation,
+            skip_image_application=True,
+        )
+        self.assertEqual(skipped_result.applied_image_asset_ids, [])
+        self.assertEqual(
+            skipped_result.suppressed_placeholder_image_asset_ids,
+            ["enemy_sprite", "player_sprite"],
+        )
+        self.assertEqual(skipped_result.manifest["missing_required_asset_ids"], [])
+        self.assertEqual(
+            {entry["asset_type"] for entry in skipped_result.manifest["entries"]},
+            {"sound"},
+        )
+        self.assertIn(
+            "Image application is disabled",
+            " ".join(skipped_result.manifest["warnings"]),
+        )
+
     @staticmethod
     def _image_item(asset_id: str, required: bool) -> dict[str, object]:
         return {
