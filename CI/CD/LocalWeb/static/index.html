@@ -10,14 +10,12 @@
   <body>
     <main class="page-shell">
       <header class="hero">
-        <div>
-          <p class="eyebrow">TEAM IDLE · LOCAL WORKSPACE</p>
-          <h1>Game Workflow</h1>
-          <p class="hero-copy">
-            AI 역할을 지정하고, Condition에서 분석된 Feature를 승인한 뒤 게임 제작과 검증을
-            실행합니다.
-          </p>
-        </div>
+        <img
+          class="hero-logo"
+          src="/static/assets/team-idle-logo.png"
+          alt="겜마툴"
+          decoding="async"
+        />
         <div class="server-state" aria-live="polite">
           <span id="status-dot" class="status-dot status-dot--pending"></span>
           <span id="status-text">로컬 서버 확인 중</span>
@@ -30,39 +28,50 @@
             <p class="section-label">MODEL ROUTING</p>
             <h2 id="models-heading">기능별 AI 설정</h2>
           </div>
-          <button id="save-models" class="secondary-button" type="button">설정 저장</button>
+          <button
+            id="model-settings-toggle"
+            class="secondary-button"
+            type="button"
+            aria-expanded="false"
+            aria-controls="model-settings-content"
+          >설정 펼치기</button>
         </div>
-        <p class="section-help">
-          Local 모델은 프로젝트에 등록된 목록에서 선택합니다. API 키는 브라우저로 다시
-          반환되지 않으며, 서버의 <code>workspace/.localweb/secrets.env</code>에만 저장됩니다.
-        </p>
-        <div id="model-grid" class="model-grid" aria-live="polite"></div>
-
-        <details class="credential-box">
-          <summary>API 인증 정보</summary>
-          <div class="credential-grid">
-            <label>
-              OpenAI API Key <span id="openai-key-state" class="key-state"></span>
-              <input id="openai-key" type="password" autocomplete="new-password" placeholder="새 키를 입력할 때만 작성" />
-            </label>
-            <label>
-              Gemini API Key <span id="gemini-key-state" class="key-state"></span>
-              <input id="gemini-key" type="password" autocomplete="new-password" placeholder="새 키를 입력할 때만 작성" />
-            </label>
-            <label>
-              Vast.ai Inference Key <span id="vastai-key-state" class="key-state"></span>
-              <input id="vastai-key" type="password" autocomplete="new-password" placeholder="새 키를 입력할 때만 작성" />
-            </label>
-            <label>
-              ElevenLabs API Key <span id="elevenlabs-key-state" class="key-state"></span>
-              <input id="elevenlabs-key" type="password" autocomplete="new-password" placeholder="새 키를 입력할 때만 작성" />
-            </label>
-          </div>
-          <p class="security-note">
-            키는 Workflow State, 프롬프트, 로그, API 응답에 포함되지 않습니다. 이 페이지는
-            반드시 <code>127.0.0.1</code>에서만 사용하세요.
+        <div id="model-settings-content" hidden>
+          <p class="section-help">
+            Local 모델은 프로젝트에 등록된 목록에서 선택합니다. API 키는 브라우저로 다시
+            반환되지 않으며, 서버의 <code>workspace/.localweb/secrets.env</code>에만 저장됩니다.
           </p>
-        </details>
+          <div id="model-grid" class="model-grid" aria-live="polite"></div>
+
+          <details class="credential-box">
+            <summary>API 인증 정보</summary>
+            <div class="credential-grid">
+              <label>
+                OpenAI API Key <span id="openai-key-state" class="key-state"></span>
+                <input id="openai-key" type="password" autocomplete="new-password" placeholder="새 키를 입력할 때만 작성" />
+              </label>
+              <label>
+                Gemini API Key <span id="gemini-key-state" class="key-state"></span>
+                <input id="gemini-key" type="password" autocomplete="new-password" placeholder="새 키를 입력할 때만 작성" />
+              </label>
+              <label>
+                Vast.ai Inference Key <span id="vastai-key-state" class="key-state"></span>
+                <input id="vastai-key" type="password" autocomplete="new-password" placeholder="새 키를 입력할 때만 작성" />
+              </label>
+              <label>
+                ElevenLabs API Key <span id="elevenlabs-key-state" class="key-state"></span>
+                <input id="elevenlabs-key" type="password" autocomplete="new-password" placeholder="새 키를 입력할 때만 작성" />
+              </label>
+            </div>
+            <p class="security-note">
+              키는 Workflow State, 프롬프트, 로그, API 응답에 포함되지 않습니다. 이 페이지는
+              반드시 <code>127.0.0.1</code>에서만 사용하세요.
+            </p>
+          </details>
+          <div class="settings-actions">
+            <button id="save-models" class="secondary-button" type="button">설정 저장</button>
+          </div>
+        </div>
       </section>
 
       <section class="panel" aria-labelledby="request-heading">
@@ -158,10 +167,15 @@
             <p class="section-label">LIVE WORKFLOW</p>
             <h2 id="progress-heading">개발 로그</h2>
           </div>
-          <span id="job-state" class="phase-badge">실행 전</span>
+          <div class="panel-heading-actions">
+            <button id="copy-log-button" class="secondary-button compact-button" type="button">로그 복사</button>
+            <span id="job-state" class="phase-badge">실행 전</span>
+          </div>
         </div>
-        <pre id="workflow-log" class="workflow-log" aria-live="polite">아직 실행된 프로젝트가 없습니다.</pre>
+        <p class="log-help">버튼을 누르거나 로그 영역에 포커스한 뒤 <kbd>Ctrl</kbd>+<kbd>C</kbd>로 전체 로그를 복사합니다.</p>
+        <pre id="workflow-log" class="workflow-log" aria-live="polite" tabindex="0">아직 실행된 프로젝트가 없습니다.</pre>
         <div class="action-row">
+          <button id="preview-button" class="preview-button is-hidden" type="button">Preview 플레이</button>
           <button id="open-unity-button" class="primary-button is-hidden" type="button">Unity Editor 열기</button>
         </div>
       </section>
