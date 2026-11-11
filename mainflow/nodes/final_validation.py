@@ -9,8 +9,11 @@ from pathlib import Path
 from typing import Any
 
 from game_pipeline import UnityProjectGenerator, UnityProjectValidator
+from game_pipeline.agent_harness_repair import repair_with_configured_agent_harness
+from game_pipeline.design_catalog import GENRE_ALIASES
 from game_pipeline.feature_planner import plan_feature_mechanics
 from game_pipeline.game_quality import parse_playtest_metrics
+from game_pipeline.runtime_invariants import REQUIRED_CAUSAL_TRANSITIONS
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -201,6 +204,52 @@ def final_validation_node(state: FinalValidationAgentInput) -> FinalValidationAg
                 else None,
             )
             outcome = validator.validate(root, draft, payloads["parsed_request"])
+            if outcome.status == "failed":
+                log("에셋 적용 후 Unity 검증 실패를 CLI Agent Harness에 전달해 다시 수정합니다.")
+                try:
+                    repair_result = repair_with_configured_agent_harness(
+                        project_root=root,
+                        workspace_root=manager.ensure_project(state["project_id"]),
+                        draft=draft,
+                        request=payloads["parsed_request"],
+                        initial_outcome=outcome,
+                        phase="final_validation",
+                        record=lambda name, data: manager.write_json(
+                            state["project_id"],
+                            "validation",
+                            f"agent_repair/final_validation/{name}.json",
+                            data,
+                            producer="final_validation",
+                        ),
+                    )
+                    if repair_result is not None:
+                        outcome = repair_result.outcome
+                        manager.write_json(
+                            state["project_id"],
+                            "validation",
+                            "agent_repair/final_validation/result.json",
+                            repair_result.to_dict(),
+                            producer="final_validation",
+                        )
+                        log(
+                            "CLI Agent Harness가 에셋 적용 후 검증을 "
+                            f"{len(repair_result.repair_results)}회 수정 후 통과했습니다."
+                        )
+                except Exception as repair_error:  # noqa: BLE001 - preserve original evidence
+                    outcome.checks.append(
+                        {
+                            "criterion_id": "agent_harness.final_validation_repair",
+                            "passed": False,
+                            "message": f"Final agent repair failed: {repair_error}",
+                        }
+                    )
+                    outcome.issues.append(
+                        {
+                            "code": "AGENT_POST_VALIDATION_REPAIR_FAILED",
+                            "severity": "error",
+                            "message": f"{type(repair_error).__name__}: {repair_error}",
+                        }
+                    )
             check(
                 "final.unity_validation",
                 outcome.status == "passed",
@@ -253,6 +302,7 @@ def final_validation_node(state: FinalValidationAgentInput) -> FinalValidationAg
             )
             expected = {scenario["scenario_id"] for scenario in plan["scenarios"]}
             passed = set(telemetry["passed_scenarios"])
+            passed_transitions = set(telemetry["passed_transitions"])
             runtime_plan_passed = (
                 runtime
                 and telemetry["completed"]
@@ -264,6 +314,20 @@ def final_validation_node(state: FinalValidationAgentInput) -> FinalValidationAg
                 "final.start_to_goal",
                 runtime_plan_passed,
                 "Every genre-specific executable scenario must pass after asset import",
+            )
+            genre_profile = GENRE_ALIASES.get(logic["genre"])
+            expected_transitions = set(
+                REQUIRED_CAUSAL_TRANSITIONS.get(genre_profile, ()) if genre_profile else ()
+            )
+            check(
+                "final.causal_gameplay",
+                expected_transitions <= passed_transitions,
+                (
+                    "Required gameplay cause-and-effect transitions passed"
+                    if expected_transitions <= passed_transitions
+                    else "Missing gameplay transitions: "
+                    + ", ".join(sorted(expected_transitions - passed_transitions))
+                ),
             )
             for criterion in logic["criteria"]:
                 # Semantic criteria require their own explicit checks, never a broad target status.

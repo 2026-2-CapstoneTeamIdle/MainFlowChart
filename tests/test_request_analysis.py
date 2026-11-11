@@ -200,6 +200,84 @@ class RequestAnalysisTest(unittest.TestCase):
         self.assertIn("수집 완료 후 스테이지 클리어", names)
         self.assertNotIn("사용자 지정 조건", names)
 
+    def test_explicit_no_attack_overrides_enemy_attack_keywords(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory) / "workspace"
+            with patch.dict(
+                os.environ,
+                {
+                    "MAINFLOW_WORKSPACE": str(workspace),
+                    "MAINFLOW_CONDITION_FEATURE_PROVIDER": "off",
+                    "MAINFLOW_GENRE_FEATURE_PROVIDER": "off",
+                },
+            ):
+                state = parse_input_node(
+                    {
+                        "image_style": "Pixel Art",
+                        "mood_style": "Fantasy",
+                        "genre": "플랫포머",
+                        "viewpoint": "사이드뷰",
+                        "condition": (
+                            "근접 적은 플레이어에게 다가와 공격한다. "
+                            "플레이어는 공격 능력이 없으며 적을 피하거나 함정으로 유인한다."
+                        ),
+                    }
+                )
+                state.update(analysis_node(state))  # type: ignore[arg-type]
+                state.update(logic_analysis_node(state))  # type: ignore[arg-type]
+                manager = ArtifactManager()
+                analysis = manager.read_json(state["analysis"])
+                logic = manager.read_json(state["logic_analysis"])
+
+        self.assertNotIn("공격", [feature["name"] for feature in analysis["features"]])
+        self.assertTrue(
+            any("공격 능력이 없" in feature["description"] for feature in analysis["features"])
+        )
+        self.assertNotIn(
+            "플레이어가 적 또는 목표를 공격할 수 있다.",
+            [criterion["description"] for criterion in logic["criteria"]],
+        )
+        self.assertTrue(
+            any("공격 능력이 없" in criterion["description"] for criterion in logic["criteria"])
+        )
+
+    def test_tower_attack_is_not_misclassified_as_player_attack(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory) / "workspace"
+            with patch.dict(
+                os.environ,
+                {
+                    "MAINFLOW_WORKSPACE": str(workspace),
+                    "MAINFLOW_CONDITION_FEATURE_PROVIDER": "off",
+                    "MAINFLOW_GENRE_FEATURE_PROVIDER": "off",
+                },
+            ):
+                state = parse_input_node(
+                    {
+                        "image_style": "Pixel Art",
+                        "mood_style": "Fantasy",
+                        "genre": "타워디펜스",
+                        "viewpoint": "탑다운",
+                        "condition": (
+                            "플레이어는 골드를 사용해 성벽 안쪽 건설 지점에 타워를 배치한다. "
+                            "타워는 사거리 안의 적을 자동으로 공격하고 적을 처치하면 골드를 준다."
+                        ),
+                    }
+                )
+                state.update(analysis_node(state))  # type: ignore[arg-type]
+                state.update(logic_analysis_node(state))  # type: ignore[arg-type]
+                manager = ArtifactManager()
+                analysis = manager.read_json(state["analysis"])
+                logic = manager.read_json(state["logic_analysis"])
+
+        names = [feature["name"] for feature in analysis["features"]]
+        self.assertIn("타워 배치", names)
+        self.assertNotIn("공격", names)
+        self.assertNotIn(
+            "플레이어가 적 또는 목표를 공격할 수 있다.",
+            [criterion["description"] for criterion in logic["criteria"]],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -141,6 +141,33 @@ namespace TeamIdle.GameTemplate.Editor
     }
 
     [Serializable]
+    public sealed class UiTheme
+    {
+        public string visual_direction = string.Empty;
+        public List<string> palette = new();
+        public string typography = string.Empty;
+        public string panel_style = string.Empty;
+    }
+
+    [Serializable]
+    public sealed class UiLayoutRegion
+    {
+        public string region_id = string.Empty;
+        public string anchor = string.Empty;
+        public string purpose = string.Empty;
+        public List<string> visible_data = new();
+    }
+
+    [Serializable]
+    public sealed class UiScreenRequirement
+    {
+        public string screen_id = string.Empty;
+        public string purpose = string.Empty;
+        public List<string> required_elements = new();
+        public string activation_condition = string.Empty;
+    }
+
+    [Serializable]
     public sealed class PresentationPlan
     {
         public const string AssetPath =
@@ -155,6 +182,9 @@ namespace TeamIdle.GameTemplate.Editor
         public List<string> animation_requests = new();
         public List<string> required_image_asset_ids = new();
         public List<string> required_sound_asset_ids = new();
+        public UiTheme ui_theme = new();
+        public List<UiLayoutRegion> hud_layout = new();
+        public List<UiScreenRequirement> screen_requirements = new();
 
         public static PresentationPlan Load()
         {

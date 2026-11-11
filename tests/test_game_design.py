@@ -106,6 +106,14 @@ class GameDesignTest(unittest.TestCase):
         self.assertGreaterEqual(len(content["rewards"]), 2)
         balance_ids = {stat["stat_id"] for stat in design_v2["balance_plan"]["stats"]}
         self.assertTrue({"player_health", "move_speed", "jump_height"}.issubset(balance_ids))
+        presentation = design_v2["presentation_plan"]
+        self.assertGreaterEqual(len(presentation["ui_theme"]["palette"]), 4)
+        self.assertGreaterEqual(len(presentation["hud_layout"]), 3)
+        self.assertTrue(
+            {"hud", "stage_result", "failure"}.issubset(
+                {screen["screen_id"] for screen in presentation["screen_requirements"]}
+            )
+        )
         final_platform = level["zones"][-1]["platforms"][-1]
         self.assertGreater(level["goal"]["x"], final_platform["x"])
         self.assertTrue(
@@ -249,6 +257,18 @@ class GameDesignTest(unittest.TestCase):
                 "VisualNovel",
                 {"asset_requirements": [duplicate, duplicate]},
             )
+
+    def test_tower_defense_uses_tower_runtime_scenarios(self) -> None:
+        design = build_game_logic_design(normalize_game_spec("타워 디펜스"))
+
+        scenario_ids = {
+            item["scenario_id"] for item in design["design_v2"]["validation_plan"]["scenarios"]
+        }
+
+        self.assertEqual(
+            scenario_ids,
+            {"tower_build_and_spend", "tower_spawn_and_path", "tower_kill_reward"},
+        )
 
 
 if __name__ == "__main__":

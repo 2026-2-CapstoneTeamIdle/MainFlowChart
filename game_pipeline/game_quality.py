@@ -6,15 +6,18 @@ import json
 import re
 
 from mainflow.contracts import GameLogicDesign, GameQualityReport, PlaytestMetrics, QualityMetric
+from game_pipeline.runtime_invariants import REQUIRED_CAUSAL_TRANSITIONS
 
 _METRICS_MARKER = re.compile(r"UNITY_PLAYTEST_METRICS:(\{.*\})")
 _SCENARIO_MARKER = re.compile(r"UNITY_VALIDATION_SCENARIO_OK:([^\r\n]+)")
+_TRANSITION_MARKER = re.compile(r"UNITY_CAUSAL_TRANSITION_OK:([^\r\n]+)")
 _VALIDATION_FAIL_MARKER = re.compile(r"VALIDATION_FAIL:([^\r\n]+)")
 
 
 def parse_playtest_metrics(unity_log: str) -> PlaytestMetrics:
     marker_scenarios = _SCENARIO_MARKER.findall(unity_log)
     marker_failures = _VALIDATION_FAIL_MARKER.findall(unity_log)
+    marker_transitions = _TRANSITION_MARKER.findall(unity_log)
     defaults: PlaytestMetrics = {
         "completed": "UNITY_RUNTIME_SMOKE_OK:" in unity_log,
         "elapsed_seconds": 0.0,
@@ -24,6 +27,7 @@ def parse_playtest_metrics(unity_log: str) -> PlaytestMetrics:
         "failed_transition": "",
         "unused_requested_features": [],
         "passed_scenarios": marker_scenarios,
+        "passed_transitions": marker_transitions,
         "validation_failures": marker_failures,
     }
     matches = _METRICS_MARKER.findall(unity_log)
@@ -39,6 +43,9 @@ def parse_playtest_metrics(unity_log: str) -> PlaytestMetrics:
             defaults[key] = payload[key]
     defaults["passed_scenarios"] = list(
         dict.fromkeys([*marker_scenarios, *defaults["passed_scenarios"]])
+    )
+    defaults["passed_transitions"] = list(
+        dict.fromkeys([*marker_transitions, *defaults["passed_transitions"]])
     )
     defaults["unused_requested_features"] = list(
         dict.fromkeys(defaults["unused_requested_features"])
@@ -77,6 +84,14 @@ def evaluate_game_quality(
         if expected_scenarios
         else 1.0
     )
+    expected_transitions = set(REQUIRED_CAUSAL_TRANSITIONS[level["genre"]])
+    passed_transitions = set(telemetry["passed_transitions"])
+    transition_ratio = (
+        len(expected_transitions & passed_transitions) / len(expected_transitions)
+        if expected_transitions
+        else 1.0
+    )
+    playtest_ratio = min(scenario_ratio, transition_ratio)
     zones = level["zones"]
     zone_ratio = min(1.0, len(zones) / 3) if level["genre"] == "Platformer" else 1.0
     placements = sum(
@@ -122,10 +137,12 @@ def evaluate_game_quality(
         ),
         (
             "playtest_completion",
-            20.0 * scenario_ratio,
+            20.0 * playtest_ratio,
             20.0,
-            telemetry["completed"] and scenario_ratio == 1.0,
-            f"{len(passed_scenarios & expected_scenarios)}/{len(expected_scenarios)} scenarios passed",
+            telemetry["completed"] and scenario_ratio == 1.0 and transition_ratio == 1.0,
+            f"{len(passed_scenarios & expected_scenarios)}/{len(expected_scenarios)} scenarios and "
+            f"{len(passed_transitions & expected_transitions)}/{len(expected_transitions)} "
+            "causal transitions passed",
         ),
         (
             "level_structure",
@@ -184,7 +201,13 @@ def evaluate_game_quality(
         "report_version": "1.0.0",
         "score": score,
         "threshold": threshold,
-        "passed": score >= threshold and telemetry["completed"] and not validation_failures,
+        "passed": (
+            score >= threshold
+            and telemetry["completed"]
+            and scenario_ratio == 1.0
+            and transition_ratio == 1.0
+            and not validation_failures
+        ),
         "metrics": metrics,
         "problems": problems,
         "telemetry": telemetry,

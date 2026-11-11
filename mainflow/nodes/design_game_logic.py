@@ -231,28 +231,29 @@ def design_game_logic_node(
             "design-review",
             "design v2 documents and validation plan passed deterministic validation",
         )
-        development_loop.mark_passed(
-            "module-selection",
-            f"selected {len(design['selected_modules'])} reusable Unity modules",
-        )
-        for module_id in design["selected_modules"]:
+        if not agent_harness_enabled:
             development_loop.mark_passed(
-                f"bind-module-{module_id.replace('_', '-')}",
-                f"catalog resolved {module_id} to a repository-owned component",
+                "module-selection",
+                f"selected {len(design['selected_modules'])} reusable Unity modules",
             )
-        development_loop.mark_passed(
-            "configure-content",
-            "content definitions and placement counts passed design v2 validation",
-        )
-        for zone in design["design_v2"]["level_plan"]["zones"]:
+            for module_id in design["selected_modules"]:
+                development_loop.mark_passed(
+                    f"bind-module-{module_id.replace('_', '-')}",
+                    f"catalog resolved {module_id} to a repository-owned component",
+                )
             development_loop.mark_passed(
-                f"assemble-zone-{zone['zone_id'].replace('_', '-')}",
-                f"zone {zone['zone_id']} route and planned content passed deterministic checks",
+                "configure-content",
+                "content definitions and placement counts passed design v2 validation",
             )
-        development_loop.mark_passed(
-            "bind-presentation",
-            "HUD, transition, camera, and feedback requirements are present in presentation_plan",
-        )
+            for zone in design["design_v2"]["level_plan"]["zones"]:
+                development_loop.mark_passed(
+                    f"assemble-zone-{zone['zone_id'].replace('_', '-')}",
+                    f"zone {zone['zone_id']} route and planned content passed deterministic checks",
+                )
+            development_loop.mark_passed(
+                "bind-presentation",
+                "HUD, transition, camera, and feedback requirements are present in presentation_plan",
+            )
         feature_generator = None
         if design["unsupported_mechanics"] and game_builder == "pipeline":
             log(f"기존 모듈에 없는 기능을 {feature_provider} 모델로 생성합니다.")

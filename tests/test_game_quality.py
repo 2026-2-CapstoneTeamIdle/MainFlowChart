@@ -24,6 +24,12 @@ class GameQualityTest(unittest.TestCase):
             "failed_transition": "",
             "unused_requested_features": [],
             "passed_scenarios": ["feature_binding", "checkpoint_recovery", "start_to_goal"],
+            "passed_transitions": [
+                "platformer.collectible_to_progress",
+                "platformer.hazard_to_health",
+                "platformer.death_to_checkpoint",
+                "platformer.requirements_to_clear",
+            ],
             "validation_failures": [],
         }
         log = "UNITY_PLAYTEST_METRICS:" + json.dumps(payload)
@@ -64,6 +70,13 @@ class GameQualityTest(unittest.TestCase):
             "failed_transition": "",
             "unused_requested_features": [],
             "passed_scenarios": ["survivor_spawn_chase_attack_progression"],
+            "passed_transitions": [
+                "survivor.spawn_to_chase",
+                "survivor.attack_to_damage",
+                "survivor.death_to_progression",
+                "survivor.xp_to_choices",
+                "survivor.choice_to_stat",
+            ],
             "validation_failures": [],
         }
 
@@ -74,6 +87,40 @@ class GameQualityTest(unittest.TestCase):
 
         self.assertTrue(report["passed"])
         self.assertEqual(report["score"], 100)
+
+    def test_missing_causal_transition_fails_quality_gate(self) -> None:
+        design = build_game_logic_design(normalize_game_spec("플랫포머"))
+        payload = {
+            "completed": True,
+            "passed_scenarios": ["feature_binding", "checkpoint_recovery", "start_to_goal"],
+            "passed_transitions": ["platformer.collectible_to_progress"],
+        }
+
+        report = evaluate_game_quality(
+            design,
+            "UNITY_PLAYTEST_METRICS:" + json.dumps(payload),
+        )
+
+        self.assertFalse(report["passed"])
+        completion = next(
+            metric for metric in report["metrics"] if metric["metric_id"] == "playtest_completion"
+        )
+        self.assertFalse(completion["passed"])
+        self.assertIn("1/4 causal transitions", completion["evidence"])
+
+    def test_transition_markers_merge_with_metrics_payload(self) -> None:
+        log = (
+            "UNITY_CAUSAL_TRANSITION_OK:survivor.spawn_to_chase\n"
+            'UNITY_PLAYTEST_METRICS:{"completed":true,'
+            '"passed_transitions":["survivor.attack_to_damage"]}'
+        )
+
+        metrics = parse_playtest_metrics(log)
+
+        self.assertEqual(
+            metrics["passed_transitions"],
+            ["survivor.spawn_to_chase", "survivor.attack_to_damage"],
+        )
 
     def test_classifies_binding_failure_separately_from_compile_failure(self) -> None:
         binding = UnityValidationOutcome(

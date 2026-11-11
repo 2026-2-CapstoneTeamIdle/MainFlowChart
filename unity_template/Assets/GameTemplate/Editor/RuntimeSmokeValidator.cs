@@ -9,6 +9,7 @@ using TeamIdle.GameTemplate.TowerDefense;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.UI;
 
 namespace TeamIdle.GameTemplate.Editor
 {
@@ -27,6 +28,7 @@ namespace TeamIdle.GameTemplate.Editor
             public string failed_transition = string.Empty;
             public List<string> unused_requested_features = new();
             public List<string> passed_scenarios = new();
+            public List<string> passed_transitions = new();
             public List<string> validation_failures = new();
         }
 
@@ -45,6 +47,10 @@ namespace TeamIdle.GameTemplate.Editor
         private static bool movementTest;
         private static bool airDashObserved;
         private static int traversalPhase;
+
+        // Validation phases must keep advancing after a game pauses itself on clear/game-over.
+        // Scaled game time freezes at Time.timeScale == 0 and previously turned a successful goal
+        // transition into the generic 30-second runtime.timeout failure.
         private static float phaseStartedAt;
         private static ValidationPlan validationPlan;
         private static CollectibleSystemModule collectibleSystem;
@@ -80,6 +86,9 @@ namespace TeamIdle.GameTemplate.Editor
         private static int genreCurrencyAfterBuild;
         private static float genreEnemyHealthAtAttackStart;
         private static int genreExperienceAtAttackStart;
+        private static int genreScenarioPhase;
+
+        private static float PhaseElapsed => Time.realtimeSinceStartup - phaseStartedAt;
 
         static RuntimeSmokeValidator()
         {
@@ -110,6 +119,7 @@ namespace TeamIdle.GameTemplate.Editor
             genreCurrencyAfterBuild = -1;
             genreEnemyHealthAtAttackStart = -1f;
             genreExperienceAtAttackStart = -1;
+            genreScenarioPhase = 0;
             collectibleSystem = null;
             goalSystem = null;
             stageController = null;
@@ -128,6 +138,7 @@ namespace TeamIdle.GameTemplate.Editor
             Metrics.failed_transition = string.Empty;
             Metrics.unused_requested_features.Clear();
             Metrics.passed_scenarios.Clear();
+            Metrics.passed_transitions.Clear();
             Metrics.validation_failures.Clear();
             SessionState.SetBool(Active, true);
             EditorSceneManager.OpenScene(TemplateProjectBuilder.ScenePath);
@@ -224,6 +235,11 @@ namespace TeamIdle.GameTemplate.Editor
                         return;
                     }
                 }
+                if (IsAgentHarnessProject() && !ValidateAgentHarnessUi(out var uiFailure))
+                {
+                    Finish(false, "runtime.ui_quality: " + uiFailure);
+                    return;
+                }
                 player = GameObject.Find("Player");
                 activeGenre = GameBootstrap.Instance?.Config?.Genre ?? "unknown";
                 movementTest =
@@ -243,7 +259,7 @@ namespace TeamIdle.GameTemplate.Editor
                 InputAdapterModule.TestInputEnabled = movementTest || activeGenre == "SurvivorLike";
                 InputAdapterModule.TestMovement = Vector2.right;
                 InputAdapterModule.TestConfirmPressed = false;
-                phaseStartedAt = Time.timeSinceLevelLoad;
+                phaseStartedAt = Time.realtimeSinceStartup;
                 runStartedAt = Time.timeSinceLevelLoad;
             }
             if (frames < 10)
@@ -298,7 +314,7 @@ namespace TeamIdle.GameTemplate.Editor
                     Finish(false, "runtime.position_non_finite");
                     return;
                 }
-                if (traversalPhase == 0 && Time.timeSinceLevelLoad - phaseStartedAt >= 0.5f)
+                if (traversalPhase == 0 && PhaseElapsed >= 0.5f)
                 {
                     if (position.x - initialPosition.x < 0.1f)
                     {
@@ -327,7 +343,7 @@ namespace TeamIdle.GameTemplate.Editor
 
                 if (traversalPhase == 1)
                 {
-                    var elapsed = Time.timeSinceLevelLoad - phaseStartedAt;
+                    var elapsed = PhaseElapsed;
                     InputAdapterModule.TestDashPressed = elapsed < 0.1f;
                     airDashObserved |= airDash.IsDashing;
                     if (elapsed < 0.35f)
@@ -348,7 +364,7 @@ namespace TeamIdle.GameTemplate.Editor
                     return;
                 }
 
-                if (traversalPhase == 2 && Time.timeSinceLevelLoad - phaseStartedAt >= 0.35f)
+                if (traversalPhase == 2 && PhaseElapsed >= 0.35f)
                 {
                     if (position.y - phaseStartPosition.y < 0.2f || !wallClimb.IsClimbing)
                     {
@@ -366,6 +382,92 @@ namespace TeamIdle.GameTemplate.Editor
                     return;
                 }
             }
+        }
+
+        private static bool IsAgentHarnessProject()
+        {
+            const string designPath = "Assets/GameTemplate/Generated/GameLogicDesign.json";
+            return System.IO.File.Exists(designPath)
+                && System
+                    .IO.File.ReadAllText(designPath)
+                    .Contains("\"agent_harness_mode\"", StringComparison.Ordinal);
+        }
+
+        private static bool ValidateAgentHarnessUi(out string issue)
+        {
+            var canvases = SceneObjects<Canvas>();
+            if (canvases.Count == 0)
+            {
+                issue = "a player-facing Canvas is required";
+                return false;
+            }
+
+            var hasResponsiveScaler = false;
+            foreach (var canvas in canvases)
+            {
+                var scaler = canvas.GetComponent<CanvasScaler>();
+                hasResponsiveScaler |=
+                    scaler != null
+                    && scaler.uiScaleMode == CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            }
+            if (!hasResponsiveScaler)
+            {
+                issue = "CanvasScaler.ScaleWithScreenSize is required";
+                return false;
+            }
+
+            var graphics = SceneObjects<Graphic>();
+            var texts = SceneObjects<Text>();
+            var buttons = SceneObjects<Button>();
+            if (graphics.Count < 6 || texts.Count < 3 || buttons.Count < 1)
+            {
+                issue =
+                    $"insufficient uGUI hierarchy: graphics={graphics.Count}, texts={texts.Count}, "
+                    + $"buttons={buttons.Count}; require >=6, >=3, >=1";
+                return false;
+            }
+
+            foreach (var text in texts)
+            {
+                if (text.fontSize > 0 && text.fontSize < 14)
+                {
+                    issue = $"text '{text.name}' is too small ({text.fontSize}px)";
+                    return false;
+                }
+            }
+
+            var legacyDebugUi =
+                UnityEngine.Object.FindFirstObjectByType<PrototypeSceneController>();
+            if (legacyDebugUi != null && legacyDebugUi.enabled)
+            {
+                issue = "PrototypeSceneController IMGUI debug panel must be disabled or replaced";
+                return false;
+            }
+
+            issue = string.Empty;
+            Debug.Log(
+                $"UNITY_UI_QUALITY_OK:canvas={canvases.Count}:graphics={graphics.Count}:"
+                    + $"texts={texts.Count}:buttons={buttons.Count}"
+            );
+            return true;
+        }
+
+        private static List<T> SceneObjects<T>()
+            where T : Component
+        {
+            var result = new List<T>();
+            foreach (var candidate in Resources.FindObjectsOfTypeAll<T>())
+            {
+                if (
+                    candidate != null
+                    && candidate.gameObject.scene.IsValid()
+                    && candidate.hideFlags == HideFlags.None
+                )
+                {
+                    result.Add(candidate);
+                }
+            }
+            return result;
         }
 
         private static void TickTowerDefenseScenario()
@@ -407,9 +509,31 @@ namespace TeamIdle.GameTemplate.Editor
                 }
 
                 genreCurrencyAfterBuild = economy.Currency;
+                MarkCausalTransition("tower.build_to_currency");
 
                 Metrics.passed_scenarios.Add("tower_build_and_spend");
                 Debug.Log("UNITY_VALIDATION_SCENARIO_OK:tower_build_and_spend");
+            }
+
+            if (genreScenarioPhase == 3)
+            {
+                if (economy.Currency <= genreCurrencyAfterBuild)
+                {
+                    if (Time.timeSinceLevelLoad - genrePhaseStartedAt > 1f)
+                    {
+                        Finish(false, "runtime.tower_reward: killing an enemy granted no gold");
+                    }
+                    return;
+                }
+
+                MarkCausalTransition("tower.death_to_reward");
+                Metrics.passed_scenarios.Add("tower_spawn_and_path");
+                Metrics.passed_scenarios.Add("tower_kill_reward");
+                Debug.Log("UNITY_VALIDATION_SCENARIO_OK:tower_spawn_and_path");
+                Debug.Log("UNITY_VALIDATION_SCENARIO_OK:tower_kill_reward");
+                Debug.Log("UNITY_VALIDATION_PLAN_OK:1");
+                Finish(true, "runtime.tower_defense: build, path, attack, kill, and reward linked");
+                return;
             }
 
             if (genreActor == null)
@@ -425,6 +549,7 @@ namespace TeamIdle.GameTemplate.Editor
                         genreActor = candidate.transform;
                         genreActorStart = genreActor.position;
                         genrePhaseStartedAt = Time.timeSinceLevelLoad;
+                        genreScenarioPhase = 1;
                         break;
                     }
                 }
@@ -439,12 +564,15 @@ namespace TeamIdle.GameTemplate.Editor
                 }
             }
 
-            if (Time.timeSinceLevelLoad - genrePhaseStartedAt < 0.6f)
+            if (genreScenarioPhase == 1 && Time.timeSinceLevelLoad - genrePhaseStartedAt < 0.6f)
             {
                 return;
             }
 
-            if (Vector3.Distance(genreActorStart, genreActor.position) < 0.1f)
+            if (
+                genreScenarioPhase == 1
+                && Vector3.Distance(genreActorStart, genreActor.position) < 0.1f
+            )
             {
                 Finish(false, "runtime.tower_path: spawned enemy did not follow the path");
                 return;
@@ -463,19 +591,42 @@ namespace TeamIdle.GameTemplate.Editor
                 return;
             }
 
-            enemyHealth.Damage(enemyHealth.Maximum);
-            if (economy.Currency <= genreCurrencyAfterBuild)
+            if (genreScenarioPhase == 1)
             {
-                Finish(false, "runtime.tower_reward: killing an enemy granted no gold");
+                var weapon = UnityEngine.Object.FindFirstObjectByType<PrototypeTowerWeapon>();
+                if (weapon == null)
+                {
+                    Finish(false, "runtime.tower_combat: built tower has no active weapon");
+                    return;
+                }
+                MarkCausalTransition("tower.spawn_to_path");
+                genreEnemyHealthAtAttackStart = enemyHealth.Current;
+                genreActor.position =
+                    weapon.transform.position
+                    + Vector3.right * Mathf.Min(1.5f, weapon.Range * 0.5f);
+                Physics2D.SyncTransforms();
+                genreScenarioPhase = 2;
+                genrePhaseStartedAt = Time.timeSinceLevelLoad;
                 return;
             }
 
-            Metrics.passed_scenarios.Add("tower_spawn_and_path");
-            Metrics.passed_scenarios.Add("tower_kill_reward");
-            Debug.Log("UNITY_VALIDATION_SCENARIO_OK:tower_spawn_and_path");
-            Debug.Log("UNITY_VALIDATION_SCENARIO_OK:tower_kill_reward");
-            Debug.Log("UNITY_VALIDATION_PLAN_OK:1");
-            Finish(true, "runtime.tower_defense: first wave spawned and followed its path");
+            if (genreScenarioPhase == 2)
+            {
+                if (enemyHealth.Current < genreEnemyHealthAtAttackStart)
+                {
+                    genreCombatObserved = true;
+                    MarkCausalTransition("tower.attack_to_damage");
+                    enemyHealth.Damage(enemyHealth.Current);
+                    genreScenarioPhase = 3;
+                    genrePhaseStartedAt = Time.timeSinceLevelLoad;
+                    return;
+                }
+                if (Time.timeSinceLevelLoad - genrePhaseStartedAt > 5f)
+                {
+                    Finish(false, "runtime.tower_attack: built tower caused no enemy damage");
+                }
+                return;
+            }
         }
 
         private static void TickSurvivorLikeScenario()
@@ -569,6 +720,7 @@ namespace TeamIdle.GameTemplate.Editor
                                 "runtime.survivor_target: spawned enemy is not bound to Player"
                             );
                         }
+                        MarkCausalTransition("survivor.spawn_to_chase");
                         break;
                     }
                 }
@@ -631,6 +783,7 @@ namespace TeamIdle.GameTemplate.Editor
                     }
                     return;
                 }
+                MarkCausalTransition("survivor.attack_to_damage");
                 if (
                     enemyHealth != null
                     && genreEnemyHealthAtAttackStart >= 0f
@@ -661,6 +814,7 @@ namespace TeamIdle.GameTemplate.Editor
                 Finish(false, "runtime.survivor_reward: defeating an enemy granted no XP");
                 return;
             }
+            MarkCausalTransition("survivor.death_to_progression");
 
             if (!genreProgressionTriggered)
             {
@@ -673,6 +827,41 @@ namespace TeamIdle.GameTemplate.Editor
                 Finish(false, "runtime.survivor_progression: level-up produced no upgrade choices");
                 return;
             }
+            MarkCausalTransition("survivor.xp_to_choices");
+
+            var movement = UnityEngine.Object.FindFirstObjectByType<TopDownMovementModule>();
+            var autoTarget = UnityEngine.Object.FindFirstObjectByType<AutoTargetSystemModule>();
+            var moveSpeedBefore = movement?.MoveSpeed ?? -1f;
+            var damageBefore = autoTarget?.Damage ?? -1f;
+            var attackSpeedBefore = autoTarget?.AttacksPerSecond ?? -1f;
+            var projectileCountBefore = autoTarget?.ProjectileCount ?? -1;
+            if (!upgrades.Select(0))
+            {
+                Finish(
+                    false,
+                    "runtime.survivor_upgrade_selection: first choice could not be selected"
+                );
+                return;
+            }
+            var upgradeChangedState =
+                (movement != null && !Mathf.Approximately(movement.MoveSpeed, moveSpeedBefore))
+                || (
+                    autoTarget != null
+                    && (
+                        !Mathf.Approximately(autoTarget.Damage, damageBefore)
+                        || !Mathf.Approximately(autoTarget.AttacksPerSecond, attackSpeedBefore)
+                        || autoTarget.ProjectileCount != projectileCountBefore
+                    )
+                );
+            if (!upgradeChangedState)
+            {
+                Finish(
+                    false,
+                    "runtime.survivor_upgrade_effect: selected choice changed no observable stat"
+                );
+                return;
+            }
+            MarkCausalTransition("survivor.choice_to_stat");
 
             Metrics.passed_scenarios.Add("survivor_spawn_chase_attack_progression");
             Debug.Log("UNITY_VALIDATION_SCENARIO_OK:survivor_spawn_chase_attack_progression");
@@ -743,7 +932,7 @@ namespace TeamIdle.GameTemplate.Editor
                 RouteObstacleXs.Add(enemy.transform.position.x - enemy.Range);
             }
             RouteObstacleXs.Sort();
-            phaseStartedAt = Time.timeSinceLevelLoad;
+            phaseStartedAt = Time.realtimeSinceStartup;
             InputAdapterModule.TestMovement = Vector2.right;
             InputAdapterModule.TestConfirmPressed = true;
         }
@@ -792,7 +981,7 @@ namespace TeamIdle.GameTemplate.Editor
                 BeginValidationPlanTests();
                 return;
             }
-            if (now - phaseStartedAt > routeTimeoutSeconds)
+            if (PhaseElapsed > routeTimeoutSeconds)
             {
                 Finish(
                     false,
@@ -958,7 +1147,7 @@ namespace TeamIdle.GameTemplate.Editor
             hazardTestStartedAt = Time.timeSinceLevelLoad;
             playerHealth.Changed -= OnHazardHealthChanged;
             playerHealth.Changed += OnHazardHealthChanged;
-            phaseStartedAt = Time.timeSinceLevelLoad;
+            phaseStartedAt = Time.realtimeSinceStartup;
         }
 
         private static void OnHazardHealthChanged(float current, float maximum)
@@ -982,12 +1171,12 @@ namespace TeamIdle.GameTemplate.Editor
             player.transform.position = position;
             playerBody.linearVelocity = Vector2.zero;
             Physics2D.SyncTransforms();
-            phaseStartedAt = Time.timeSinceLevelLoad;
+            phaseStartedAt = Time.realtimeSinceStartup;
         }
 
         private static void TickValidationPlan()
         {
-            if (Time.timeSinceLevelLoad - phaseStartedAt < 0.25f)
+            if (PhaseElapsed < 0.25f)
             {
                 return;
             }
@@ -999,6 +1188,7 @@ namespace TeamIdle.GameTemplate.Editor
                     Finish(false, "runtime.collectible_trigger: count did not increase");
                     return;
                 }
+                MarkCausalTransition("platformer.collectible_to_progress");
                 collectibleIndex++;
                 BeginCollectibleTest();
                 return;
@@ -1019,6 +1209,7 @@ namespace TeamIdle.GameTemplate.Editor
             {
                 if (hazardDamageObserved)
                 {
+                    MarkCausalTransition("platformer.hazard_to_health");
                     playerHealth.Changed -= OnHazardHealthChanged;
                     // Contact damage and death recovery are separate requirements. A normal
                     // hazard may deal only one point, so force the remaining health to zero after
@@ -1034,7 +1225,7 @@ namespace TeamIdle.GameTemplate.Editor
                         playerHealth.Damage(playerHealth.Current);
                     }
                     traversalPhase = 14;
-                    phaseStartedAt = Time.timeSinceLevelLoad;
+                    phaseStartedAt = Time.realtimeSinceStartup;
                     return;
                 }
 
@@ -1082,6 +1273,7 @@ namespace TeamIdle.GameTemplate.Editor
                     return;
                 }
                 MarkScenarioPassed("checkpoint_recovery");
+                MarkCausalTransition("platformer.death_to_checkpoint");
                 BeginGoalTest();
                 return;
             }
@@ -1094,6 +1286,7 @@ namespace TeamIdle.GameTemplate.Editor
                     return;
                 }
                 MarkScenarioPassed("start_to_goal");
+                MarkCausalTransition("platformer.requirements_to_clear");
                 if (PassedScenarios.Count != validationPlan.scenarios.Count)
                 {
                     Finish(
@@ -1124,13 +1317,22 @@ namespace TeamIdle.GameTemplate.Editor
             }
         }
 
+        private static void MarkCausalTransition(string transitionId)
+        {
+            if (!Metrics.passed_transitions.Contains(transitionId))
+            {
+                Metrics.passed_transitions.Add(transitionId);
+                Debug.Log("UNITY_CAUSAL_TRANSITION_OK:" + transitionId);
+            }
+        }
+
         private static void BeginAirDashTest()
         {
             traversalPhase = 1;
             player.transform.position = new Vector3(0f, 2f, 0f);
             playerBody.linearVelocity = Vector2.zero;
             phaseStartPosition = player.transform.position;
-            phaseStartedAt = Time.timeSinceLevelLoad;
+            phaseStartedAt = Time.realtimeSinceStartup;
             InputAdapterModule.TestMovement = Vector2.right;
             InputAdapterModule.TestDashPressed = true;
         }
@@ -1148,7 +1350,7 @@ namespace TeamIdle.GameTemplate.Editor
             collider.size = new Vector2(0.25f, 4f);
             Physics2D.SyncTransforms();
             phaseStartPosition = player.transform.position;
-            phaseStartedAt = Time.timeSinceLevelLoad;
+            phaseStartedAt = Time.realtimeSinceStartup;
             InputAdapterModule.TestMovement = Vector2.one;
         }
 

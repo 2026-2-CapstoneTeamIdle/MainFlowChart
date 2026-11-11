@@ -122,6 +122,58 @@ def _presentation_plan(
             "animation_requests": ["idle", "run", "attack", "hit", "death"],
             "required_image_asset_ids": image_ids,
             "required_sound_asset_ids": sound_ids,
+            "ui_theme": {
+                "visual_direction": "compact survival HUD with strong danger and reward contrast",
+                "palette": ["#101827", "#E94F64", "#55D6BE", "#F6C453", "#F4F7FB"],
+                "typography": "high-contrast sans serif with large numeric counters",
+                "panel_style": "dark translucent cards with colored progress fills",
+            },
+            "hud_layout": [
+                {
+                    "region_id": "survival_status",
+                    "anchor": "top-left",
+                    "purpose": "keep survival state readable during dense combat",
+                    "visible_data": ["health bar", "level", "experience bar"],
+                },
+                {
+                    "region_id": "encounter_status",
+                    "anchor": "top-center",
+                    "purpose": "communicate time pressure and boss timing",
+                    "visible_data": ["survival timer", "boss warning"],
+                },
+                {
+                    "region_id": "build_summary",
+                    "anchor": "bottom-left",
+                    "purpose": "show the current weapon build without blocking play",
+                    "visible_data": ["weapon icons", "upgrade levels"],
+                },
+            ],
+            "screen_requirements": [
+                {
+                    "screen_id": "hud",
+                    "purpose": "continuous combat and progression readability",
+                    "required_elements": ["health bar", "experience bar", "level", "timer"],
+                    "activation_condition": "playing",
+                },
+                {
+                    "screen_id": "level_up_choice",
+                    "purpose": "choose one of three readable upgrades",
+                    "required_elements": ["three upgrade cards", "title", "selection feedback"],
+                    "activation_condition": "level threshold reached",
+                },
+                {
+                    "screen_id": "stage_result",
+                    "purpose": "summarize a successful run",
+                    "required_elements": ["result title", "run statistics", "restart action"],
+                    "activation_condition": "boss defeated",
+                },
+                {
+                    "screen_id": "failure",
+                    "purpose": "explain defeat and offer a retry",
+                    "required_elements": ["defeat title", "run statistics", "retry action"],
+                    "activation_condition": "player health reaches zero",
+                },
+            ],
         }
     return {
         "plan_version": "2.0.0",
@@ -157,6 +209,58 @@ def _presentation_plan(
         "animation_requests": ["idle", "run", "jump", "fall", "hit"],
         "required_image_asset_ids": image_ids,
         "required_sound_asset_ids": sound_ids,
+        "ui_theme": {
+            "visual_direction": "adventure HUD with clear objective and traversal feedback",
+            "palette": ["#111827", "#3B82F6", "#22C55E", "#FBBF24", "#F8FAFC"],
+            "typography": "bold readable sans serif with compact supporting labels",
+            "panel_style": "layered translucent cards, rounded visual rhythm, bright progress fills",
+        },
+        "hud_layout": [
+            {
+                "region_id": "player_status",
+                "anchor": "top-left",
+                "purpose": "show survivability without covering the route",
+                "visible_data": ["health bar", "current ability state"],
+            },
+            {
+                "region_id": "objective_status",
+                "anchor": "top-right",
+                "purpose": "make collection and goal conditions continuously clear",
+                "visible_data": ["objective text", "collectible progress", "score"],
+            },
+            {
+                "region_id": "context_feedback",
+                "anchor": "center",
+                "purpose": "briefly communicate checkpoints, damage, and completion",
+                "visible_data": ["status banner", "interaction prompt"],
+            },
+        ],
+        "screen_requirements": [
+            {
+                "screen_id": "hud",
+                "purpose": "continuous health and objective readability",
+                "required_elements": ["health bar", "objective tracker", "collectible counter"],
+                "activation_condition": "playing",
+            },
+            {
+                "screen_id": "pause",
+                "purpose": "pause safely and expose core actions",
+                "required_elements": ["resume", "restart", "controls summary"],
+                "activation_condition": "pause input",
+            },
+            {
+                "screen_id": "stage_result",
+                "purpose": "confirm completion and summarize performance",
+                "required_elements": ["clear title", "score summary", "restart action"],
+                "activation_condition": "goal completed",
+            },
+            {
+                "screen_id": "failure",
+                "purpose": "communicate defeat and enable retry",
+                "required_elements": ["failure reason", "retry action"],
+                "activation_condition": "player health reaches zero",
+            },
+        ],
     }
 
 
@@ -248,11 +352,37 @@ def validate_design_v2(bundle: DesignV2Bundle) -> None:
             )
         if not bundle["content_plan"]["enemies"] or not bundle["content_plan"]["rewards"]:
             raise ValueError("SurvivorLike content requires enemies and progression rewards")
+    elif level["genre"] == "TowerDefense":
+        scenario_ids = {
+            scenario["scenario_id"] for scenario in bundle["validation_plan"]["scenarios"]
+        }
+        required_scenarios = {
+            "tower_build_and_spend",
+            "tower_spawn_and_path",
+            "tower_kill_reward",
+        }
+        if scenario_ids != required_scenarios:
+            raise ValueError(
+                "validation_plan must contain exactly the executable tower-defense scenarios"
+            )
     elif not bundle["validation_plan"]["scenarios"]:
         raise ValueError("validation_plan requires at least one executable scenario")
     presentation = bundle["presentation_plan"]
     if "hud" not in presentation["ui_screens"]:
         raise ValueError("presentation_plan requires a HUD")
+    if len(presentation["ui_theme"]["palette"]) < 4:
+        raise ValueError("presentation_plan UI theme requires at least four palette colors")
+    if len(presentation["hud_layout"]) < 3:
+        raise ValueError("presentation_plan requires at least three intentional HUD regions")
+    screen_ids = {item["screen_id"] for item in presentation["screen_requirements"]}
+    required_screen_ids = {"hud", "stage_result", "failure"}
+    if not screen_ids.issuperset(required_screen_ids):
+        raise ValueError("presentation_plan is missing required state screen specifications")
+    for screen in presentation["screen_requirements"]:
+        if not screen["required_elements"]:
+            raise ValueError(
+                f"presentation screen {screen['screen_id']} requires concrete UI elements"
+            )
     cue_ids = {cue["cue_id"] for cue in presentation["feedback_cues"]}
     required_cues = (
         {"player_hit", "xp_pickup", "level_up", "boss_spawn"}
@@ -896,6 +1026,73 @@ def _validation_plan(game_spec: GameSpec, level_plan: LevelPlan) -> ValidationPl
                 },
             ],
             "required_scene_objects": ["Player", "GameHud", "EnemySpawnSystem"],
+            "required_feature_bindings": list(game_spec["mechanics"]),
+        }
+    if level_plan["genre"] == "TowerDefense":
+        return {
+            "plan_version": "2.0.0",
+            "scenarios": [
+                {
+                    "scenario_id": "tower_build_and_spend",
+                    "title": "건설 지점에서 타워 건설",
+                    "steps": [
+                        "spawn with positive base health and currency",
+                        "select build point",
+                        "build tower",
+                    ],
+                    "assertions": [
+                        "tower is created",
+                        "currency decreases by build cost",
+                        "HUD reflects currency",
+                    ],
+                },
+                {
+                    "scenario_id": "tower_spawn_and_path",
+                    "title": "적 생성과 경로 이동",
+                    "steps": ["start a wave", "spawn an enemy", "wait for waypoint movement"],
+                    "assertions": [
+                        "enemy follows the authored path",
+                        "enemy remains a valid target",
+                    ],
+                },
+                {
+                    "scenario_id": "tower_kill_reward",
+                    "title": "타워 공격과 처치 보상",
+                    "steps": [
+                        "bring an enemy into tower range",
+                        "wait for tower damage",
+                        "defeat enemy",
+                    ],
+                    "assertions": [
+                        "enemy health decreases",
+                        "enemy is removed once",
+                        "currency reward is granted",
+                    ],
+                },
+            ],
+            "rules": [
+                {
+                    "rule_id": "initial-state-viable",
+                    "description": "기지 체력과 골드가 유효한 양수 값으로 초기화되고 즉시 패배하지 않음",
+                    "required": True,
+                },
+                {
+                    "rule_id": "tower-loop-connected",
+                    "description": "건설·경로·공격·처치·보상 흐름이 실제 객체로 연결됨",
+                    "required": True,
+                },
+                {
+                    "rule_id": "hud-state-bound",
+                    "description": "골드·기지 체력·웨이브 상태가 실제 런타임 상태와 일치",
+                    "required": True,
+                },
+                {
+                    "rule_id": "victory-and-defeat-reachable",
+                    "description": "모든 웨이브 방어 승리와 기지 체력 0 패배가 도달 가능",
+                    "required": True,
+                },
+            ],
+            "required_scene_objects": ["Base", "GameHud", "BuildPoint", "WaveSpawner"],
             "required_feature_bindings": list(game_spec["mechanics"]),
         }
     scenarios = [

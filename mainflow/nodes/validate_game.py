@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import cast
 
 from game_pipeline import UnityProjectValidator
+from game_pipeline.agent_harness_repair import repair_with_configured_agent_harness
 from game_pipeline.feature_checklist_validation import FeatureChecklistWorkflow
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
@@ -107,6 +108,52 @@ def validate_game_node(
             request,
             allow_failed_diagnostic=generation_failed,
         )
+        if outcome.status == "failed" and not generation_failed and not source_errors:
+            log("후속 게임 검증 실패를 CLI Agent Harness에 전달해 다시 수정합니다.")
+            try:
+                repair_result = repair_with_configured_agent_harness(
+                    project_root=project_root,
+                    workspace_root=manager.ensure_project(state["project_id"]),
+                    draft=draft,
+                    request=request,
+                    initial_outcome=outcome,
+                    phase="validate_game",
+                    record=lambda name, data: manager.write_json(
+                        state["project_id"],
+                        "validation",
+                        f"agent_repair/validate_game/{name}.json",
+                        data,
+                        producer="validate_game",
+                    ),
+                )
+                if repair_result is not None:
+                    outcome = repair_result.outcome
+                    manager.write_json(
+                        state["project_id"],
+                        "validation",
+                        "agent_repair/validate_game/result.json",
+                        repair_result.to_dict(),
+                        producer="validate_game",
+                    )
+                    log(
+                        "CLI Agent Harness가 후속 게임 검증을 "
+                        f"{len(repair_result.repair_results)}회 수정 후 통과했습니다."
+                    )
+            except Exception as repair_error:  # noqa: BLE001 - preserve original evidence
+                outcome.checks.append(
+                    {
+                        "criterion_id": "agent_harness.validate_game_repair",
+                        "passed": False,
+                        "message": f"Downstream agent repair failed: {repair_error}",
+                    }
+                )
+                outcome.issues.append(
+                    {
+                        "code": "AGENT_POST_VALIDATION_REPAIR_FAILED",
+                        "severity": "error",
+                        "message": f"{type(repair_error).__name__}: {repair_error}",
+                    }
+                )
     except (TypeError, ValueError) as error:
         result = {
             "contract_version": CONTRACT_VERSION,

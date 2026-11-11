@@ -140,7 +140,15 @@ class FinalValidationTest(unittest.TestCase):
         }
         self.outcome = UnityValidationOutcome(
             checks=[{"criterion_id": "unity.runtime_smoke", "passed": True, "message": "fixture"}],
-            unity_log='UNITY_PLAYTEST_METRICS:{"completed":true,"passed_scenarios":["feature_binding","start_to_goal"]}',
+            unity_log=(
+                'UNITY_PLAYTEST_METRICS:{"completed":true,'
+                '"passed_scenarios":["feature_binding","start_to_goal"],'
+                '"passed_transitions":['
+                '"platformer.collectible_to_progress",'
+                '"platformer.hazard_to_health",'
+                '"platformer.death_to_checkpoint",'
+                '"platformer.requirements_to_clear"]}'
+            ),
         )
 
     def put(self, key, payload):
@@ -271,9 +279,28 @@ class FinalValidationTest(unittest.TestCase):
 
     def test_missing_start_to_goal_fails(self):
         self.outcome.unity_log = (
-            'UNITY_PLAYTEST_METRICS:{"completed":true,"passed_scenarios":["feature_binding"]}'
+            'UNITY_PLAYTEST_METRICS:{"completed":true,"passed_scenarios":["feature_binding"],'
+            '"passed_transitions":["platformer.collectible_to_progress",'
+            '"platformer.hazard_to_health","platformer.death_to_checkpoint",'
+            '"platformer.requirements_to_clear"]}'
         )
         self.assertEqual(self.run_final()["status"], "failed")
+
+    def test_missing_causal_transition_fails(self):
+        self.outcome.unity_log = (
+            'UNITY_PLAYTEST_METRICS:{"completed":true,'
+            '"passed_scenarios":["feature_binding","start_to_goal"],'
+            '"passed_transitions":["platformer.collectible_to_progress"]}'
+        )
+
+        result = self.run_final()
+
+        self.assertEqual(result["status"], "failed")
+        causal = next(
+            check for check in result["checks"] if check["criterion_id"] == "final.causal_gameplay"
+        )
+        self.assertFalse(causal["passed"])
+        self.assertIn("platformer.requirements_to_clear", causal["message"])
 
     def test_partial_upstream_failure_cannot_pass(self):
         payload = self.manager.read_json(self.state["sound_validation_result"])

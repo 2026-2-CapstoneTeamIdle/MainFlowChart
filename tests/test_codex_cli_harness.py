@@ -15,6 +15,7 @@ from game_pipeline.codex_cli.config import (
 )
 from game_pipeline.codex_cli.harness import (
     COMPLETION_SCHEMA,
+    CodexGameHarness,
     _failure_severity,
     _failure_signature,
     _implementation_prompt,
@@ -23,11 +24,14 @@ from game_pipeline.codex_cli.harness import (
     _ProjectSourceSnapshot,
     _repair_is_regression,
     _repair_prompt,
+    _restore_protected_asset_files,
     _validation_progress,
     _write_project_instructions,
     prepare_design_for_codex,
 )
-from game_pipeline.codex_cli.runner import CodexCliRunner
+from game_pipeline.codex_cli.preflight import CodexPreflightResult
+from game_pipeline.codex_cli.runner import CodexCliResult, CodexCliRunner
+from game_pipeline.implementation_task_planner import build_implementation_tasks
 from game_pipeline.unity_project_validator import UnityValidationOutcome
 
 
@@ -116,15 +120,63 @@ def test_runner_rejects_non_jsonl_output(tmp_path: Path) -> None:
         )
 
 
-def test_prepare_design_routes_only_missing_mechanics_to_codex() -> None:
+def test_prepare_design_gives_harness_all_gameplay_mechanics() -> None:
     design = {
+        "common_modules": ["game_bootstrap", "input_adapter"],
+        "selected_modules": [
+            "game_bootstrap",
+            "input_adapter",
+            "platformer_movement",
+            "goal_system",
+        ],
         "unsupported_mechanics": ["wall_climb", "air_dash"],
         "generated_modules": [{"module_id": "old"}],
+        "game_spec": {
+            "features": [
+                {
+                    "feature_id": "climb_goal",
+                    "description": "벽을 타고 목표에 도달한다.",
+                    "required": True,
+                }
+            ]
+        },
     }
     result = prepare_design_for_codex(design)  # type: ignore[arg-type]
-    assert result["codex_harness_requirements"] == ["wall_climb", "air_dash"]
+    assert result["codex_harness_requirements"] == [
+        "platformer_movement",
+        "goal_system",
+        "wall_climb",
+        "air_dash",
+    ]
+    assert result["agent_harness_template_modules"] == [
+        "platformer_movement",
+        "goal_system",
+    ]
+    assert result["agent_harness_feature_requirements"][0]["feature_id"] == "climb_goal"
+    assert result["agent_harness_mode"] == "whole_project"
     assert result["unsupported_mechanics"] == []
     assert result["generated_modules"] == []
+
+
+def test_agent_harness_task_plan_does_not_preapprove_template_modules() -> None:
+    design = {
+        "agent_harness_mode": "whole_project",
+        "codex_harness_requirements": ["platformer_movement", "goal_system"],
+        "game_spec": {"genre": "Platformer"},
+    }
+
+    plan = build_implementation_tasks(design, time_budget_seconds=7200)  # type: ignore[arg-type]
+    task_ids = [task["task_id"] for task in plan["tasks"]]
+
+    assert task_ids == [
+        "design-review",
+        "unity-project-generation",
+        "project-context-review",
+        "unity-playmode-validation",
+        "quality-evaluation",
+        "package-project",
+    ]
+    assert not any(task_id.startswith("bind-module-") for task_id in task_ids)
 
 
 def test_game_builder_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -220,10 +272,146 @@ def test_codex_prompts_reserve_unity_process_ownership_for_host(tmp_path: Path) 
     repair = _repair_prompt({"issues": []}, 1)
 
     assert "Do not launch Unity Editor" in instructions
+    assert "compatibility scaffold, not a finished genre template" in instructions
+    assert "reference implementations only" in instructions
     assert "Never create, edit, delete, or invent Unity `.meta` files" in instructions
     assert "every public `MonoBehaviour`" in instructions
+    assert "Every concrete generated module class must itself be `public`" in instructions
+    assert "presentation_plan.json` as an implementation contract" in instructions
+    assert "PrototypeSceneController` IMGUI debug panel" in instructions
+    assert "1280x720 and 1920x1080" in instructions
     assert "Do not launch" in implementation and "Unity" in implementation
+    assert "substantially the same game" in implementation
     assert "Do not launch Unity Editor" in repair
+
+
+def test_downstream_validation_failure_is_repaired_and_revalidated(tmp_path: Path) -> None:
+    project = tmp_path / "unity"
+    (project / "Assets").mkdir(parents=True)
+    executable = tmp_path / "codex.exe"
+    executable.write_bytes(b"")
+    prompts: list[str] = []
+
+    class FakeRunner:
+        def run(self, **kwargs):
+            prompts.append(kwargs["prompt"])
+            return CodexCliResult(
+                exit_code=0,
+                elapsed_seconds=0.1,
+                final_response=_completion(),
+                events=(),
+                audit_directory=kwargs["audit_directory"],
+            )
+
+    failed = UnityValidationOutcome(
+        checks=[
+            {
+                "criterion_id": "unity.runtime_smoke",
+                "passed": False,
+                "message": "Play Mode smoke tests failed; inspect log",
+            }
+        ],
+        issues=[
+            {
+                "code": "UNITY_RUNTIME_TEST_FAILED",
+                "severity": "error",
+                "message": "Play Mode smoke tests failed; inspect log",
+            }
+        ],
+        unity_log="UNITY_RUNTIME_SMOKE_FAILED: runtime.hazard_damage",
+    )
+    passed = UnityValidationOutcome(
+        checks=[
+            {
+                "criterion_id": "unity.runtime_smoke",
+                "passed": True,
+                "message": "Play Mode smoke tests passed",
+            }
+        ],
+        unity_log="UNITY_RUNTIME_SMOKE_OK:passed",
+    )
+    harness = CodexGameHarness(
+        _settings(executable),
+        audit_root=tmp_path / "audit",
+        runner=FakeRunner(),
+        preflight_runner=lambda _settings: CodexPreflightResult(
+            str(executable), "codex-test", "logged in"
+        ),
+    )
+    draft = {
+        "contract_version": "3.0.0",
+        "draft_id": "test",
+        "status": "generated",
+        "engine": "Unity",
+        "entry_scene": "game/unity_project/Assets/Scenes/Bootstrap.unity",
+        "source_artifacts": [],
+        "required_image_asset_ids": [],
+        "required_sound_asset_ids": [],
+        "notes": [],
+    }
+    request = {
+        "contract_version": "3.0.0",
+        "image_style": "Pixel Art",
+        "mood_style": "Fantasy",
+        "genre": "플랫포머",
+        "viewpoint": "사이드뷰",
+        "condition": "함정 피해를 받는 게임",
+        "custom_image": None,
+    }
+
+    with (
+        patch(
+            "game_pipeline.codex_cli.harness._normalize_windows_project_permissions",
+            return_value={"status": "passed"},
+        ),
+        patch("game_pipeline.codex_cli.harness._require_normalized_permissions"),
+        patch(
+            "game_pipeline.codex_cli.harness.UnityProjectValidator.validate",
+            return_value=passed,
+        ),
+    ):
+        result = harness.repair_existing_project(
+            project_root=project,
+            draft=draft,  # type: ignore[arg-type]
+            request=request,  # type: ignore[arg-type]
+            initial_outcome=failed,
+            phase="final_validation",
+            max_repairs=2,
+        )
+
+    assert result.outcome.status == "passed"
+    assert len(result.repair_results) == 1
+    assert result.validation_attempts[0]["phase"] == "final_validation"
+    assert "Validation phase: final_validation" in prompts[0]
+    assert "preserve generated and applied image/audio" in prompts[0]
+
+
+def test_final_repair_restores_validated_assets_but_keeps_source_changes(tmp_path: Path) -> None:
+    project = tmp_path / "unity"
+    asset = project / "Assets/GameTemplate/Generated/AppliedAssets/player.png"
+    manifest = project / "Assets/GameTemplate/Generated/AssetBindingManifest.json"
+    source = project / "Assets/GameTemplate/Runtime/Game.cs"
+    for path, content in (
+        (asset, b"validated-image"),
+        (manifest, b'{"validated":true}'),
+        (source, b"old-source"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    snapshot = _ProjectSourceSnapshot.capture(project)
+    asset.write_bytes(b"agent-replaced-image")
+    manifest.write_bytes(b"{}")
+    extra = project / "Assets/GameTemplate/Generated/AppliedAssets/unapproved.png"
+    extra.write_bytes(b"new")
+    source.write_bytes(b"repaired-source")
+
+    restored = _restore_protected_asset_files(snapshot, project)
+
+    assert asset.read_bytes() == b"validated-image"
+    assert manifest.read_bytes() == b'{"validated":true}'
+    assert not extra.exists()
+    assert source.read_bytes() == b"repaired-source"
+    assert len(restored) == 3
 
 
 def test_runtime_failure_signature_uses_actual_failed_transition() -> None:

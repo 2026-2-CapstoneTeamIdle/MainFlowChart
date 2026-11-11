@@ -8,6 +8,7 @@ import re
 import subprocess
 import time
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,7 @@ from game_pipeline.codex_cli.preflight import CodexPreflightResult, run_codex_pr
 from game_pipeline.codex_cli.runner import CodexCliResult, CodexCliRunner
 from game_pipeline.game_failure_classifier import classify_failure
 from game_pipeline.unity_project_validator import UnityProjectValidator, UnityValidationOutcome
-from mainflow.contracts import CONTRACT_VERSION, GameLogicDesign, ParsedRequest
+from mainflow.contracts import CONTRACT_VERSION, GameLogicDesign, GameLogicDraft, ParsedRequest
 
 Recorder = Callable[[str, Any], None]
 
@@ -137,6 +138,26 @@ class CodexHarnessResult:
 
 
 @dataclass(frozen=True)
+class AgentPostValidationRepairResult:
+    preflight: CodexPreflightResult
+    outcome: UnityValidationOutcome
+    repair_results: tuple[CodexCliResult, ...]
+    validation_attempts: tuple[dict[str, Any], ...]
+    provider: str
+    phase: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider,
+            "phase": self.phase,
+            "preflight": self.preflight.to_dict(),
+            "status": self.outcome.status,
+            "repair_results": [result.final_response for result in self.repair_results],
+            "validation_attempts": list(self.validation_attempts),
+        }
+
+
+@dataclass(frozen=True)
 class _ProjectSourceSnapshot:
     files: dict[str, bytes]
 
@@ -165,6 +186,42 @@ class _ProjectSourceSnapshot:
             target = project_root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
+
+
+_PROTECTED_ASSET_PREFIX = "Assets/GameTemplate/Generated/AppliedAssets/"
+_PROTECTED_ASSET_FILES = {
+    "Assets/GameTemplate/Generated/AssetBindingManifest.json",
+    "Assets/GameTemplate/Generated/AssetBindingReport.json",
+}
+
+
+def _restore_protected_asset_files(
+    snapshot: _ProjectSourceSnapshot, project_root: Path
+) -> list[str]:
+    """Undo downstream-agent edits to validated media while retaining gameplay source repairs."""
+
+    protected = {
+        relative: content
+        for relative, content in snapshot.files.items()
+        if relative.startswith(_PROTECTED_ASSET_PREFIX) or relative in _PROTECTED_ASSET_FILES
+    }
+    changed: list[str] = []
+    applied_root = project_root / _PROTECTED_ASSET_PREFIX
+    if applied_root.is_dir():
+        for path in applied_root.rglob("*"):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(project_root).as_posix()
+            if relative not in protected:
+                path.unlink()
+                changed.append(relative)
+    for relative, content in protected.items():
+        target = project_root / relative
+        if not target.is_file() or target.read_bytes() != content:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+            changed.append(relative)
+    return sorted(set(changed))
 
 
 class CodexGameHarness:
@@ -243,6 +300,74 @@ class CodexGameHarness:
     ) -> CodexHarnessResult:
         if self.preflight is None or self.implementation is None:
             raise RuntimeError(f"{self.agent_label} implementation must run before validation")
+        outcome, repairs, attempts = self._run_validation_repair_loop(
+            project_root=project_root,
+            draft=_validation_draft(project_root, design),
+            request=request,
+            phase="design_game_logic",
+        )
+        if outcome.status != "passed":
+            raise RuntimeError(f"{self.agent_label} validation repair loop ended without success")
+        return CodexHarnessResult(
+            self.preflight,
+            self.implementation,
+            repairs,
+            attempts,
+            self.provider,
+        )
+
+    def repair_existing_project(
+        self,
+        *,
+        project_root: Path,
+        draft: GameLogicDraft,
+        request: ParsedRequest,
+        initial_outcome: UnityValidationOutcome,
+        phase: str,
+        max_repairs: int,
+    ) -> AgentPostValidationRepairResult:
+        """Repair a project that failed in a downstream authoritative validation stage."""
+
+        if max_repairs < 1:
+            raise ValueError("Post-validation repair count must be positive")
+        if self.preflight is None:
+            self.preflight = self.preflight_runner(self.settings)
+            self._record(f"{self.provider}_{phase}_preflight", self.preflight.to_dict())
+        _prepare_host_owned_source_roots(project_root)
+        permissions = _normalize_windows_project_permissions(project_root)
+        self._record(f"{self.provider}_{phase}_project_permissions", permissions)
+        _require_normalized_permissions(permissions, f"before downstream {phase} repair")
+        outcome, repairs, attempts = self._run_validation_repair_loop(
+            project_root=project_root,
+            draft=draft,
+            request=request,
+            phase=phase,
+            initial_outcome=initial_outcome,
+            max_repairs=max_repairs,
+        )
+        return AgentPostValidationRepairResult(
+            self.preflight,
+            outcome,
+            repairs,
+            attempts,
+            self.provider,
+            phase,
+        )
+
+    def _run_validation_repair_loop(
+        self,
+        *,
+        project_root: Path,
+        draft: GameLogicDraft,
+        request: ParsedRequest,
+        phase: str,
+        initial_outcome: UnityValidationOutcome | None = None,
+        max_repairs: int | None = None,
+    ) -> tuple[
+        UnityValidationOutcome,
+        tuple[CodexCliResult, ...],
+        tuple[dict[str, Any], ...],
+    ]:
         validator = UnityProjectValidator(
             mode=os.environ.get("MAINFLOW_UNITY_VALIDATION_MODE", "required"),
             unity_editor=os.environ.get("UNITY_EDITOR_PATH"),
@@ -256,19 +381,23 @@ class CodexGameHarness:
         pending_baseline_outcome: UnityValidationOutcome | None = None
         pending_baseline_evidence: dict[str, Any] | None = None
         pending_baseline_severity: int | None = None
-        for attempt in range(self.settings.max_repairs + 1):
-            outcome = validator.validate(
-                project_root, _validation_draft(project_root, design), request
+        repair_limit = self.settings.max_repairs if max_repairs is None else max_repairs
+        for attempt in range(repair_limit + 1):
+            outcome = (
+                initial_outcome
+                if attempt == 0 and initial_outcome is not None
+                else validator.validate(project_root, draft, request)
             )
             evidence = {
                 "attempt": attempt,
+                "phase": phase,
                 "status": outcome.status,
                 "checks": outcome.checks,
                 "issues": outcome.issues,
                 "unity_log": outcome.unity_log,
             }
             attempts.append(evidence)
-            self._record(f"{self.provider}_validation_attempt_{attempt}", evidence)
+            self._record(f"{self.provider}_{phase}_validation_attempt_{attempt}", evidence)
             raw_classification = classify_failure(outcome)
             if raw_classification["target"] == "infrastructure":
                 raise RuntimeError(
@@ -292,7 +421,7 @@ class CodexGameHarness:
                 pending_snapshot.restore(project_root)
                 permission_report = _normalize_windows_project_permissions(project_root)
                 self._record(
-                    f"{self.provider}_repair_rollback_{attempt}",
+                    f"{self.provider}_{phase}_repair_rollback_{attempt}",
                     {
                         "reason": "repair introduced a more severe Unity failure",
                         "baseline": _bounded_feedback(pending_baseline_evidence),
@@ -312,16 +441,10 @@ class CodexGameHarness:
             pending_baseline_evidence = None
             pending_baseline_severity = None
             if outcome.status == "passed":
-                return CodexHarnessResult(
-                    self.preflight,
-                    self.implementation,
-                    tuple(repairs),
-                    tuple(attempts),
-                    self.provider,
-                )
+                return outcome, tuple(repairs), tuple(attempts)
             signature = _failure_signature(outcome)
             signatures[signature] = signatures.get(signature, 0) + 1
-            if attempt >= self.settings.max_repairs:
+            if attempt >= repair_limit:
                 raise RuntimeError(
                     f"{self.agent_label} Unity validation failed after {attempt} repairs: "
                     f"{outcome.issues}; "
@@ -350,18 +473,36 @@ class CodexGameHarness:
             try:
                 repair = self.runner.run(
                     project_root=project_root,
-                    prompt=_repair_prompt(feedback, attempt + 1),
+                    prompt=_repair_prompt(feedback, attempt + 1, phase=phase),
                     schema=COMPLETION_SCHEMA,
-                    audit_directory=self.audit_root / f"repair_{attempt + 1:02d}",
+                    audit_directory=self.audit_root / phase / f"repair_{attempt + 1:02d}",
                 )
             except Exception:
                 pending_snapshot.restore(project_root)
                 _normalize_windows_project_permissions(project_root)
                 raise
+            protected_restorations: list[str] = []
+            if phase == "final_validation":
+                protected_restorations = _restore_protected_asset_files(
+                    pending_snapshot, project_root
+                )
+                if protected_restorations:
+                    self._record(
+                        f"{self.provider}_{phase}_protected_assets_restored_{attempt + 1}",
+                        {
+                            "reason": (
+                                "The CLI agent may repair gameplay and bindings but may not "
+                                "replace already validated generated assets or their manifests."
+                            ),
+                            "paths": protected_restorations,
+                        },
+                    )
             permission_report = _normalize_windows_project_permissions(project_root)
             repairs.append(repair)
-            self._record(f"{self.provider}_repair_{attempt + 1}", repair.final_response)
-            self._record(f"{self.provider}_repair_permissions_{attempt + 1}", permission_report)
+            self._record(f"{self.provider}_{phase}_repair_{attempt + 1}", repair.final_response)
+            self._record(
+                f"{self.provider}_{phase}_repair_permissions_{attempt + 1}", permission_report
+            )
             _require_normalized_permissions(
                 permission_report, f"after {self.agent_label} repair {attempt + 1}"
             )
@@ -373,10 +514,29 @@ class CodexGameHarness:
 
 
 def prepare_design_for_codex(design: GameLogicDesign) -> GameLogicDesign:
-    """Let the template assemble known modules while a CLI agent owns missing mechanics."""
+    """Give a CLI agent ownership of gameplay while retaining the validated scaffold.
 
-    unsupported = list(design["unsupported_mechanics"])
-    design["codex_harness_requirements"] = unsupported
+    The previous harness only received mechanics missing from the reusable catalog.  That made
+    the agent treat every catalog hit as finished and reproduced the same genre prototype for
+    different requests.  Common modules remain infrastructure, but every genre/gameplay module
+    and every unsupported mechanic now requires a request-specific agent audit or rewrite.
+    """
+
+    common_modules = set(design.get("common_modules", []))
+    template_gameplay_modules = [
+        module_id
+        for module_id in design.get("selected_modules", [])
+        if module_id not in common_modules
+    ]
+    requirements = list(
+        dict.fromkeys([*template_gameplay_modules, *design["unsupported_mechanics"]])
+    )
+    design["agent_harness_mode"] = "whole_project"
+    design["agent_harness_template_modules"] = template_gameplay_modules
+    design["agent_harness_feature_requirements"] = deepcopy(
+        design.get("game_spec", {}).get("features", [])
+    )
+    design["codex_harness_requirements"] = requirements
     design["unsupported_mechanics"] = []
     design["generated_modules"] = []
     return design
@@ -440,6 +600,8 @@ def _write_project_instructions(
     filename: str = "AGENTS.md",
 ) -> None:
     requirements = design.get("codex_harness_requirements", [])
+    feature_requirements = design.get("agent_harness_feature_requirements", [])
+    template_modules = design.get("agent_harness_template_modules", [])
     text = f"""# Generated Unity project agent instructions
 
 ## Goal
@@ -450,7 +612,25 @@ Implement a playable Unity 2D vertical slice for this exact request:
 
 - Genre: {request["genre"]}
 - Viewpoint: {request["viewpoint"]}
-- Missing mechanics assigned to {agent_label}: {json.dumps(requirements, ensure_ascii=False)}
+- Gameplay modules and mechanics assigned to {agent_label}: {json.dumps(requirements, ensure_ascii=False)}
+- User and inferred feature requirements: {json.dumps(feature_requirements, ensure_ascii=False)}
+- Copied gameplay modules requiring request-specific audit: {json.dumps(template_modules, ensure_ascii=False)}
+
+## Harness ownership policy
+
+- The copied Unity project is a compatibility scaffold, not a finished genre template.
+- Core bootstrap, validation, asset binding, input abstraction, and project settings may be reused.
+- Existing genre gameplay modules, prototype actors, scene-controller behavior, coordinates, content
+  counts, UI layout, and tuning are reference implementations only. Their presence does not mean a
+  requested feature is implemented.
+- Inspect every feature requirement and either substantially adapt the relevant copied gameplay
+  implementation or replace it with request-specific code. Do not report completion merely because
+  a selected module already compiles.
+- Derive the connected core loop, world layout, content placement, progression, camera behavior,
+  HUD, win/loss flow, and feedback from the exact user request. Avoid fixed sample coordinates and
+  fixed genre-demo sequences when they are not justified by that request.
+- Design JSON contains validated requirements and minimum acceptance evidence. Treat generic preset
+  content as a lower-bound scaffold, not as an instruction to reproduce the stock prototype.
 
 ## Required context
 
@@ -469,17 +649,41 @@ Read every file below before editing code:
 - Do not change generated design JSON, `GenerationManifest.json`, package identity, or tests to hide failures.
 - Do not commit, push, install unrelated software, or access credentials.
 - Prefer project APIs already present. Inspect definitions before referencing a class, member, tag, layer, or package.
+- You may refactor copied runtime gameplay modules, prototype controllers, and copied editor-side
+  assembly code when necessary for a request-specific game. Preserve the host validation entry
+  points, immutable generated contracts, asset binding keys, tests, and project/package identity.
 - Implement behavior in source files and connect it to actual scene objects, UI, progression, win/loss flow, and feedback.
+- Treat `presentation_plan.json` as an implementation contract, not mood-board text. Build a
+  coherent Unity uGUI hierarchy for every specified HUD region and state screen, with anchored
+  layout, `CanvasScaler.ScaleWithScreenSize`, readable typography, progress bars/counters, clear
+  primary actions, and palette-consistent panels. UI must remain readable at 1280x720 and 1920x1080.
+- Disable or remove the copied `PrototypeSceneController` IMGUI debug panel in the finished game.
+  `OnGUI`, loose debug labels, and unstyled test buttons do not count as player-facing UI. If no
+  generated image asset is available, use restrained solid/translucent uGUI shapes and the built-in
+  font; never leave gameplay unreadable behind placeholder patterns.
+- Connect HUD values and screen visibility to actual runtime state. Health, objective/progress,
+  currency/score/time, pause, choice, clear, failure, restart, and genre-specific controls must
+  update from the systems they represent instead of displaying hard-coded sample text.
 - Do not merely write a design, TODO, placeholder, or disconnected component.
 - Treat every cached `UnityEngine.Object` reference as scene-lifetime state. Before accessing a
   cached component in `Update`, `FixedUpdate`, a coroutine, or an event callback, use Unity's
   destroyed-object-aware null check (`reference == null`) and either reacquire it from the current
   binding context/scene or return safely. Never access a Collider, Renderer, Transform, or other
   scene component retained from an unloaded scene.
+- Editor-time `Configure(...)` calls are not serialized into the generated scene. For every
+  generated genre controller, reacquire runtime dependencies in `Awake`/`Start` (for example,
+  discover waypoint transforms, spawn points, economy/health modules, and HUD roots from the
+  current scene) and keep serialized fields only as optional overrides. Never index a nullable
+  collection such as `path[0]` before checking that it exists and has an element; if a required
+  dependency is missing, build a visible degraded HUD and fail the action safely instead of
+  throwing from `Update`. This is mandatory for tower-defense wave spawning and UI.
 - Preserve image and sound binding keys from the asset request files.
 - Put every public `MonoBehaviour` in its own `.cs` file whose filename exactly matches the class
   name. Generated game modules must derive from `GameModuleBehaviour`, implement
   `IGeneratedFeatureModule`, and declare the exact `[GeneratedGameModule("module_id")]` identity.
+- Every concrete generated module class must itself be `public`; do not place multiple generated
+  module classes behind a shared internal base in one source file. Unity must be able to serialize
+  and reload each component in a fresh Editor process after the agent turn ends.
 - Every concrete `GameModuleBehaviour` must implement
   `protected override void OnInitialize(GameContext context)` and register itself with
   `context.Register(this)`. Inspect the abstract base class before writing or repairing a module.
@@ -509,27 +713,47 @@ def _implementation_prompt(
     instruction_filename: str = "AGENTS.md",
 ) -> str:
     requirements = design.get("codex_harness_requirements", [])
+    features = design.get("agent_harness_feature_requirements", [])
     return f"""Build the complete playable Unity game in the current project.
 
 User request: {request["condition"]}
 Genre: {request["genre"]}
 Viewpoint: {request["viewpoint"]}
-Explicit missing mechanics: {json.dumps(requirements, ensure_ascii=False)}
+Agent-owned gameplay modules and mechanics: {json.dumps(requirements, ensure_ascii=False)}
+Feature requirements: {json.dumps(features, ensure_ascii=False)}
 
 Follow {instruction_filename}. First inspect the project and all generated design contracts. Then implement the
 entire connected gameplay loop, not isolated sample scripts. Verify initialization values, scene
 bindings, camera, controls, HUD, damage, progression, win/loss conditions, content counts, and the
 user's requested mechanics. Reuse sound/image binding IDs instead of inventing incompatible IDs.
+Do not accept a copied genre module or prototype scene as complete without tracing it against the
+exact request. Replace stock behavior, layout, content, and tuning wherever it would make different
+prompts produce substantially the same game. Keep only reusable infrastructure that genuinely
+serves the requested design.
+Remember that editor-time `Configure(...)` calls are not serialized into a saved scene. Reacquire
+waypoints, spawn points, gameplay modules, and HUD references from the current scene in `Awake` or
+`Start`, guard every collection/index before use, and keep the HUD visible in degraded mode when a
+runtime dependency is missing. In particular, a tower-defense controller must never call
+`path[0]` from `Update` until it has a non-null, non-empty route.
+- Unity `Object` references have fake-null semantics after destruction. Do not use C# null
+  coalescing (`GetComponent<T>() ?? AddComponent<T>()`) for scene components. Assign the result,
+  test it with Unity's overloaded `component == null`, then call `AddComponent<T>()` if needed;
+  re-check the result before accessing it. This is especially important for optional
+  `LineRenderer`, collider, renderer, and UI components on build slots or dynamically-created
+  gameplay objects.
 Do not edit validation tests or immutable design/manifest JSON to make checks pass. Do not launch
 Unity or use Unity CLI/pipeline/MCP commands; Unity validation is run only by the host after you
 return. Return the required structured completion report after making the edits.
 """
 
 
-def _repair_prompt(feedback: dict[str, Any], iteration: int) -> str:
+def _repair_prompt(
+    feedback: dict[str, Any], iteration: int, *, phase: str = "design_game_logic"
+) -> str:
     return f"""Repair the Unity project using the host validator evidence below.
 
 Repair iteration: {iteration}
+Validation phase: {phase}
 Evidence:
 {json.dumps(feedback, ensure_ascii=False, indent=2)}
 
@@ -539,6 +763,18 @@ JSON. Keep already working requested features intact. Do not create or modify `.
 hand-edit `Bootstrap.unity`; let the host assembler regenerate bindings. Do not create or modify
 `.asmdef`/`.asmref` files and do not add dynamic `Assembly.Load` workarounds. Keep one public
 MonoBehaviour per filename-matched `.cs` file and preserve every existing generated module ID.
+Every generated module class must be public and individually serializable; split any file that
+contains multiple `[GeneratedGameModule]` classes instead of keeping an internal class bundle.
+When the phase is `validate_game` or `final_validation`, preserve generated and applied image/audio
+files, their binding IDs, and asset manifests. Fix gameplay source, scene assembly, UI bindings,
+initialization, and state transitions without replacing validated assets or reverting the game to
+the copied genre prototype.
+If a runtime exception reports a null route, spawn point, module, or HUD object, repair the source
+by reacquiring that object at runtime and by adding an explicit null/empty guard; do not hide the
+exception by disabling the wave, combat, or UI system.
+If a runtime exception reports a missing component, replace null-coalescing component lookup with
+an explicit Unity-aware null check and ensure the component is present on every object path that
+can invoke the method.
 Do not launch Unity Editor or run Unity,
 Unity CLI/pipeline/MCP, or batch-mode commands; the host owns the next validation attempt. Return
 the required structured report.

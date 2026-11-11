@@ -355,6 +355,27 @@ class PresentationCue(TypedDict):
     audio_asset_id: str
 
 
+class UiTheme(TypedDict):
+    visual_direction: str
+    palette: list[str]
+    typography: str
+    panel_style: str
+
+
+class UiLayoutRegion(TypedDict):
+    region_id: str
+    anchor: str
+    purpose: str
+    visible_data: list[str]
+
+
+class UiScreenRequirement(TypedDict):
+    screen_id: str
+    purpose: str
+    required_elements: list[str]
+    activation_condition: str
+
+
 class PresentationPlan(TypedDict):
     plan_version: Literal["2.0.0"]
     ui_screens: list[str]
@@ -365,6 +386,9 @@ class PresentationPlan(TypedDict):
     animation_requests: list[str]
     required_image_asset_ids: list[str]
     required_sound_asset_ids: list[str]
+    ui_theme: UiTheme
+    hud_layout: list[UiLayoutRegion]
+    screen_requirements: list[UiScreenRequirement]
 
 
 class ValidationRule(TypedDict):
@@ -432,6 +456,7 @@ class PlaytestMetrics(TypedDict):
     failed_transition: str
     unused_requested_features: list[str]
     passed_scenarios: list[str]
+    passed_transitions: list[str]
     validation_failures: list[str]
 
 
@@ -468,6 +493,9 @@ class GameLogicDesign(TypedDict):
     design_v2: DesignV2Bundle
     quality_report: NotRequired[GameQualityReport]
     codex_harness_requirements: NotRequired[list[str]]
+    agent_harness_mode: NotRequired[Literal["whole_project"]]
+    agent_harness_feature_requirements: NotRequired[list[GameFeature]]
+    agent_harness_template_modules: NotRequired[list[str]]
 
 
 class ParsedRequest(TypedDict):

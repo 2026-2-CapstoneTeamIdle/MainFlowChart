@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -126,12 +127,136 @@ class UnityProjectValidator:
         )
         payloads = self._check_project_structure(outcome, root, draft)
         self._check_contract_consistency(outcome, root, payloads, draft, request)
+        self._check_generated_module_source_layout(outcome, root)
+        self._check_generated_genre_runtime_safety(outcome, root)
+        self._check_generated_unity_null_patterns(outcome, root)
 
         if outcome.status == "failed":
             return outcome
 
         self._run_unity_validation(outcome, root)
         return outcome
+
+    def _check_generated_module_source_layout(
+        self, outcome: UnityValidationOutcome, root: Path
+    ) -> None:
+        runtime_root = root / "Assets/GameTemplate/Runtime"
+        errors: list[str] = []
+        declaration_pattern = re.compile(
+            r'\[GeneratedGameModule\s*\(\s*"(?P<module_id>[^"]+)"[^\]]*\)\]\s*'
+            r"(?P<access>public|internal|private|protected)?\s*"
+            r"(?:sealed\s+)?class\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*"
+            r":\s*[^\{\r\n]*GameModuleBehaviour",
+            re.MULTILINE,
+        )
+        if runtime_root.is_dir():
+            for source_path in runtime_root.rglob("*.cs"):
+                source = source_path.read_text(encoding="utf-8", errors="replace")
+                declarations = [
+                    declaration
+                    for declaration in declaration_pattern.finditer(source)
+                    if declaration.group("module_id").startswith("generated_feature")
+                    or declaration.group("name").startswith("GeneratedFeature")
+                ]
+                if not declarations:
+                    continue
+                relative = source_path.relative_to(root).as_posix()
+                if len(declarations) != 1:
+                    errors.append(
+                        f"{relative} contains {len(declarations)} generated MonoBehaviours; "
+                        "put each generated module in its own source file"
+                    )
+                for declaration in declarations:
+                    class_name = declaration.group("name")
+                    if declaration.group("access") != "public":
+                        errors.append(f"{relative}: {class_name} must be public")
+                    if source_path.stem != class_name:
+                        errors.append(
+                            f"{relative}: filename must be {class_name}.cs for Unity serialization"
+                        )
+        self._add_check(
+            outcome,
+            "unity.generated_module_source_layout",
+            not errors,
+            "Generated modules use stable Unity source layout"
+            if not errors
+            else "; ".join(errors[:20]),
+            error_code="UNITY_GENERATED_MODULE_SOURCE_LAYOUT_INVALID",
+        )
+
+    def _check_generated_genre_runtime_safety(
+        self, outcome: UnityValidationOutcome, root: Path
+    ) -> None:
+        """Reject generated genre controllers that can crash before their HUD is usable.
+
+        Editor assemblers call ``Configure`` while building a scene, but those private
+        references are not guaranteed to survive a fresh Unity process.  A common failure
+        mode was a generated tower controller indexing ``path[0]`` from ``Update`` with no
+        runtime reacquisition or empty-path guard.  Surface that contract violation before
+        launching Unity so the repair agent can fix it deterministically.
+        """
+
+        runtime_root = root / "Assets/GameTemplate/Runtime"
+        if not runtime_root.is_dir():
+            return
+        errors: list[str] = []
+        for source_path in runtime_root.rglob("*.cs"):
+            source = source_path.read_text(encoding="utf-8", errors="replace")
+            if "TowerDefenseGameController" not in source:
+                continue
+            if not re.search(r"\bpath\s*\[\s*0\s*\]", source):
+                continue
+            has_guard = re.search(
+                r"path\s*==\s*null|path\.Length\s*==\s*0|path\.Count\s*==\s*0",
+                source,
+            )
+            has_reacquisition = re.search(
+                r"FindObjects(?:OfType|ByType)|FindFirstObjectByType|GetComponentsInChildren",
+                source,
+            )
+            if not has_guard or not has_reacquisition:
+                relative = source_path.relative_to(root).as_posix()
+                errors.append(
+                    f"{relative}: TowerDefenseGameController indexes path[0] without "
+                    "runtime dependency reacquisition and an empty-path guard"
+                )
+        self._add_check(
+            outcome,
+            "unity.generated_genre_runtime_safety",
+            not errors,
+            "Generated genre controllers guard and reacquire runtime references"
+            if not errors
+            else "; ".join(errors[:10]),
+            error_code="UNITY_GENERATED_RUNTIME_REFERENCE_UNSAFE",
+        )
+
+    def _check_generated_unity_null_patterns(
+        self, outcome: UnityValidationOutcome, root: Path
+    ) -> None:
+        """Catch null-coalescing component lookups that bypass Unity fake-null checks."""
+
+        runtime_root = root / "Assets/GameTemplate/Runtime"
+        if not runtime_root.is_dir():
+            return
+        errors: list[str] = []
+        unsafe = re.compile(r"GetComponent\s*<[^>]+>\s*\(\s*\)\s*\?\?")
+        for source_path in runtime_root.rglob("*.cs"):
+            source = source_path.read_text(encoding="utf-8", errors="replace")
+            if not unsafe.search(source):
+                continue
+            relative = source_path.relative_to(root).as_posix()
+            errors.append(
+                f"{relative}: use an explicit Unity-aware == null check before AddComponent"
+            )
+        self._add_check(
+            outcome,
+            "unity.generated_unity_null_patterns",
+            not errors,
+            "Generated scripts use Unity-safe component null checks"
+            if not errors
+            else "; ".join(errors[:10]),
+            error_code="UNITY_GENERATED_UNITY_NULL_PATTERN",
+        )
 
     def _check_draft(
         self,

@@ -92,5 +92,6 @@ def test_claude_writes_claude_md_instructions(tmp_path: Path) -> None:
     )
 
     instructions = (project / "CLAUDE.md").read_text(encoding="utf-8")
-    assert "Missing mechanics assigned to Claude Code" in instructions
+    assert "Gameplay modules and mechanics assigned to Claude Code" in instructions
+    assert "compatibility scaffold, not a finished genre template" in instructions
     assert "Do not launch Unity Editor" in instructions

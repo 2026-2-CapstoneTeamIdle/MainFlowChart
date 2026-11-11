@@ -3,6 +3,11 @@
 `codex_cli` 게임 구현 모드는 LocalAI 또는 프로젝트의 API 키로 기능별 C# 응답을 받는 대신,
 현재 Windows 사용자로 로그인된 Codex CLI가 생성된 Unity 프로젝트 전체를 읽고 수정하게 한다.
 
+하네스 모드에서는 미리 존재하는 장르별 기능 모듈도 완성된 기능으로 간주하지 않는다. 공통
+부트스트랩·검증·에셋 바인딩은 호환성 스캐폴드로 재사용하지만, 장르 모듈과 Prototype 코드는
+사용자 요구사항별 검토·수정 대상으로 Codex에 전달한다. 따라서 기존 모듈이 있는 기능도 실제
+요청, 씬 진행, UI, 카메라, 밸런스와 연결되지 않으면 구현 완료로 처리하지 않는다.
+
 ## 사전 조건
 
 ```powershell
@@ -34,6 +39,7 @@ $env:MAINFLOW_CODEX_REASONING_EFFORT="medium"
 $env:MAINFLOW_CODEX_TIMEOUT_SECONDS="1800"
 $env:MAINFLOW_CODEX_TOTAL_TIMEOUT_SECONDS="7200"
 $env:MAINFLOW_CODEX_MAX_REPAIRS="6"
+$env:MAINFLOW_AGENT_POST_VALIDATION_REPAIRS="3"
 ```
 
 ## 실행 경계
@@ -42,8 +48,27 @@ $env:MAINFLOW_CODEX_MAX_REPAIRS="6"
 - 자식 Codex 프로세스에는 프로젝트의 OpenAI, Gemini, Vast.ai, ElevenLabs 키를 전달하지 않는다.
 - 구현 단계는 `workspace-write`, 최종 독립 품질 검수는 `read-only` 샌드박스를 사용한다.
 - 설계 JSON과 manifest는 호스트 계약이므로 Codex가 수정하지 않도록 프로젝트 `AGENTS.md`에 명시한다.
+- 복사된 장르 코드·고정 좌표·샘플 콘텐츠는 참고 구현일 뿐이며 요청별로 수정하거나 교체한다.
+- 기존 모듈 선택·바인딩 작업을 Codex 실행 전에 성공 처리하지 않는다.
 - Codex의 완료 보고만으로 통과시키지 않고 Unity 컴파일·Play Mode 검증 결과를 기준으로 수정한다.
 - 동일 오류가 세 번 반복되거나 시간·재시도 예산을 소진하면 실패한다.
+- 최초 구현 검증을 통과한 뒤에도 `validate_game` 또는 에셋 적용 후 최종 Unity 검증이
+  실패하면 해당 로그를 Codex에 다시 전달한다. 기본 후속 수정 횟수는 단계별 3회이며
+  `MAINFLOW_AGENT_POST_VALIDATION_REPAIRS`로 1~6회 사이에서 조정한다.
+- 후속 수정은 적용된 이미지·사운드 파일과 바인딩 ID를 보존하며, 더 심각한 컴파일·바인딩
+  오류를 만들면 변경을 롤백한다.
+
+## UI 생성 기준
+
+`presentation_plan.json`에는 요청별 팔레트·타이포그래피·HUD 영역·상태 화면별 필수 요소가
+포함된다. Codex는 이를 Unity uGUI로 구현하고 실제 체력, 목표, 진행도, 점수·재화·시간과
+연결해야 한다. 이미지 API가 없어도 반투명 패널, 색상 계층, 기본 폰트와 진행 바로 읽을 수
+있는 UI를 구성해야 하며, 기존 `PrototypeSceneController`의 IMGUI 디버그 패널은 비활성화하거나
+교체한다.
+
+Play Mode 검증은 하네스 프로젝트에 대해 반응형 `CanvasScaler`, 최소 UI 그래픽·텍스트·버튼,
+14px 이상의 글자와 레거시 디버그 UI 제거를 확인한다. 기준을 만족하지 못하면
+`runtime.ui_quality` 증거가 Codex 수정 루프로 전달된다.
 
 ## 감사 기록
 
