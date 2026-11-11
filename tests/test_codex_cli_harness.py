@@ -4,7 +4,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -56,6 +56,72 @@ def _completion() -> dict[str, object]:
         "unresolved_requirements": [],
         "recommended_validation": ["Unity batch mode"],
     }
+
+
+@pytest.mark.parametrize("unity_status", ["passed", "failed"])
+def test_quality_repair_keeps_only_unity_validated_source(
+    tmp_path: Path, unity_status: str
+) -> None:
+    project = tmp_path / "unity"
+    source = project / "Assets/Game.cs"
+    asset = project / "Assets/GameTemplate/Generated/AppliedAssets/tower.png"
+    source.parent.mkdir(parents=True)
+    asset.parent.mkdir(parents=True)
+    source.write_text("original", encoding="utf-8")
+    asset.write_bytes(b"validated-image")
+    runner = MagicMock()
+
+    def edit_project(**kwargs):
+        source.write_text("repaired", encoding="utf-8")
+        asset.write_bytes(b"unvalidated-replacement")
+        return MagicMock(final_response=_completion())
+
+    runner.run.side_effect = edit_project
+    harness = CodexGameHarness(
+        _settings(tmp_path / "codex.exe"),
+        audit_root=tmp_path / "audit",
+        runner=runner,
+        preflight_runner=lambda settings: CodexPreflightResult("codex", "test", "logged in"),
+    )
+    issues = (
+        [{"code": "UNITY_RUNTIME_TEST_FAILED", "severity": "error", "message": "test"}]
+        if unity_status == "failed"
+        else []
+    )
+    outcome = UnityValidationOutcome(checks=[], issues=issues, unity_log="test")
+    with (
+        patch(
+            "game_pipeline.codex_cli.harness._normalize_windows_project_permissions",
+            return_value={"status": "normalized"},
+        ),
+        patch("game_pipeline.codex_cli.harness.UnityProjectValidator") as validator,
+    ):
+        validator.return_value.validate.return_value = outcome
+        if unity_status == "passed":
+            assert (
+                harness.repair_quality_findings(
+                    project_root=project,
+                    draft={"status": "generated"},
+                    request={"condition": "defend the base"},
+                    findings=[{"severity": "error", "message": "cannon splash missing"}],
+                    iteration=1,
+                ).status
+                == "passed"
+            )
+        else:
+            with pytest.raises(RuntimeError, match="regressed Unity validation"):
+                harness.repair_quality_findings(
+                    project_root=project,
+                    draft={"status": "generated"},
+                    request={"condition": "defend the base"},
+                    findings=[{"severity": "error", "message": "cannon splash missing"}],
+                    iteration=1,
+                )
+
+    assert source.read_text(encoding="utf-8") == (
+        "repaired" if unity_status == "passed" else "original"
+    )
+    assert asset.read_bytes() == b"validated-image"
 
 
 def test_runner_uses_scoped_workspace_and_does_not_forward_api_keys(

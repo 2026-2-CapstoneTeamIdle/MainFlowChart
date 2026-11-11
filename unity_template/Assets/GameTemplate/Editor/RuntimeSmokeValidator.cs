@@ -473,6 +473,11 @@ namespace TeamIdle.GameTemplate.Editor
         private static void TickTowerDefenseScenario()
         {
             var spawner = UnityEngine.Object.FindFirstObjectByType<WaveSpawnerModule>();
+            if (spawner != null && spawner.GetType().GetMethod("GetTargets") != null)
+            {
+                TickGeneratedTowerDefenseScenario(spawner);
+                return;
+            }
             var defense = UnityEngine.Object.FindFirstObjectByType<BaseDefenseSystemModule>();
             var targeting = UnityEngine.Object.FindFirstObjectByType<TowerTargetingSystemModule>();
             var economy = UnityEngine.Object.FindFirstObjectByType<EconomySystemModule>();
@@ -627,6 +632,289 @@ namespace TeamIdle.GameTemplate.Editor
                 }
                 return;
             }
+        }
+
+        private static void TickGeneratedTowerDefenseScenario(WaveSpawnerModule spawner)
+        {
+            if (genreScenarioPhase == 0)
+            {
+                var buildPoints = FindSceneBehaviours("BuildPointRuntime");
+                if (buildPoints.Count == 0)
+                {
+                    Finish(false, "runtime.tower_build_input: no generated build points exist");
+                    return;
+                }
+
+                var camera = Camera.main;
+                var backdrop = GameObject.Find("CastleFloor")?.GetComponent<SpriteRenderer>();
+                var visible = 0;
+                var clickable = 0;
+                foreach (var point in buildPoints)
+                {
+                    var renderer = point.GetComponent<SpriteRenderer>();
+                    var viewport =
+                        camera == null
+                            ? Vector3.zero
+                            : camera.WorldToViewportPoint(point.transform.position);
+                    if (
+                        viewport.z > 0f
+                        && viewport.x >= 0f
+                        && viewport.x <= 1f
+                        && viewport.y >= 0f
+                        && viewport.y <= 1f
+                        && renderer != null
+                        && renderer.enabled
+                        && (backdrop == null || renderer.sortingOrder > backdrop.sortingOrder)
+                    )
+                    {
+                        visible++;
+                    }
+                    if (
+                        camera != null
+                        && point.GetComponent<Collider2D>() != null
+                        && !IsBuildPointBlockedByUi(camera, point.transform.position)
+                    )
+                    {
+                        clickable++;
+                    }
+                }
+                if (visible != buildPoints.Count)
+                {
+                    Finish(
+                        false,
+                        $"runtime.tower_build_visibility: {visible}/{buildPoints.Count} build points are visible"
+                    );
+                    return;
+                }
+                if (clickable != buildPoints.Count)
+                {
+                    Finish(
+                        false,
+                        $"runtime.tower_build_clickability: {clickable}/{buildPoints.Count} build points accept pointer input"
+                    );
+                    return;
+                }
+
+                buildPoints[0].SendMessage("OnMouseDown", SendMessageOptions.DontRequireReceiver);
+                Button basicButton = null;
+                foreach (
+                    var button in UnityEngine.Object.FindObjectsByType<Button>(
+                        FindObjectsSortMode.None
+                    )
+                )
+                {
+                    var label = button.GetComponentInChildren<Text>();
+                    if (
+                        label != null
+                        && label.text.IndexOf("BASIC", StringComparison.OrdinalIgnoreCase) >= 0
+                    )
+                    {
+                        basicButton = button;
+                        break;
+                    }
+                }
+                if (basicButton == null || !basicButton.interactable)
+                {
+                    Finish(false, "runtime.tower_build_input: basic tower build button is missing");
+                    return;
+                }
+                if (!TryReadTowerGold(out genreCurrencyAfterBuild))
+                {
+                    Finish(false, "runtime.tower_economy: visible gold counter is missing");
+                    return;
+                }
+                var eventSystem = UnityEngine.EventSystems.EventSystem.current;
+                if (eventSystem == null)
+                {
+                    Finish(false, "runtime.tower_build_input: EventSystem is missing");
+                    return;
+                }
+                UnityEngine.EventSystems.ExecuteEvents.Execute(
+                    basicButton.gameObject,
+                    new UnityEngine.EventSystems.PointerEventData(eventSystem),
+                    UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler
+                );
+                if (FindSceneBehaviours("TowerRuntime").Count == 0)
+                {
+                    Finish(false, "runtime.tower_build_input: build button created no tower");
+                    return;
+                }
+                genreScenarioPhase = 1;
+                genrePhaseStartedAt = Time.timeSinceLevelLoad;
+                return;
+            }
+
+            if (genreScenarioPhase == 1)
+            {
+                if (
+                    !TryReadTowerGold(out var goldAfterBuild)
+                    || goldAfterBuild >= genreCurrencyAfterBuild
+                )
+                {
+                    if (Time.timeSinceLevelLoad - genrePhaseStartedAt > 1f)
+                    {
+                        Finish(
+                            false,
+                            "runtime.tower_economy: building a tower did not deduct visible gold"
+                        );
+                    }
+                    return;
+                }
+                MarkCausalTransition("tower.build_to_currency");
+                Metrics.passed_scenarios.Add("tower_build_and_spend");
+                Debug.Log("UNITY_VALIDATION_SCENARIO_OK:tower_build_and_spend");
+                genreCurrencyAfterBuild = goldAfterBuild;
+                if (!spawner.StartNextWave())
+                {
+                    Finish(false, "runtime.tower_wave: first wave could not start");
+                    return;
+                }
+                genreScenarioPhase = 2;
+                genrePhaseStartedAt = Time.timeSinceLevelLoad;
+                return;
+            }
+
+            if (genreScenarioPhase == 2)
+            {
+                var enemies = FindSceneBehaviours("EnemyRuntime");
+                if (enemies.Count == 0)
+                {
+                    if (Time.timeSinceLevelLoad - genrePhaseStartedAt > 5f)
+                    {
+                        Finish(false, "runtime.tower_spawn: started wave created no enemy");
+                    }
+                    return;
+                }
+                genreActor = enemies[0].transform;
+                genreActorStart = genreActor.position;
+                genrePhaseStartedAt = Time.timeSinceLevelLoad;
+                genreScenarioPhase = 3;
+                return;
+            }
+
+            if (genreScenarioPhase == 3)
+            {
+                if (genreActor == null)
+                {
+                    Finish(false, "runtime.tower_spawn: enemy vanished before moving");
+                    return;
+                }
+                if (Vector3.Distance(genreActorStart, genreActor.position) < 0.1f)
+                {
+                    if (Time.timeSinceLevelLoad - genrePhaseStartedAt > 3f)
+                    {
+                        Finish(false, "runtime.tower_path: spawned enemy did not move");
+                    }
+                    return;
+                }
+                var towers = FindSceneBehaviours("TowerRuntime");
+                if (towers.Count == 0)
+                {
+                    Finish(false, "runtime.tower_combat: built tower disappeared");
+                    return;
+                }
+                MarkCausalTransition("tower.spawn_to_path");
+                genreActor.position = towers[0].transform.position + Vector3.right;
+                Physics2D.SyncTransforms();
+                genrePhaseStartedAt = Time.timeSinceLevelLoad;
+                genreScenarioPhase = 4;
+                return;
+            }
+
+            if (genreActor == null)
+            {
+                if (
+                    !TryReadTowerGold(out var goldAfterKill)
+                    || goldAfterKill <= genreCurrencyAfterBuild
+                )
+                {
+                    if (Time.timeSinceLevelLoad - genrePhaseStartedAt > 6f)
+                    {
+                        Finish(false, "runtime.tower_reward: defeating an enemy granted no gold");
+                    }
+                    return;
+                }
+                MarkCausalTransition("tower.attack_to_damage");
+                MarkCausalTransition("tower.death_to_reward");
+                Metrics.passed_scenarios.Add("tower_spawn_and_path");
+                Metrics.passed_scenarios.Add("tower_kill_reward");
+                Debug.Log("UNITY_VALIDATION_SCENARIO_OK:tower_spawn_and_path");
+                Debug.Log("UNITY_VALIDATION_SCENARIO_OK:tower_kill_reward");
+                Debug.Log("UNITY_VALIDATION_PLAN_OK:1");
+                Finish(
+                    true,
+                    "runtime.tower_defense: build, spawn, movement, and tower kill linked"
+                );
+                return;
+            }
+            if (Time.timeSinceLevelLoad - genrePhaseStartedAt > 6f)
+            {
+                Finish(false, "runtime.tower_attack: built tower did not defeat the nearby enemy");
+            }
+        }
+
+        private static bool IsBuildPointBlockedByUi(Camera camera, Vector3 worldPosition)
+        {
+            var eventSystem = UnityEngine.EventSystems.EventSystem.current;
+            if (eventSystem == null)
+            {
+                return true;
+            }
+            var pointer = new UnityEngine.EventSystems.PointerEventData(eventSystem)
+            {
+                position = camera.WorldToScreenPoint(worldPosition),
+            };
+            var hits = new List<UnityEngine.EventSystems.RaycastResult>();
+            foreach (
+                var raycaster in UnityEngine.Object.FindObjectsByType<GraphicRaycaster>(
+                    FindObjectsSortMode.None
+                )
+            )
+            {
+                raycaster.Raycast(pointer, hits);
+            }
+            return hits.Count > 0;
+        }
+
+        private static bool TryReadTowerGold(out int amount)
+        {
+            foreach (
+                var text in UnityEngine.Object.FindObjectsByType<Text>(FindObjectsSortMode.None)
+            )
+            {
+                var match = System.Text.RegularExpressions.Regex.Match(
+                    text.text ?? string.Empty,
+                    @"(?:GOLD|골드)\s*[:：]?\s*(\d+)",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase
+                );
+                if (match.Success && int.TryParse(match.Groups[1].Value, out amount))
+                {
+                    return true;
+                }
+            }
+            amount = -1;
+            return false;
+        }
+
+        private static List<MonoBehaviour> FindSceneBehaviours(string typeName)
+        {
+            var result = new List<MonoBehaviour>();
+            foreach (
+                var behaviour in UnityEngine.Object.FindObjectsByType<MonoBehaviour>(
+                    FindObjectsSortMode.None
+                )
+            )
+            {
+                if (
+                    behaviour != null
+                    && behaviour.gameObject.scene.IsValid()
+                    && behaviour.GetType().Name == typeName
+                )
+                {
+                    result.Add(behaviour);
+                }
+            }
+            return result;
         }
 
         private static void TickSurvivorLikeScenario()

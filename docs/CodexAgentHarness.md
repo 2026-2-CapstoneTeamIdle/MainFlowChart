@@ -40,6 +40,7 @@ $env:MAINFLOW_CODEX_TIMEOUT_SECONDS="1800"
 $env:MAINFLOW_CODEX_TOTAL_TIMEOUT_SECONDS="7200"
 $env:MAINFLOW_CODEX_MAX_REPAIRS="6"
 $env:MAINFLOW_AGENT_POST_VALIDATION_REPAIRS="3"
+$env:MAINFLOW_GAME_QUALITY_REPAIRS="2"
 ```
 
 ## 실행 경계
@@ -57,6 +58,10 @@ $env:MAINFLOW_AGENT_POST_VALIDATION_REPAIRS="3"
   `MAINFLOW_AGENT_POST_VALIDATION_REPAIRS`로 1~6회 사이에서 조정한다.
 - 후속 수정은 적용된 이미지·사운드 파일과 바인딩 ID를 보존하며, 더 심각한 컴파일·바인딩
   오류를 만들면 변경을 롤백한다.
+- 독립 품질 검수가 실제 기능 누락을 찾으면 근거 파일과 권고를 Codex에 전달한다. 수정 후
+  Unity 컴파일·Play Mode를 다시 통과해야 다음 품질 검수를 진행하며, 실패한 변경은 복원한다.
+  품질 수정은 기본 2회, `MAINFLOW_GAME_QUALITY_REPAIRS`로 0~3회까지 조정할 수 있다.
+  placeholder 이미지 때문에 생략한 시각 검증은 별도 한계로 기록한다.
 
 ## UI 생성 기준
 

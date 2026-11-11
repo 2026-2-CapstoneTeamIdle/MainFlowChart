@@ -85,6 +85,13 @@ def game_quality_validator_node(
             report = cast(
                 GameValidatorAIResult, {"contract_version": CONTRACT_VERSION, **ai_report}
             )
+        if (
+            final_result.get("status") == "passed"
+            and report.get("status") == "needs_revision"
+            and os.environ.get("MAINFLOW_GAME_BUILDER", "").strip().lower()
+            in {"codex_cli", "claude_code"}
+        ):
+            report = _repair_and_review_quality(state["project_id"], manager, evidence, report)
     except Exception as error:  # noqa: BLE001 - preserve a report at the final workflow boundary
         report = _execution_failure_report(error)
 
@@ -97,6 +104,113 @@ def game_quality_validator_node(
             producer="game_quality_validator",
         )
     }
+
+
+def _repair_and_review_quality(
+    project_id: str,
+    manager: ArtifactManager,
+    evidence: dict[str, Any],
+    initial_report: GameValidatorAIResult,
+) -> GameValidatorAIResult:
+    """Use the builder to fix evidenced quality gaps, with Unity as the safety gate."""
+
+    from game_pipeline.codex_cli import CodexGameHarness, CodexHarnessSettings
+
+    builder = os.environ["MAINFLOW_GAME_BUILDER"].strip().lower()
+    max_repairs = int(os.environ.get("MAINFLOW_GAME_QUALITY_REPAIRS", "2"))
+    if not 0 <= max_repairs <= 3:
+        raise ValueError("MAINFLOW_GAME_QUALITY_REPAIRS must be between 0 and 3")
+    if not max_repairs:
+        return initial_report
+    workspace = manager.ensure_project(project_id)
+    project_root = workspace / "game" / "unity_project"
+    record = lambda name, data: manager.write_json(
+        project_id,
+        "validation",
+        f"quality_repair/{name}.json",
+        data,
+        producer="game_quality_validator",
+    )
+    if builder == "codex_cli":
+        harness = CodexGameHarness(
+            CodexHarnessSettings.from_environment(),
+            audit_root=workspace / "validation" / "codex" / "quality_repair",
+            record=record,
+        )
+        review = run_codex_quality_review
+    else:
+        from game_pipeline.claude_code import ClaudeCodeGameHarness
+        from game_pipeline.claude_code.config import ClaudeCodeHarnessSettings
+
+        harness = ClaudeCodeGameHarness(
+            ClaudeCodeHarnessSettings.from_environment(),
+            audit_root=workspace / "validation" / "claude_code" / "quality_repair",
+            record=record,
+        )
+        review = run_claude_code_quality_review
+
+    report = initial_report
+    record("audit_00", report)
+    for attempt in range(1, max_repairs + 1):
+        actionable = [
+            finding
+            for finding in report.get("findings", [])
+            if finding.get("severity") in {"error", "warning"}
+            and finding.get("category")
+            in {
+                "requirement",
+                "gameplay",
+                "content",
+                "presentation",
+                "progression",
+                "balance",
+                "integration",
+                "evidence",
+            }
+            and "placeholder" not in finding.get("message", "").lower()
+            and any(
+                "game/unity_project/Assets/" in str(path).replace("\\", "/")
+                or str(path).replace("\\", "/").startswith("Assets/")
+                for path in finding.get("evidence", [])
+            )
+        ]
+        if not actionable:
+            break
+        log(f"독립 품질 평가의 기능 누락을 CLI Agent가 수정합니다 ({attempt}/{max_repairs}).")
+        try:
+            outcome = harness.repair_quality_findings(
+                project_root=project_root,
+                draft=evidence["game_logic_draft"],
+                request=evidence["parsed_request"],
+                findings=actionable,
+                iteration=attempt,
+            )
+            evidence["post_quality_unity_validation"] = {
+                "status": outcome.status,
+                "checks": outcome.checks,
+                "issues": outcome.issues,
+                "unity_log": outcome.unity_log[-12000:],
+            }
+            record(f"unity_validation_{attempt:02d}", evidence["post_quality_unity_validation"])
+            reviewed = review(project_root=workspace, project_id=project_id, evidence=evidence)
+            report = cast(GameValidatorAIResult, reviewed)
+            record(f"audit_{attempt:02d}", report)
+            if report.get("status") == "passed":
+                return report
+        except Exception as error:  # noqa: BLE001 - preserve the original audit and project
+            record(f"repair_error_{attempt:02d}", {"error": f"{type(error).__name__}: {error}"})
+            report = cast(
+                GameValidatorAIResult,
+                {
+                    **report,
+                    "limitations": [
+                        *report.get("limitations", []),
+                        f"Quality repair {attempt} could not pass Unity: {type(error).__name__}: {error}",
+                    ],
+                },
+            )
+            break
+    return report
 
 
 def _hard_failure_report(evidence: dict[str, Any]) -> GameValidatorAIResult:

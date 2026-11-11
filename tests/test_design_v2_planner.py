@@ -35,6 +35,21 @@ class QueuedStructuredClient:
 
 
 class StagedDesignV2PlannerTest(unittest.TestCase):
+    def test_tower_defense_fallback_has_executable_genre_content(self) -> None:
+        spec = normalize_game_spec("타워 디펜스")
+        bundle = build_design_v2(spec, "다섯 웨이브 동안 기지를 방어한다.")
+
+        validate_design_v2(bundle)
+        self.assertEqual(bundle["level_plan"]["genre"], "TowerDefense")
+        self.assertEqual(len(bundle["level_plan"]["zones"]), 5)
+        self.assertEqual(len(bundle["content_plan"]["enemies"]), 5)
+        self.assertIn("base_health", {stat["stat_id"] for stat in bundle["balance_plan"]["stats"]})
+        self.assertNotIn("checkpoint", bundle["system_design"]["resources"])
+
+        bundle["content_plan"]["enemies"].clear()
+        with self.assertRaisesRegex(ValueError, "five distinct enemy definitions"):
+            validate_design_v2(bundle)
+
     def test_coerces_numeric_strings_without_changing_text_fields(self) -> None:
         result = _coerce_to_baseline_shape(
             {"height": "1.25", "count": "3", "title": "3"},

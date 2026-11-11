@@ -354,6 +354,113 @@ class CodexGameHarness:
             phase,
         )
 
+    def repair_quality_findings(
+        self,
+        *,
+        project_root: Path,
+        draft: GameLogicDraft,
+        request: ParsedRequest,
+        findings: list[dict[str, Any]],
+        iteration: int,
+    ) -> UnityValidationOutcome:
+        """Repair an independently audited gap, then require Unity to still pass."""
+
+        if self.preflight is None:
+            self.preflight = self.preflight_runner(self.settings)
+        _prepare_host_owned_source_roots(project_root)
+        permissions = _normalize_windows_project_permissions(project_root)
+        _require_normalized_permissions(permissions, "before quality repair")
+        snapshot = _ProjectSourceSnapshot.capture(project_root)
+        prompt = f"""Repair the independently audited Unity gameplay and presentation gaps.
+
+Iteration: {iteration}
+User request: {request["condition"]}
+Audited findings with source evidence:
+{json.dumps(findings[:12], ensure_ascii=False, indent=2)}
+
+Read each cited source file and implement the missing behavior. Preserve existing working
+features, asset bytes, asset manifests, module identities, and user requirements. Do not
+weaken validators or mark a feature complete without executable evidence. Do not edit
+design or validation JSON to conceal a missing implementation. Do not run Unity; the host
+will compile and execute Play Mode after your edits. Add focused Unity Test Framework
+PlayMode regression tests tagged `FeatureChecklist` for each repaired gameplay behavior;
+assert observable state transitions rather than checking that a class or method exists.
+Return the required structured report.
+"""
+        try:
+            result = self.runner.run(
+                project_root=project_root,
+                prompt=prompt,
+                schema=COMPLETION_SCHEMA,
+                audit_directory=self.audit_root / "quality_repair" / f"attempt_{iteration:02d}",
+            )
+            self._record(f"{self.provider}_quality_repair_{iteration}", result.final_response)
+            restored = _restore_protected_asset_files(snapshot, project_root)
+            self._record(f"{self.provider}_quality_protected_assets_{iteration}", restored)
+            permissions = _normalize_windows_project_permissions(project_root)
+            _require_normalized_permissions(permissions, "after quality repair")
+            validator = UnityProjectValidator(
+                mode="required",
+                unity_editor=os.environ.get("UNITY_EDITOR_PATH"),
+                timeout_seconds=int(
+                    os.environ.get("MAINFLOW_UNITY_VALIDATION_TIMEOUT_SECONDS", "300")
+                ),
+            )
+            outcome = validator.validate(project_root, draft, request)
+            self._record(
+                f"{self.provider}_quality_unity_validation_{iteration}",
+                {"status": outcome.status, "checks": outcome.checks, "issues": outcome.issues},
+            )
+            if outcome.status != "passed":
+                raise RuntimeError(f"Quality repair regressed Unity validation: {outcome.issues}")
+            if os.environ.get("MAINFLOW_FEATURE_CHECKLIST_VALIDATION", "1") == "1":
+                from game_pipeline.dynamic_feature_checklist import load_generated_checklist
+                from game_pipeline.feature_checklist_validation import FeatureChecklistWorkflow
+
+                workspace_root = project_root.parent.parent
+                if (workspace_root / "validation" / "feature_checklists").is_dir():
+                    editor = validator.unity_editor or validator.find_unity_editor(
+                        validator._read_project_version(project_root)
+                    )
+                    if editor is None:
+                        raise RuntimeError("Unity Editor is required to rerun feature checklists")
+                    workflow = FeatureChecklistWorkflow(
+                        unity_editor=editor,
+                        timeout_seconds=int(
+                            os.environ.get("MAINFLOW_UNITY_VALIDATION_TIMEOUT_SECONDS", "300")
+                        ),
+                        max_retries=0,
+                    )
+                    checklist = load_generated_checklist(workspace_root)
+                    results, checklist_log = workflow._run_tests(project_root, checklist)
+                    self._record(
+                        f"{self.provider}_quality_feature_checklists_{iteration}",
+                        {
+                            "results": [item.__dict__ for item in results],
+                            "log": checklist_log[-12000:],
+                        },
+                    )
+                    failed = [item for item in results if item.status in {"failed", "error"}]
+                    if failed:
+                        raise RuntimeError(
+                            "Quality repair failed feature checklists: "
+                            + "; ".join(
+                                f"{item.feature_name}: {item.message}" for item in failed[:6]
+                            )
+                        )
+                    outcome.checks.append(
+                        {
+                            "criterion_id": "quality.feature_checklists",
+                            "passed": True,
+                            "message": f"{len(results)} feature checklist tests passed after quality repair",
+                        }
+                    )
+            return outcome
+        except Exception:
+            snapshot.restore(project_root)
+            _normalize_windows_project_permissions(project_root)
+            raise
+
     def _run_validation_repair_loop(
         self,
         *,
@@ -563,6 +670,10 @@ This is a read-only quality review. Do not edit any file. Read
 and validation records. Check requirement coverage, connected gameplay, progression, content,
 balance, presentation, and asset integration. Hard validator failures cannot be overruled. Cite
 project-relative paths or hard check IDs for every nontrivial conclusion.
+If the image backend deliberately produced placeholders and visual validation is marked skipped,
+record that as a limitation; do not fail the game solely because no real image asset was applied.
+Check actual gameplay behavior independently of the hard smoke-test status. If post-quality
+Unity validation evidence exists, prefer it over the earlier pre-repair run.
 
 HOST EVIDENCE:
 {json.dumps(evidence, ensure_ascii=False, indent=2)}
@@ -735,6 +846,17 @@ waypoints, spawn points, gameplay modules, and HUD references from the current s
 `Start`, guard every collection/index before use, and keep the HUD visible in degraded mode when a
 runtime dependency is missing. In particular, a tower-defense controller must never call
 `path[0]` from `Update` until it has a non-null, non-empty route.
+- For tower defense, start the first wave through a real player-facing control or a bounded
+  preparation timer; the host smoke test may trigger `StartNextWave()` to skip that timer.
+  Every build point must be inside the camera viewport and render above the floor/backdrop.
+  Keep all requested build points visible and clickable, including those near HUD panels.
+  Create exactly one EventSystem with a compatible UI input module. A world build-point click
+  must select the point, reveal the build menu, and a real UI pointer click on a tower button
+  must deduct gold and create a tower. Hide the build menu until a point is selected so its
+  raycast target cannot cover build points. Add hover or selection feedback to build points.
+  An enemy spawned by the wave must visibly traverse the path, and a built tower must damage
+  and eventually defeat it. Preserve the public `WaveSpawnerModule` wave API when replacing
+  the stock implementation, so the host can observe this sequence.
 - Unity `Object` references have fake-null semantics after destruction. Do not use C# null
   coalescing (`GetComponent<T>() ?? AddComponent<T>()`) for scene components. Assign the result,
   test it with Unity's overloaded `component == null`, then call `AddComponent<T>()` if needed;
@@ -775,6 +897,15 @@ exception by disabling the wave, combat, or UI system.
 If a runtime exception reports a missing component, replace null-coalescing component lookup with
 an explicit Unity-aware null check and ensure the component is present on every object path that
 can invoke the method.
+If the tower-defense smoke test reports `runtime.tower_build_visibility`, position every build
+point inside the camera view and set its SpriteRenderer sorting order above the background.
+If it reports `runtime.tower_build_clickability` or `runtime.tower_build_input`, check the
+build-point Collider2D, UI raycast coverage, EventSystem/input module, button listener, selected
+point state, and gold deduction as one end-to-end pointer flow.
+  Decorative HUD panels and text must set `raycastTarget = false`; only interactive controls
+  may consume pointer input. Keep the build menu inactive until a build point is selected.
+If it reports `runtime.tower_spawn`, inspect `StartNextWave`, the wave timer, enemy creation,
+and the active scene; do not merely increase a timeout or suppress the scenario.
 Do not launch Unity Editor or run Unity,
 Unity CLI/pipeline/MCP, or batch-mode commands; the host owns the next validation attempt. Return
 the required structured report.

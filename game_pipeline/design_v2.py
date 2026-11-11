@@ -59,6 +59,8 @@ def build_design_v2(
     system_design = _system_design(game_spec)
     if game_spec["genre"] == "Platformer":
         level_plan = _platformer_level_plan(game_spec, intent, variation_seed=variation_seed)
+    elif game_spec["genre"] == "TowerDefense":
+        level_plan = _tower_level_plan(game_spec)
     elif game_spec["genre"] == "SurvivorLike":
         level_plan = _survivor_level_plan(game_spec)
     else:
@@ -81,6 +83,101 @@ def build_design_v2(
 def _presentation_plan(
     game_spec: GameSpec, image_ids: list[str], sound_ids: list[str]
 ) -> PresentationPlan:
+    if game_spec["genre"] == "TowerDefense":
+        return {
+            "plan_version": "2.0.0",
+            "ui_screens": ["hud", "build_menu", "pause", "stage_result", "failure"],
+            "state_transitions": [
+                "preparation -> wave",
+                "wave -> preparation",
+                "wave -> cleared",
+                "base_destroyed -> failed",
+            ],
+            "feedback_cues": [
+                {
+                    "cue_id": event,
+                    "trigger": trigger,
+                    "visual_feedback": feedback,
+                    "audio_asset_id": sound_ids[-1] if sound_ids else "",
+                }
+                for event, trigger, feedback in (
+                    ("tower_built", "tower construction succeeds", "show cost and new tower"),
+                    ("tower_upgraded", "tower upgrade succeeds", "show upgraded stats and range"),
+                    ("enemy_defeated", "enemy health reaches zero", "show reward and hit feedback"),
+                    ("base_damaged", "enemy reaches base", "update base health and flash base"),
+                    ("wave_started", "preparation expires", "show wave announcement"),
+                    ("boss_arrived", "boss wave begins", "show boss warning"),
+                )
+            ],
+            "camera_effects": ["show entire route and build points", "hit shake"],
+            "particle_requests": ["tower impact", "enemy defeat", "base hit"],
+            "animation_requests": ["enemy movement", "tower fire", "boss arrival"],
+            "required_image_asset_ids": image_ids,
+            "required_sound_asset_ids": sound_ids,
+            "ui_theme": {
+                "visual_direction": "clear tactical map with readable tower and enemy silhouettes",
+                "palette": ["#101827", "#52D695", "#F6C453", "#E94F64", "#F4F7FB"],
+                "typography": "high-contrast numeric HUD",
+                "panel_style": "compact panels that do not cover build points",
+            },
+            "hud_layout": [
+                {
+                    "region_id": "defense_status",
+                    "anchor": "top",
+                    "purpose": "show live defense state",
+                    "visible_data": [
+                        "gold",
+                        "base health",
+                        "wave",
+                        "remaining enemies",
+                        "next wave timer",
+                    ],
+                },
+                {
+                    "region_id": "tower_selection",
+                    "anchor": "bottom-right",
+                    "purpose": "choose and upgrade a tower",
+                    "visible_data": ["tower costs", "selected tower stats", "range indicator"],
+                },
+                {
+                    "region_id": "wave_feedback",
+                    "anchor": "top-center",
+                    "purpose": "announce waves, boss arrival, and base damage",
+                    "visible_data": ["status banner", "boss warning"],
+                },
+            ],
+            "screen_requirements": [
+                {
+                    "screen_id": "hud",
+                    "purpose": "continuous economy and wave readability",
+                    "required_elements": ["gold", "base health", "wave", "enemy count", "timer"],
+                    "activation_condition": "playing",
+                },
+                {
+                    "screen_id": "build_menu",
+                    "purpose": "choose a tower before paying its cost",
+                    "required_elements": [
+                        "three tower choices",
+                        "costs",
+                        "upgrade",
+                        "range indicator",
+                    ],
+                    "activation_condition": "build point or tower selected",
+                },
+                {
+                    "screen_id": "stage_result",
+                    "purpose": "report successful defense",
+                    "required_elements": ["wave count", "defeated enemies", "restart"],
+                    "activation_condition": "final wave cleared",
+                },
+                {
+                    "screen_id": "failure",
+                    "purpose": "report base destruction",
+                    "required_elements": ["base health", "wave count", "retry"],
+                    "activation_condition": "base health reaches zero",
+                },
+            ],
+        }
     if game_spec["genre"] == "SurvivorLike":
         return {
             "plan_version": "2.0.0",
@@ -270,17 +367,26 @@ def validate_design_v2(bundle: DesignV2Bundle) -> None:
     if bundle["game_design"]["target_play_minutes"] < 3:
         raise ValueError("target_play_minutes must be at least 3")
     stats = {item["stat_id"]: item for item in bundle["balance_plan"]["stats"]}
-    player_health = stats.get("player_health")
+    genre = bundle["level_plan"]["genre"]
+    player_health = stats.get("base_health" if genre == "TowerDefense" else "player_health")
     if player_health is None:
-        raise ValueError("balance_plan requires player_health")
+        raise ValueError(
+            "balance_plan requires base_health"
+            if genre == "TowerDefense"
+            else "balance_plan requires player_health"
+        )
     if (
         player_health["minimum"] <= 0
         or player_health["initial"] <= 0
         or player_health["maximum"] < player_health["initial"]
     ):
-        raise ValueError("player_health must start positive and within its valid range")
+        raise ValueError(
+            "base_health must start positive and within its valid range"
+            if genre == "TowerDefense"
+            else "player_health must start positive and within its valid range"
+        )
     move_speed = stats.get("move_speed")
-    if move_speed is None or move_speed["initial"] <= 0:
+    if genre != "TowerDefense" and (move_speed is None or move_speed["initial"] <= 0):
         raise ValueError("balance_plan requires a positive initial move_speed")
     level = bundle["level_plan"]
     required_zone_fields = {
@@ -353,6 +459,36 @@ def validate_design_v2(bundle: DesignV2Bundle) -> None:
         if not bundle["content_plan"]["enemies"] or not bundle["content_plan"]["rewards"]:
             raise ValueError("SurvivorLike content requires enemies and progression rewards")
     elif level["genre"] == "TowerDefense":
+        content = bundle["content_plan"]
+        system = bundle["system_design"]
+        if not {"gold", "base_health", "wave"} <= set(system["resources"]):
+            raise ValueError("TowerDefense system requires gold, base health, and waves")
+        if not {"tower_built", "enemy_defeated", "base_damaged", "wave_started"} <= {
+            event["event_id"] for event in system["event_connections"]
+        }:
+            raise ValueError("TowerDefense system lacks gameplay event connections")
+        if len({enemy["content_id"] for enemy in content["enemies"]}) < 5:
+            raise ValueError("TowerDefense requires five distinct enemy definitions")
+        if len(level["zones"]) < 5 or not all(zone["enemies"] for zone in level["zones"]):
+            raise ValueError("TowerDefense requires five waves with planned enemy types")
+        enemy_ids = {enemy["content_id"] for enemy in content["enemies"]}
+        if any(
+            not enemy["behaviors"]
+            or not {"health", "speed", "base_damage", "gold_reward"}
+            <= {stat["stat_id"] for stat in enemy["stats"]}
+            for enemy in content["enemies"]
+        ):
+            raise ValueError("TowerDefense enemies need behavior and combat/economy stats")
+        if any(
+            placement["archetype"] not in enemy_ids
+            for zone in level["zones"]
+            for placement in zone["enemies"]
+        ):
+            raise ValueError("TowerDefense wave references an undefined enemy type")
+        if not {"gold", "tower_damage", "tower_range"} <= stats.keys():
+            raise ValueError("TowerDefense balance requires economy and tower combat stats")
+        if not {"hud", "build_menu"} <= set(bundle["presentation_plan"]["ui_screens"]):
+            raise ValueError("TowerDefense presentation requires HUD and build menu")
         scenario_ids = {
             scenario["scenario_id"] for scenario in bundle["validation_plan"]["scenarios"]
         }
@@ -384,11 +520,19 @@ def validate_design_v2(bundle: DesignV2Bundle) -> None:
                 f"presentation screen {screen['screen_id']} requires concrete UI elements"
             )
     cue_ids = {cue["cue_id"] for cue in presentation["feedback_cues"]}
-    required_cues = (
-        {"player_hit", "xp_pickup", "level_up", "boss_spawn"}
-        if level["genre"] == "SurvivorLike"
-        else {"player_hit", "collectible_pickup", "checkpoint_reached"}
-    )
+    if level["genre"] == "SurvivorLike":
+        required_cues = {"player_hit", "xp_pickup", "level_up", "boss_spawn"}
+    elif level["genre"] == "TowerDefense":
+        required_cues = {
+            "tower_built",
+            "tower_upgraded",
+            "enemy_defeated",
+            "base_damaged",
+            "wave_started",
+            "boss_arrived",
+        }
+    else:
+        required_cues = {"player_hit", "collectible_pickup", "checkpoint_reached"}
     if not cue_ids.issuperset(required_cues):
         raise ValueError("presentation_plan is missing required gameplay feedback cues")
     if "hit shake" not in presentation["camera_effects"]:
@@ -396,6 +540,25 @@ def validate_design_v2(bundle: DesignV2Bundle) -> None:
 
 
 def _game_design(game_spec: GameSpec, intent: str) -> GameDirectorDesign:
+    if game_spec["genre"] == "TowerDefense":
+        return {
+            "design_version": "2.0.0",
+            "title": game_spec["title"],
+            "player_experience": intent,
+            "target_play_minutes": 5,
+            "differentiators": [
+                "route-aware tower placement",
+                "distinct enemy counterplay",
+                "economic upgrade choices",
+            ],
+            "experience_curve": {
+                "opening": "prepare defenses and learn tower costs before wave one",
+                "midgame": "adapt placements to fast, armored, and ranged enemies",
+                "endgame": "upgrade the defense and survive the boss wave",
+            },
+            "win_conditions": list(game_spec["win_conditions"]),
+            "lose_conditions": list(game_spec["lose_conditions"]),
+        }
     return {
         "design_version": "2.0.0",
         "title": game_spec["title"],
@@ -418,6 +581,104 @@ def _game_design(game_spec: GameSpec, intent: str) -> GameDirectorDesign:
 
 def _system_design(game_spec: GameSpec) -> SystemDesign:
     abilities = [feature["description"] for feature in game_spec["features"]]
+    if game_spec["genre"] == "TowerDefense":
+        return {
+            "design_version": "2.0.0",
+            "player_states": [
+                "preparing",
+                "selecting_build_point",
+                "building",
+                "upgrading",
+                "paused",
+                "victory",
+                "defeat",
+            ],
+            "player_abilities": abilities,
+            "enemy_states": [
+                "spawn",
+                "follow_route",
+                "ranged_attack",
+                "damaged",
+                "defeated",
+                "base_reached",
+            ],
+            "combat_formulas": [
+                "projectile_damage = tower_damage",
+                "cannon impact damages every enemy within splash_radius",
+                "base_health_after_leak = max(0, base_health - enemy_base_damage)",
+            ],
+            "resources": ["gold", "base_health", "wave", "remaining_enemies", "wave_timer"],
+            "progression": [
+                "build tower -> defeat enemy -> earn gold -> upgrade tower",
+                "defend five increasingly difficult waves -> defeat boss -> victory",
+            ],
+            "save_data": ["highest_wave", "best_clear_time", "towers_built", "enemies_defeated"],
+            "event_connections": [
+                {
+                    "event_id": event,
+                    "producer": producer,
+                    "consumers": consumers,
+                    "payload": payload,
+                }
+                for event, producer, consumers, payload in (
+                    (
+                        "tower_built",
+                        "build controller",
+                        ["gold hud", "tower visual", "build sound"],
+                        ["tower_type", "cost"],
+                    ),
+                    (
+                        "tower_upgraded",
+                        "upgrade controller",
+                        ["tower stats", "range visual", "upgrade sound"],
+                        ["tower_id", "new_level"],
+                    ),
+                    (
+                        "enemy_defeated",
+                        "enemy health",
+                        ["gold reward", "enemy counter", "defeat sound"],
+                        ["enemy_type", "reward"],
+                    ),
+                    (
+                        "base_damaged",
+                        "path endpoint",
+                        ["base health hud", "hit feedback", "defeat check"],
+                        ["damage", "remaining_health"],
+                    ),
+                    (
+                        "wave_started",
+                        "wave spawner",
+                        ["wave hud", "wave announcement", "wave sound"],
+                        ["wave_number"],
+                    ),
+                    ("boss_arrived", "wave spawner", ["boss warning", "boss sound"], ["enemy_id"]),
+                )
+            ],
+            "stats": [
+                {
+                    "stat_id": "base_health",
+                    "initial": 20,
+                    "minimum": 1,
+                    "maximum": 100,
+                    "unit": "hp",
+                },
+                {"stat_id": "gold", "initial": 120, "minimum": 0, "maximum": 9999, "unit": "gold"},
+                {
+                    "stat_id": "tower_damage",
+                    "initial": 12,
+                    "minimum": 1,
+                    "maximum": 100,
+                    "unit": "hp",
+                },
+                {
+                    "stat_id": "tower_range",
+                    "initial": 4,
+                    "minimum": 1,
+                    "maximum": 12,
+                    "unit": "world units",
+                },
+            ],
+        }
     if game_spec["genre"] == "SurvivorLike":
         return {
             "design_version": "2.0.0",
@@ -497,6 +758,88 @@ def _system_design(game_spec: GameSpec) -> SystemDesign:
 
 
 def _content_plan(game_spec: GameSpec, level_plan: LevelPlan, intent: str) -> ContentPlan:
+    if game_spec["genre"] == "TowerDefense":
+        enemy_profiles = (
+            (
+                "infantry",
+                "basic route pressure",
+                14,
+                1.2,
+                1,
+                10,
+                ["follow route", "damage base at endpoint"],
+            ),
+            (
+                "fast",
+                "speed challenge",
+                8,
+                2.0,
+                1,
+                14,
+                ["follow route quickly", "damage base at endpoint"],
+            ),
+            (
+                "heavy",
+                "high-health priority target",
+                55,
+                0.7,
+                2,
+                24,
+                ["follow route slowly", "absorb multiple hits"],
+            ),
+            (
+                "ranged",
+                "attacks the defense from distance",
+                25,
+                1.0,
+                1,
+                20,
+                ["follow route", "fire at a target within attack range"],
+            ),
+            (
+                "boss",
+                "final wave objective",
+                240,
+                0.6,
+                5,
+                100,
+                ["follow route", "distinct boss attack", "victory when defeated"],
+            ),
+        )
+        return {
+            "plan_version": "2.0.0",
+            "enemies": [
+                {
+                    "content_id": enemy_id,
+                    "role": role,
+                    "count": sum(
+                        placement["archetype"] == enemy_id
+                        for zone in level_plan["zones"]
+                        for placement in zone["enemies"]
+                    ),
+                    "stats": [
+                        {"stat_id": "health", "value": health},
+                        {"stat_id": "speed", "value": speed},
+                        {"stat_id": "base_damage", "value": damage},
+                        {"stat_id": "gold_reward", "value": reward},
+                    ],
+                    "behaviors": behaviors,
+                }
+                for enemy_id, role, health, speed, damage, reward, behaviors in enemy_profiles
+            ],
+            "obstacles": [],
+            "rewards": [
+                {
+                    "content_id": "kill_gold",
+                    "role": "fund construction and upgrades through combat",
+                    "count": sum(len(zone["enemies"]) for zone in level_plan["zones"]),
+                    "stats": [{"stat_id": "gold", "value": 10}],
+                    "behaviors": ["grant exactly once on enemy death", "update gold hud"],
+                }
+            ],
+            "stages": [zone["title"] for zone in level_plan["zones"]],
+            "final_goal": "defend the base through five waves and defeat the boss",
+        }
     if game_spec["genre"] == "Platformer":
         enemy_counts = _placement_counts(level_plan, "enemies")
         obstacle_counts = _placement_counts(level_plan, "hazards")
@@ -843,6 +1186,52 @@ def _generic_level_plan(game_spec: GameSpec) -> LevelPlan:
     }
 
 
+def _tower_level_plan(game_spec: GameSpec) -> LevelPlan:
+    waves = (
+        ("opening", "infantry", "infantry", "infantry"),
+        ("speed", "infantry", "fast", "fast"),
+        ("armor", "infantry", "heavy", "fast"),
+        ("ranged", "heavy", "ranged", "fast"),
+        ("boss", "boss", "ranged", "heavy"),
+    )
+    zones: list[LevelZone] = []
+    for index, (title, *enemy_types) in enumerate(waves, start=1):
+        zones.append(
+            {
+                "zone_id": f"wave_{index}",
+                "title": f"Wave {index}: {title}",
+                "purpose": "tutorial" if index == 1 else ("mastery" if index == 5 else "challenge"),
+                "challenge": f"defend the base against {', '.join(enemy_types)}",
+                "reward": "gold for construction and upgrades" if index < 5 else "victory",
+                "difficulty": index,
+                "required_mechanics": list(dict.fromkeys(game_spec["mechanics"]))
+                or ["tower_placement"],
+                "start_x": float(index - 1),
+                "end_x": float(index),
+                "checkpoint": None,
+                "platforms": [],
+                "hazards": [],
+                "enemies": [
+                    _placement(f"wave_{index}_{kind}_{slot}", kind, -8, 2)
+                    for slot, kind in enumerate(enemy_types, start=1)
+                ],
+                "collectibles": [],
+            }
+        )
+    return {
+        "plan_version": "2.0.0",
+        "genre": "TowerDefense",
+        "player_spawn": _placement("command_center", "command_center", 0, 0),
+        "goal": _placement("base", "base", 8, 0),
+        "zones": zones,
+        "safe_start_seconds": 10.0,
+        "camera_orthographic_size": 6.0,
+        "max_horizontal_gap": 0.0,
+        "max_step_up": 0.0,
+        "minimum_landing_width": 0.0,
+    }
+
+
 def _survivor_level_plan(game_spec: GameSpec) -> LevelPlan:
     mechanics = list(dict.fromkeys(game_spec["mechanics"])) or ["top_down_movement"]
     phases = [
@@ -900,6 +1289,53 @@ def _survivor_level_plan(game_spec: GameSpec) -> LevelPlan:
 
 
 def _balance_plan(game_spec: GameSpec) -> BalancePlan:
+    if game_spec["genre"] == "TowerDefense":
+        return {
+            "plan_version": "2.0.0",
+            "stats": [
+                {
+                    "stat_id": "base_health",
+                    "initial": 20,
+                    "minimum": 1,
+                    "maximum": 100,
+                    "unit": "hp",
+                },
+                {"stat_id": "gold", "initial": 120, "minimum": 0, "maximum": 9999, "unit": "gold"},
+                {
+                    "stat_id": "tower_damage",
+                    "initial": 12,
+                    "minimum": 1,
+                    "maximum": 100,
+                    "unit": "hp",
+                },
+                {
+                    "stat_id": "tower_range",
+                    "initial": 4,
+                    "minimum": 1,
+                    "maximum": 12,
+                    "unit": "world units",
+                },
+            ],
+            "formulas": [
+                "gold_after_build = gold_before_build - tower_cost",
+                "gold_after_kill = gold_before_kill + enemy_reward",
+                "cannon impact damages every enemy within splash_radius",
+                "base_health_after_leak = max(0, base_health - enemy_base_damage)",
+            ],
+            "difficulty_curve": [
+                "wave 1: basic infantry and preparation",
+                "wave 2: faster enemies test placement coverage",
+                "wave 3: armored enemies test sustained damage",
+                "wave 4: ranged enemies threaten static defenses",
+                "wave 5: boss combines earlier pressures",
+            ],
+            "reward_costs": [
+                "basic tower: 40 gold",
+                "rapid tower: 55 gold",
+                "cannon tower: 75 gold",
+                "upgrades require earned gold",
+            ],
+        }
     if game_spec["genre"] == "SurvivorLike":
         return {
             "plan_version": "2.0.0",

@@ -7,6 +7,7 @@ namespace TeamIdle.GameTemplate.Common
         private Vector2 direction = Vector2.right;
         private float damage = 1f;
         private float speed = 8f;
+        private float splashRadius;
 
         [SerializeField]
         private LayerMask targetMask = 1 << 8;
@@ -30,6 +31,11 @@ namespace TeamIdle.GameTemplate.Common
             Destroy(gameObject, Mathf.Max(0.05f, lifetime));
         }
 
+        public void ConfigureSplash(float radius)
+        {
+            splashRadius = Mathf.Max(0f, radius);
+        }
+
         private void Update()
         {
             if (body == null || body.bodyType != RigidbodyType2D.Dynamic)
@@ -47,7 +53,32 @@ namespace TeamIdle.GameTemplate.Common
 
             if (other.TryGetComponent<HealthComponent>(out var health))
             {
-                health.Damage(damage);
+                if (splashRadius > 0f)
+                {
+                    var damaged = new System.Collections.Generic.HashSet<HealthComponent>();
+                    foreach (
+                        var hit in Physics2D.OverlapCircleAll(
+                            other.transform.position,
+                            splashRadius,
+                            targetMask
+                        )
+                    )
+                    {
+                        var victim = hit.GetComponentInParent<HealthComponent>();
+                        if (victim != null && damaged.Add(victim))
+                        {
+                            victim.Damage(damage);
+                        }
+                    }
+                    if (damaged.Add(health))
+                    {
+                        health.Damage(damage);
+                    }
+                }
+                else
+                {
+                    health.Damage(damage);
+                }
                 Destroy(gameObject);
             }
         }

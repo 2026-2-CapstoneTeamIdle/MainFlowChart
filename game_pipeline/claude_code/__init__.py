@@ -38,6 +38,9 @@ This is a read-only quality review. Do not edit any file. Read
 and validation records. Check requirement coverage, connected gameplay, progression, content,
 balance, presentation, and asset integration. Hard validator failures cannot be overruled. Cite
 project-relative paths or hard check IDs for every nontrivial conclusion.
+If the image backend deliberately produced placeholders and visual validation is marked skipped,
+record that as a limitation; do not fail solely because no real image asset was applied. Prefer
+post-quality Unity validation evidence over the earlier pre-repair run when available.
 
 HOST EVIDENCE:
 {json.dumps(evidence, ensure_ascii=False, indent=2)}

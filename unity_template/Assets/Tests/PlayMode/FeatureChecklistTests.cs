@@ -85,6 +85,37 @@ namespace TeamIdle.GameTemplate.FeatureTests
 
         [UnityTest]
         [Category("FeatureChecklist")]
+        public IEnumerator TowerProjectileSplashDamagesNearbyEnemiesOnly()
+        {
+            var first = new GameObject("SplashTargetA") { layer = 8 };
+            first.transform.position = new Vector3(1000f, 1000f);
+            var firstCollider = first.AddComponent<BoxCollider2D>();
+            var firstHealth = first.AddComponent<HealthComponent>();
+            var second = new GameObject("SplashTargetB") { layer = 8 };
+            second.transform.position = new Vector3(1001f, 1000f);
+            second.AddComponent<BoxCollider2D>();
+            var secondHealth = second.AddComponent<HealthComponent>();
+            var distant = new GameObject("SplashTargetFar") { layer = 8 };
+            distant.transform.position = new Vector3(1005f, 1000f);
+            distant.AddComponent<BoxCollider2D>();
+            var distantHealth = distant.AddComponent<HealthComponent>();
+            var projectile = new GameObject("SplashProjectile").AddComponent<Projectile2D>();
+            projectile.ConfigureSplash(2f);
+            projectile.Launch(Vector2.right, 10f, 0f, 5f);
+            Physics2D.SyncTransforms();
+            projectile.SendMessage("OnTriggerEnter2D", firstCollider);
+            Assert.That(firstHealth.Current, Is.EqualTo(90f));
+            Assert.That(secondHealth.Current, Is.EqualTo(90f));
+            Assert.That(distantHealth.Current, Is.EqualTo(100f));
+            Object.Destroy(first);
+            Object.Destroy(second);
+            Object.Destroy(distant);
+            Object.Destroy(projectile.gameObject);
+            yield return null;
+        }
+
+        [UnityTest]
+        [Category("FeatureChecklist")]
         public IEnumerator FC01_EightDirectionAttack()
         {
             RequireFeature("8방향 공격");

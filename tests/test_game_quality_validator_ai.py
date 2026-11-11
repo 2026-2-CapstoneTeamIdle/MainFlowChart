@@ -5,11 +5,15 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from game_pipeline.game_quality_validator_ai import GameQualityValidatorAI
 from mainflow.ArtifactManager import ArtifactManager
-from mainflow.nodes.game_quality_validator import game_quality_validator_node
+from mainflow.nodes.game_quality_validator import (
+    _repair_and_review_quality,
+    game_quality_validator_node,
+)
 from MCP.llm_types import LLMConversationMessage, LLMProviderResponse, LLMToolCall
 from MCP.manager import MCPManager, MCPToolDefinition
 from MCP.server import mcp
@@ -93,6 +97,52 @@ class QualityProvider:
 
 
 class GameQualityValidatorAITest(unittest.TestCase):
+    def test_quality_findings_trigger_repair_and_fresh_unity_evidence(self) -> None:
+        manager = MagicMock()
+        manager.ensure_project.return_value = Path("C:/synthetic/workspace")
+        initial_report = {
+            "status": "needs_revision",
+            "findings": [
+                {
+                    "severity": "error",
+                    "category": "gameplay",
+                    "message": "Cannon splash is not applied on projectile impact",
+                    "evidence": ["Assets/GameTemplate/Runtime/TowerDefense/CannonTower.cs:42"],
+                }
+            ],
+            "limitations": [],
+        }
+        evidence = {
+            "game_logic_draft": {"status": "generated"},
+            "parsed_request": {"condition": "Defend the base"},
+        }
+        harness = MagicMock()
+        harness.repair_quality_findings.return_value = SimpleNamespace(
+            status="passed",
+            checks=[{"criterion_id": "unity.runtime_smoke", "passed": True}],
+            issues=[],
+            unity_log="UNITY_RUNTIME_SMOKE_OK",
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {"MAINFLOW_GAME_BUILDER": "codex_cli", "MAINFLOW_GAME_QUALITY_REPAIRS": "2"},
+            ),
+            patch("game_pipeline.codex_cli.CodexHarnessSettings.from_environment"),
+            patch("game_pipeline.codex_cli.CodexGameHarness", return_value=harness),
+            patch(
+                "mainflow.nodes.game_quality_validator.run_codex_quality_review",
+                return_value={"status": "passed", "findings": []},
+            ) as review,
+        ):
+            result = _repair_and_review_quality("test-project", manager, evidence, initial_report)
+
+        self.assertEqual(result["status"], "passed")
+        harness.repair_quality_findings.assert_called_once()
+        self.assertEqual(
+            review.call_args.kwargs["evidence"]["post_quality_unity_validation"]["status"], "passed"
+        )
+
     def test_independent_validator_uses_project_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             workspace = Path(temporary_directory) / "workspace"

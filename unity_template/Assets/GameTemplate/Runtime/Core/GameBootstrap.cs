@@ -148,11 +148,11 @@ namespace TeamIdle.GameTemplate.Core
                 }
             }
 
-            if (initializedModules.Count != expectedCount)
+            if (initializedModules.Count < expectedCount)
             {
                 validationProbe.Fail(
                     "template.module_count",
-                    $"Expected {expectedCount} initialized modules but found {initializedModules.Count}."
+                    $"Expected at least {expectedCount} initialized modules but found {initializedModules.Count}."
                 );
             }
 

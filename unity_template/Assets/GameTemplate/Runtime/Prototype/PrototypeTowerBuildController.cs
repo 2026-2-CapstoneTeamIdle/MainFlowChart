@@ -13,6 +13,7 @@ namespace TeamIdle.GameTemplate.Prototype
         public float range = 4f;
         public float attacksPerSecond = 1.2f;
         public float damage = 12f;
+        public float splashRadius;
         public Color color = new(0.25f, 0.8f, 1f);
     }
 
@@ -102,7 +103,8 @@ namespace TeamIdle.GameTemplate.Prototype
                     definition.towerTypeId,
                     definition.range,
                     definition.attacksPerSecond,
-                    definition.damage
+                    definition.damage,
+                    definition.splashRadius
                 );
             BuiltTowerCount++;
             return true;

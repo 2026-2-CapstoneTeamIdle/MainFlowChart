@@ -192,9 +192,7 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
         rejected_conflicts.extend(genre_rejected)
         condition_report["explicit_constraint_rejections"] = rejected_conflicts
         enrichment_report["explicit_constraint_rejections"] = rejected_conflicts
-        log(
-            "장르 소유권 규칙에 따라 플레이어 공격으로 오인된 타워 공격 기능을 제거했습니다."
-        )
+        log("장르 소유권 규칙에 따라 플레이어 공격으로 오인된 타워 공격 기능을 제거했습니다.")
 
     manager.write_json(
         state["project_id"],

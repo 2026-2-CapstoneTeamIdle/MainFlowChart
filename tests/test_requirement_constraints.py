@@ -70,9 +70,7 @@ class RequirementConstraintsTest(unittest.TestCase):
             },
         ]
 
-        accepted, rejected = filter_genre_conflicting_features(
-            features, condition, "타워 디펜스"
-        )
+        accepted, rejected = filter_genre_conflicting_features(features, condition, "타워 디펜스")
 
         self.assertEqual([feature["feature_id"] for feature in accepted], ["tower-attack"])
         self.assertEqual([feature["feature_id"] for feature in rejected], ["player-attack"])
