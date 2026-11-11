@@ -11,13 +11,14 @@ button, input, select, textarea { font: inherit; }
 button { border: 0; }
 code { color: #9ab9ff; }
 .page-shell { width: min(1240px, calc(100% - 40px)); margin: 0 auto; padding: 64px 0 100px; }
-.hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 30px; margin-bottom: 36px; }
+.hero { position: relative; display: flex; align-items: center; justify-content: center; margin-bottom: 36px; padding: 16px 0; }
+.hero-logo { display: block; width: clamp(420px, 65vw, 760px); max-width: 100%; height: auto; margin: 0 auto; filter: drop-shadow(0 18px 34px #00000055); }
 .eyebrow, .section-label { margin: 0 0 10px; color: #75a7ff; font-size: .73rem; font-weight: 800; letter-spacing: .16em; }
 h1, h2, h3, p { margin-top: 0; }
 h1 { margin-bottom: 16px; font-size: clamp(2.8rem, 7vw, 5.6rem); line-height: .95; letter-spacing: -.06em; }
 h2 { margin-bottom: 0; font-size: 1.45rem; }
 .hero-copy { max-width: 720px; margin-bottom: 0; color: #9eaac0; line-height: 1.65; }
-.server-state { display: inline-flex; align-items: center; gap: 10px; flex: 0 0 auto; padding: 10px 14px; border: 1px solid #28354b; border-radius: 999px; background: #101726; color: #cad3e3; font-size: .86rem; }
+.server-state { position: absolute; right: 0; bottom: 16px; display: inline-flex; align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid #28354b; border-radius: 999px; background: #101726; color: #cad3e3; font-size: .86rem; }
 .status-dot { width: 9px; height: 9px; border-radius: 50%; }
 .status-dot--pending { background: #f2b84b; box-shadow: 0 0 0 4px #f2b84b20; }
 .status-dot--ready { background: #3ed188; box-shadow: 0 0 0 4px #3ed18820; }
@@ -79,12 +80,14 @@ kbd { padding: 2px 6px; border: 1px solid #344159; border-bottom-width: 2px; bor
 .toast--error { border-color: #713647; background: #3b1822; color: #ffc0ca; }
 
 @media (max-width: 850px) {
-  .hero { align-items: flex-start; flex-direction: column; }
+  .hero { flex-direction: column; }
+  .server-state { position: static; margin-top: 16px; }
   .model-grid, .feature-list, .credential-grid { grid-template-columns: 1fr; }
   .request-grid { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 560px) {
   .page-shell { width: min(100% - 22px, 1240px); padding-top: 38px; }
+  .hero-logo { width: 100%; }
   .panel { padding: 20px; }
   .request-grid, .model-controls { grid-template-columns: 1fr; }
   .wide-field { grid-column: 1; }

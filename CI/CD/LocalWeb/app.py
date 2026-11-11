@@ -31,7 +31,10 @@ app.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
     """Return the local web application shell."""
-    return FileResponse(STATIC_ROOT / "index.html")
+    return FileResponse(
+        STATIC_ROOT / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/health")
