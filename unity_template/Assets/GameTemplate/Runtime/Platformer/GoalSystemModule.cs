@@ -24,6 +24,7 @@ namespace TeamIdle.GameTemplate.Platformer
 
             IsCompleted = true;
             Completed?.Invoke();
+            GameAudioCues.Raise(GameAudioCues.GameClear);
             return true;
         }
 

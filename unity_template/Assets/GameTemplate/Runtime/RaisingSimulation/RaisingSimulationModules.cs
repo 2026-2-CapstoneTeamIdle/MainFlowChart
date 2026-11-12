@@ -150,6 +150,7 @@ namespace TeamIdle.GameTemplate.RaisingSimulation
 
             time.Advance(activity.turnCost);
             ActivityCompleted?.Invoke(activity);
+            GameAudioCues.Raise(GameAudioCues.Activity);
             return true;
         }
 

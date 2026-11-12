@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
+from game_pipeline.asset_specs import classify_sound_cue
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -274,7 +275,10 @@ class UnityAssetApplicator:
                 self.UNITY_PROJECT_ROOT / unity_path,
                 content,
             )
-            entries.append(self._binding_entry(item, unity_path))
+            entry = self._binding_entry(item, unity_path)
+            if asset_type == "sound" and not entry["audio_cue"]:
+                warnings.append(f"No gameplay event matches sound; it will not play: {asset_id}")
+            entries.append(entry)
             applied.append(asset_id)
         return applied
 
@@ -300,6 +304,11 @@ class UnityAssetApplicator:
             "unity_load_type": str(spec.get("unity_load_type", "")) if not is_image else "",
             "mixer_group": str(spec.get("mixer_group", "")) if not is_image else "",
             "spatial_blend": float(spec.get("spatial_blend", 0.0)) if not is_image else 0.0,
+            "audio_cue": (
+                ""
+                if is_image
+                else classify_sound_cue(item["purpose"], item["description"], str(spec["kind"]))
+            ),
         }
 
     def _write_mutable(self, project_id: str, relative_path: Path, content: bytes) -> Path:

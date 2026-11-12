@@ -41,6 +41,7 @@ namespace TeamIdle.GameTemplate.SurvivorLike
             var choice = currentChoices[index];
             currentChoices.Clear();
             Selected?.Invoke(choice);
+            GameAudioCues.Raise(GameAudioCues.Ui);
             return true;
         }
 

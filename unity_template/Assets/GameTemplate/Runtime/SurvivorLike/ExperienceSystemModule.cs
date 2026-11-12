@@ -21,6 +21,7 @@ namespace TeamIdle.GameTemplate.SurvivorLike
         public void Add(int amount)
         {
             Experience += Mathf.Max(0, amount);
+            GameAudioCues.Raise(GameAudioCues.Pickup);
             while (Experience >= RequiredExperience)
             {
                 Experience -= RequiredExperience;
@@ -30,6 +31,7 @@ namespace TeamIdle.GameTemplate.SurvivorLike
                     Mathf.RoundToInt(RequiredExperience * requirementGrowth)
                 );
                 LevelGained?.Invoke(Level);
+                GameAudioCues.Raise(GameAudioCues.LevelUp);
             }
             ExperienceChanged?.Invoke(Experience, RequiredExperience);
         }

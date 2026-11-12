@@ -135,6 +135,7 @@ namespace TeamIdle.GameTemplate.VisualNovel
             }
 
             ChoiceSelected?.Invoke(choice);
+            GameAudioCues.Raise(GameAudioCues.Ui);
             return true;
         }
 

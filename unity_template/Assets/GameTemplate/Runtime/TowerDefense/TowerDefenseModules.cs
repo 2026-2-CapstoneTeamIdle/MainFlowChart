@@ -222,6 +222,7 @@ namespace TeamIdle.GameTemplate.TowerDefense
             if (Lives == 0)
             {
                 Defeated?.Invoke();
+                GameAudioCues.Raise(GameAudioCues.GameOver);
             }
         }
 

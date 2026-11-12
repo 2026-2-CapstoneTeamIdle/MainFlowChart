@@ -1,4 +1,5 @@
 using System;
+using TeamIdle.GameTemplate.Core;
 using UnityEngine;
 
 namespace TeamIdle.GameTemplate.Prototype
@@ -35,6 +36,7 @@ namespace TeamIdle.GameTemplate.Prototype
             CheckpointIndex = index;
             checkpoint = position;
             CheckpointActivated?.Invoke(index, position);
+            GameAudioCues.Raise(GameAudioCues.Checkpoint);
         }
 
         public void Respawn()

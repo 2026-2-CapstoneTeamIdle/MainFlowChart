@@ -54,6 +54,7 @@ namespace TeamIdle.GameTemplate.Common
                 return;
             IsGameOver = true;
             PlayerDefeated?.Invoke();
+            GameAudioCues.Raise(GameAudioCues.GameOver);
         }
     }
 }

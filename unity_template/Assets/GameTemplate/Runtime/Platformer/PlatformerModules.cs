@@ -103,6 +103,7 @@ namespace TeamIdle.GameTemplate.Platformer
                 jumpQueuedUntil = float.NegativeInfinity;
                 groundedUntil = float.NegativeInfinity;
                 blockedJumpAvailable = false;
+                GameAudioCues.Raise(GameAudioCues.Jump);
             }
         }
 

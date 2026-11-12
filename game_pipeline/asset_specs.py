@@ -34,6 +34,37 @@ SOUND_KIND_KEYWORDS: tuple[tuple[SoundAssetKind, tuple[str, ...]], ...] = (
 )
 
 
+# Runtime cue IDs raised through GameAudioCues in the Unity template; keep both in sync.
+# Order matters: more specific events come before generic ones ("피격" before "공격").
+SOUND_CUE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("game_over", ("패배", "게임오버", "게임 오버", "game over", "defeat", "사망")),
+    ("game_clear", ("승리", "클리어", "엔딩", "victory", "clear", "ending")),
+    ("level_up", ("레벨업", "레벨 업", "level up")),
+    ("checkpoint", ("체크포인트", "checkpoint")),
+    ("jump", ("점프", "jump")),
+    ("card_play", ("카드", "card")),
+    ("pickup", ("획득", "수집", "아이템", "코인", "경험치", "pickup", "collect", "coin")),
+    ("hit", ("피격", "피해", "데미지", "damage", "hurt")),
+    ("attack", ("공격", "발사", "타격", "사격", "attack", "shoot", "fire")),
+    ("activity", ("행동", "훈련", "활동", "activity", "train")),
+    ("ui", ("ui", "선택", "클릭", "메뉴", "버튼", "결정", "확인", "click", "menu", "button")),
+)
+SCENE_START_CUE = "scene_start"
+
+
+def classify_sound_cue(purpose: str, description: str, kind: str) -> str:
+    """Pick the gameplay event that plays a sound; empty means no matching event."""
+    text = f"{purpose} {description}".lower()
+    cue = next(
+        (cue for cue, keywords in SOUND_CUE_KEYWORDS if any(k in text for k in keywords)),
+        "",
+    )
+    if kind in {"bgm", "ambience"}:
+        # Music only switches on stage end; any other music starts with the scene.
+        return cue if cue in {"game_clear", "game_over"} else SCENE_START_CUE
+    return cue or ("ui" if kind == "ui" else "")
+
+
 def classify_image_kind(purpose: str, description: str) -> ImageAssetKind:
     text = f"{purpose} {description}".lower()
     for kind, keywords in IMAGE_KIND_KEYWORDS:

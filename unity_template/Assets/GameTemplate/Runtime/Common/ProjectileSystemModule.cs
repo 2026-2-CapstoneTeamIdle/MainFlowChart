@@ -23,6 +23,7 @@ namespace TeamIdle.GameTemplate.Common
 
             var projectile = Instantiate(prefab, position, Quaternion.identity);
             projectile.Launch(direction, damage, speed, lifetime);
+            GameAudioCues.Raise(GameAudioCues.Attack);
             return projectile;
         }
 
