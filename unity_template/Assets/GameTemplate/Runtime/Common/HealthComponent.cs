@@ -31,7 +31,9 @@ namespace TeamIdle.GameTemplate.Common
             if (!IsAlive || amount <= 0f)
                 return;
             Current = Mathf.Max(0f, Current - amount);
-            GameAudioCues.Raise(GameAudioCues.Hit);
+            GameAudioCues.Raise(
+                CompareTag("Player") ? GameAudioCues.PlayerHit : GameAudioCues.EnemyHit
+            );
             Changed?.Invoke(Current, maximum);
             if (Current > 0f)
                 return;

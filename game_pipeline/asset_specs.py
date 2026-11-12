@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from mainflow.contracts import (
     ImageAssetKind,
     ImageGenerationSpec,
@@ -36,15 +38,23 @@ SOUND_KIND_KEYWORDS: tuple[tuple[SoundAssetKind, tuple[str, ...]], ...] = (
 
 # Runtime cue IDs raised through GameAudioCues in the Unity template; keep both in sync.
 # Order matters: more specific events come before generic ones ("피격" before "공격").
+# Ambiguous words are phrase-only: "피해" alone also means "avoid", "사망" alone also fits enemies.
 SOUND_CUE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("game_over", ("패배", "게임오버", "게임 오버", "game over", "defeat", "사망")),
-    ("game_clear", ("승리", "클리어", "엔딩", "victory", "clear", "ending")),
+    (
+        "game_over",
+        ("패배", "게임오버", "게임 오버", "플레이어 사망", "game over", "defeat", "player death"),
+    ),
+    (
+        "game_clear",
+        ("승리", "클리어", "엔딩", "victory", "stage clear", "game clear", "level clear", "ending"),
+    ),
     ("level_up", ("레벨업", "레벨 업", "level up")),
     ("checkpoint", ("체크포인트", "checkpoint")),
     ("jump", ("점프", "jump")),
     ("card_play", ("카드", "card")),
     ("pickup", ("획득", "수집", "아이템", "코인", "경험치", "pickup", "collect", "coin")),
-    ("hit", ("피격", "피해", "데미지", "damage", "hurt")),
+    ("enemy_hit", ("적 피격", "적이 맞", "적이 피해", "enemy hit", "enemy hurt", "enemy damage")),
+    ("player_hit", ("피격", "피해를 입", "피해 입", "데미지", "hit", "damage", "hurt")),
     ("attack", ("공격", "발사", "타격", "사격", "attack", "shoot", "fire")),
     ("activity", ("행동", "훈련", "활동", "activity", "train")),
     ("ui", ("ui", "선택", "클릭", "메뉴", "버튼", "결정", "확인", "click", "menu", "button")),
@@ -52,11 +62,22 @@ SOUND_CUE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 SCENE_START_CUE = "scene_start"
 
 
+def _has_keyword(text: str, keyword: str) -> bool:
+    # English matches whole words only ("ui" must not match "guitar"/"build", "clear" not "clear하고").
+    if keyword.isascii():
+        return re.search(rf"\b{re.escape(keyword)}\b", text) is not None
+    return keyword in text
+
+
 def classify_sound_cue(purpose: str, description: str, kind: str) -> str:
     """Pick the gameplay event that plays a sound; empty means no matching event."""
     text = f"{purpose} {description}".lower()
     cue = next(
-        (cue for cue, keywords in SOUND_CUE_KEYWORDS if any(k in text for k in keywords)),
+        (
+            cue
+            for cue, keywords in SOUND_CUE_KEYWORDS
+            if any(_has_keyword(text, k) for k in keywords)
+        ),
         "",
     )
     if kind in {"bgm", "ambience"}:
@@ -93,7 +114,7 @@ def build_image_generation_spec(purpose: str, description: str) -> ImageGenerati
 def classify_sound_kind(purpose: str, description: str) -> SoundAssetKind:
     text = f"{purpose} {description}".lower()
     for kind, keywords in SOUND_KIND_KEYWORDS:
-        if any(keyword in text for keyword in keywords):
+        if any(_has_keyword(text, keyword) for keyword in keywords):
             return kind
     return "sfx"
 

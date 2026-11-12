@@ -32,33 +32,37 @@ namespace TeamIdle.GameTemplate.Common
                 }
             );
 
+        // Several clips can share a cue: music keeps one track per cue, SFX picks one variation.
         public void Play(string cue)
         {
-            foreach (var binding in bindings)
+            var playable = bindings.FindAll(binding =>
+                binding.cue == cue && binding.source != null && binding.source.clip != null
+            );
+
+            var effects = playable.FindAll(binding => !binding.music);
+            if (effects.Count > 0)
             {
-                if (binding.cue != cue || binding.source == null || binding.source.clip == null)
-                {
-                    continue;
-                }
+                var effect = effects[UnityEngine.Random.Range(0, effects.Count)];
+                // One-shot lets rapid repeats (shots, pickups) overlap instead of restarting.
+                effect.source.PlayOneShot(effect.source.clip);
+            }
 
-                if (!binding.music)
-                {
-                    // One-shot lets rapid repeats (shots, pickups) overlap instead of restarting.
-                    binding.source.PlayOneShot(binding.source.clip);
-                    continue;
-                }
+            var track = playable.Find(binding => binding.music);
+            if (track == null)
+            {
+                return;
+            }
 
-                foreach (var other in bindings)
+            foreach (var other in bindings)
+            {
+                if (other.music && other != track && other.source != null)
                 {
-                    if (other.music && other.source != null && other.cue != cue)
-                    {
-                        other.source.Stop();
-                    }
+                    other.source.Stop();
                 }
-                if (!binding.source.isPlaying)
-                {
-                    binding.source.Play();
-                }
+            }
+            if (!track.source.isPlaying)
+            {
+                track.source.Play();
             }
         }
 

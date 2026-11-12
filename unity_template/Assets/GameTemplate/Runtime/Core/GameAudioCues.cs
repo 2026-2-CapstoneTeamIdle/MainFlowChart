@@ -14,7 +14,8 @@ namespace TeamIdle.GameTemplate.Core
         public const string Jump = "jump";
         public const string CardPlay = "card_play";
         public const string Pickup = "pickup";
-        public const string Hit = "hit";
+        public const string PlayerHit = "player_hit";
+        public const string EnemyHit = "enemy_hit";
         public const string Attack = "attack";
         public const string Activity = "activity";
         public const string Ui = "ui";

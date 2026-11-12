@@ -80,10 +80,15 @@ uv run --locked python -m unittest tests.test_sound_generation tests.test_sound_
 |---|---|
 | `scene_start` | 씬 시작 (일반 BGM·환경음) |
 | `game_clear` / `game_over` | 골 도달 / 플레이어 사망·기지 파괴 (엔딩·승리·패배 음악은 이때 기존 BGM을 멈추고 재생) |
-| `jump`, `attack`, `hit`, `pickup`, `level_up`, `checkpoint` | 점프, 투사체 발사, 체력 감소, 아이템·경험치 획득, 레벨업, 체크포인트 |
+| `player_hit` / `enemy_hit` | `Player` 태그 오브젝트의 체력 감소 / 그 외 오브젝트의 체력 감소 |
+| `jump`, `attack`, `pickup`, `level_up`, `checkpoint` | 점프, 투사체 발사, 아이템·경험치 획득, 레벨업, 체크포인트 |
 | `card_play`, `ui`, `activity` | 카드 사용, 선택지·업그레이드 선택, 육성 행동 완료 |
 
 맞는 큐가 없는 효과음은 재생되지 않고 매니페스트 `warnings`에 남는다.
+
+같은 큐에 사운드가 여러 개 연결되면 음악은 첫 번째 트랙 하나만 재생하고(다른 음악은 모두 정지), 효과음은 매번 하나를 무작위로 골라 재생한다.
+
+큐 분류는 키워드 매칭이다. 영문 키워드는 단어 단위로만 맞추고(`ui`가 `guitar`·`build`에 걸리지 않음), `피해`·`사망`·`clear`처럼 뜻이 여러 개인 단어는 `피해를 입`·`플레이어 사망`·`stage clear` 같은 구문으로만 맞춘다.
 
 ## 6. 현재 한계
 
