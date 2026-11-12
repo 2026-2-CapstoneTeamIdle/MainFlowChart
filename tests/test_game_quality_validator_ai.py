@@ -98,6 +98,73 @@ class QualityProvider:
 
 
 class GameQualityValidatorAITest(unittest.TestCase):
+    def test_successful_quality_repair_replaces_final_package_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manager = ArtifactManager(Path(temporary_directory) / "workspace")
+            project_id = manager.create_project()
+            state: dict[str, object] = {"project_id": project_id}
+            for key in (
+                "parsed_request",
+                "logic_analysis",
+                "game_logic_draft",
+                "game_validation_result",
+                "image_validation_result",
+                "sound_validation_result",
+                "integrated_game",
+                "final_validation_result",
+            ):
+                state[key] = manager.write_json(
+                    project_id,
+                    "validation",
+                    f"fixture_{key}.json",
+                    {"status": "passed"},
+                    producer="test",
+                )
+            refreshed = manager.write_json(
+                project_id,
+                "validation",
+                "final_validation_result_post_quality.json",
+                {"status": "passed", "entry_artifact": {"sha256": "repaired"}},
+                producer="final_validation",
+            )
+            initial_report = {
+                "status": "needs_revision",
+                "findings": [
+                    {
+                        "severity": "warning",
+                        "category": "gameplay",
+                        "message": "Repair the gameplay source",
+                        "evidence": ["Assets/Game.cs"],
+                    }
+                ],
+            }
+            repaired_report = {"status": "passed", "findings": []}
+
+            with (
+                patch.dict(os.environ, {"MAINFLOW_GAME_BUILDER": "codex_cli"}),
+                patch(
+                    "mainflow.nodes.game_quality_validator.ArtifactManager",
+                    return_value=manager,
+                ),
+                patch(
+                    "mainflow.nodes.game_quality_validator.run_codex_quality_review",
+                    return_value=initial_report,
+                ),
+                patch(
+                    "mainflow.nodes.game_quality_validator._repair_and_review_quality",
+                    return_value=repaired_report,
+                ),
+                patch(
+                    "mainflow.nodes.final_validation.final_validation_node",
+                    return_value={"final_validation_result": refreshed},
+                ) as final_validation,
+            ):
+                output = game_quality_validator_node(state)  # type: ignore[arg-type]
+
+        self.assertEqual(output["final_validation_result"], refreshed)
+        final_validation.assert_called_once()
+        self.assertEqual(final_validation.call_args.kwargs["artifact_variant"], "post_quality")
+
     def test_placeholder_visual_gap_is_an_informational_limitation(self) -> None:
         report = {
             "status": "needs_revision",

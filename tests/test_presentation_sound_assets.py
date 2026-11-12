@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from game_pipeline import normalize_game_spec
+from game_pipeline.asset_specs import build_sound_generation_spec
 from game_pipeline.design_v2 import build_design_v2
 from game_pipeline.presentation_sound_assets import with_presentation_sound_assets
 
@@ -33,6 +34,22 @@ class PresentationSoundAssetsTest(unittest.TestCase):
         twice = with_presentation_sound_assets(once, baseline["presentation_plan"])
 
         self.assertEqual(once, twice)
+
+    def test_survivor_feedback_assets_have_runtime_audio_cues(self) -> None:
+        spec = normalize_game_spec("뱀서류", {})
+        design = build_design_v2(spec, "경험치를 모아 레벨업하고 보스를 처치한다")
+        expanded = with_presentation_sound_assets(spec, design["presentation_plan"])
+        generated_cues = {
+            item["asset_id"]: build_sound_generation_spec(item["purpose"], item["description"])[
+                "audio_cue"
+            ]
+            for item in expanded["asset_requirements"]
+            if item["asset_type"] == "sound"
+        }
+
+        self.assertEqual(generated_cues["xp_pickup_sfx"], "pickup")
+        self.assertEqual(generated_cues["level_up_sfx"], "level_up")
+        self.assertEqual(generated_cues["boss_spawn_sfx"], "boss_spawn")
 
 
 if __name__ == "__main__":

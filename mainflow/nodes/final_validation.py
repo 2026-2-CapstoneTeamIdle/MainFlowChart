@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -27,8 +28,18 @@ from mainflow.contracts import (
 from mainflow.nodes._common import log
 
 
-def final_validation_node(state: FinalValidationAgentInput) -> FinalValidationAgentOutput:
+def final_validation_node(
+    state: FinalValidationAgentInput,
+    *,
+    artifact_variant: str = "",
+) -> FinalValidationAgentOutput:
     """Revalidate after asset import; missing evidence can never mean success."""
+    if artifact_variant and not re.fullmatch(r"[a-z0-9_]+", artifact_variant):
+        raise ValueError(
+            "artifact_variant must contain only lowercase letters, digits and underscores"
+        )
+    artifact_suffix = f"_{artifact_variant}" if artifact_variant else ""
+    repair_directory = f"agent_repair/{artifact_variant or 'final_validation'}"
     log("최종 에셋과 Unity 실행 증거를 기준으로 완성된 게임을 검증합니다.")
     manager = ArtifactManager()
     checks: list[ValidationCheckResult] = []
@@ -217,7 +228,7 @@ def final_validation_node(state: FinalValidationAgentInput) -> FinalValidationAg
                         record=lambda name, data: manager.write_json(
                             state["project_id"],
                             "validation",
-                            f"agent_repair/final_validation/{name}.json",
+                            f"{repair_directory}/{name}.json",
                             data,
                             producer="final_validation",
                         ),
@@ -227,7 +238,7 @@ def final_validation_node(state: FinalValidationAgentInput) -> FinalValidationAg
                         manager.write_json(
                             state["project_id"],
                             "validation",
-                            "agent_repair/final_validation/result.json",
+                            f"{repair_directory}/result.json",
                             repair_result.to_dict(),
                             producer="final_validation",
                         )
@@ -261,7 +272,7 @@ def final_validation_node(state: FinalValidationAgentInput) -> FinalValidationAg
                 manager.write_text(
                     state["project_id"],
                     "validation",
-                    "final_unity_validation.log",
+                    f"final_unity_validation{artifact_suffix}.log",
                     outcome.unity_log,
                     producer="final_validation",
                 )
@@ -279,7 +290,7 @@ def final_validation_node(state: FinalValidationAgentInput) -> FinalValidationAg
                 manager.write_json(
                     state["project_id"],
                     "validation",
-                    "final_asset_binding_report.json",
+                    f"final_asset_binding_report{artifact_suffix}.json",
                     report,
                     producer="final_validation",
                 )
@@ -387,7 +398,7 @@ def final_validation_node(state: FinalValidationAgentInput) -> FinalValidationAg
                 package = manager.write_bytes(
                     state["project_id"],
                     "game",
-                    "validated_unity_project.zip",
+                    f"validated_unity_project{artifact_suffix}.zip",
                     UnityProjectGenerator().create_archive(root),
                     producer="final_validation",
                     media_type="application/zip",
@@ -406,7 +417,7 @@ def final_validation_node(state: FinalValidationAgentInput) -> FinalValidationAg
         "final_validation_result": manager.write_json(
             state["project_id"],
             "validation",
-            "final_validation_result.json",
+            f"final_validation_result{artifact_suffix}.json",
             result,
             producer="final_validation",
         )

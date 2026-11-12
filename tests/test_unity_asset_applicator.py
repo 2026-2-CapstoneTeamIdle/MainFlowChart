@@ -308,6 +308,9 @@ class UnityAssetApplicatorTest(unittest.TestCase):
             ("base_damaged feedback", "enemy reaches base"): "base_damaged",
             ("wave_started feedback", "preparation expires"): "wave_started",
             ("boss_arrived feedback", "boss wave begins"): "boss_arrived",
+            ("xp_pickup feedback", "experience reward collected"): "pickup",
+            ("level_up feedback", "upgrade choice becomes available"): "level_up",
+            ("boss_spawn feedback", "survivor boss enters the arena"): "boss_spawn",
             ("효과음", "알 수 없는 소리"): "",
         }
         for (purpose, description), expected in cases.items():

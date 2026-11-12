@@ -28,6 +28,7 @@ def game_quality_validator_node(
 
     log("독립 Validator AI가 요구사항, 플레이 흐름, 콘텐츠와 검증 증거를 종합 평가합니다.")
     manager = ArtifactManager()
+    refreshed_final_validation = None
     keys = [
         "parsed_request",
         "logic_analysis",
@@ -93,10 +94,23 @@ def game_quality_validator_node(
             in {"codex_cli", "claude_code"}
         ):
             report = _repair_and_review_quality(state["project_id"], manager, evidence, report)
+            if report.get("status") == "passed":
+                # Quality repair changes the Unity source after the original archive was built.
+                # Re-run the hard gate and package that exact repaired tree before returning success.
+                from mainflow.nodes.final_validation import final_validation_node
+
+                log("품질 수정본을 최종 검증하고 배포 ZIP을 다시 생성합니다.")
+                refreshed_final_validation = final_validation_node(
+                    state,
+                    artifact_variant="post_quality",
+                )["final_validation_result"]
+                evidence["final_validation_result"] = manager.read_json(refreshed_final_validation)
+                if evidence["final_validation_result"].get("status") != "passed":
+                    report = _hard_failure_report(evidence)
     except Exception as error:  # noqa: BLE001 - preserve a report at the final workflow boundary
         report = _execution_failure_report(error)
 
-    return {
+    output: GameValidatorAIAgentOutput = {
         "game_validator_ai_result": manager.write_json(
             state["project_id"],
             "validation",
@@ -105,6 +119,9 @@ def game_quality_validator_node(
             producer="game_quality_validator",
         )
     }
+    if refreshed_final_validation is not None:
+        output["final_validation_result"] = refreshed_final_validation
+    return output
 
 
 def _repair_and_review_quality(

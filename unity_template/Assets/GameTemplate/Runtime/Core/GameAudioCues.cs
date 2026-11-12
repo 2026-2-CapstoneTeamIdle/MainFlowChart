@@ -25,6 +25,7 @@ namespace TeamIdle.GameTemplate.Core
         public const string BaseDamaged = "base_damaged";
         public const string WaveStarted = "wave_started";
         public const string BossArrived = "boss_arrived";
+        public const string BossSpawn = "boss_spawn";
 
         public static event Action<string> Raised;
 

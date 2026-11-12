@@ -1051,3 +1051,4 @@ class GameValidatorAIAgentInput(TypedDict):
 
 class GameValidatorAIAgentOutput(TypedDict):
     game_validator_ai_result: ArtifactReference
+    final_validation_result: NotRequired[ArtifactReference]

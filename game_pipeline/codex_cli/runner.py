@@ -10,7 +10,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Never
 
 from game_pipeline.codex_cli.config import CodexHarnessSettings
 
@@ -248,15 +248,21 @@ def _stream_codex_process(
     reporter.emit("context", "Codex 작업 세션을 시작하고 프로젝트 문맥을 준비합니다.")
     stdout_lines: list[str] = []
     deadline = time.monotonic() + timeout_seconds
+
+    def stop_for_timeout() -> Never:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        stdout_thread.join(timeout=2)
+        stderr_thread.join(timeout=2)
+        stderr_path.write_text("".join(stderr_lines), encoding="utf-8")
+        raise TimeoutError(f"CODEX_PROCESS_TIMEOUT after {timeout_seconds}s")
+
     with events_path.open("w", encoding="utf-8", newline="\n") as event_file:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                process.kill()
-                process.wait()
-                stderr_thread.join(timeout=2)
-                stderr_path.write_text("".join(stderr_lines), encoding="utf-8")
-                raise TimeoutError(f"CODEX_PROCESS_TIMEOUT after {timeout_seconds}s")
+                stop_for_timeout()
             try:
                 line = stdout_queue.get(timeout=min(15, remaining))
             except queue.Empty:
@@ -275,7 +281,13 @@ def _stream_codex_process(
                 reporter.observe(event)
             reporter.heartbeat()
 
-    returncode = process.wait()
+    remaining = deadline - time.monotonic()
+    if remaining <= 0 and process.poll() is None:
+        stop_for_timeout()
+    try:
+        returncode = process.wait(timeout=max(0.0, remaining))
+    except subprocess.TimeoutExpired:
+        stop_for_timeout()
     stdout_thread.join(timeout=2)
     stderr_thread.join(timeout=2)
     stderr = "".join(stderr_lines)

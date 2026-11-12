@@ -172,7 +172,7 @@ class FinalValidationTest(unittest.TestCase):
             else None,
         )
 
-    def run_final(self):
+    def run_final(self, *, artifact_variant=""):
         def validate(*args):
             self.write_project(
                 "Assets/GameTemplate/Generated/AssetBindingReport.json",
@@ -185,7 +185,9 @@ class FinalValidationTest(unittest.TestCase):
             patch("mainflow.nodes.final_validation.UnityProjectValidator") as validator,
         ):
             validator.return_value.validate.side_effect = validate
-            reference = final_validation_node(self.state)["final_validation_result"]
+            reference = final_validation_node(self.state, artifact_variant=artifact_variant)[
+                "final_validation_result"
+            ]
         self.assertEqual(validator.call_args.kwargs["mode"], "required")
         return self.manager.read_json(reference)
 
@@ -225,6 +227,28 @@ class FinalValidationTest(unittest.TestCase):
                 "UnityProject/Assets/GameTemplate/Generated/AssetBindingReport.json",
                 archive.namelist(),
             )
+
+    def test_post_quality_validation_repackages_repaired_source(self):
+        source_path = "Assets/GameTemplate/Runtime/QualityPatch.cs"
+        self.write_project(source_path, b"original")
+        original = self.run_final()
+        self.write_project(source_path, b"repaired")
+
+        refreshed = self.run_final(artifact_variant="post_quality")
+
+        with zipfile.ZipFile(
+            io.BytesIO(self.manager.read_bytes(original["entry_artifact"]))
+        ) as archive:
+            self.assertEqual(archive.read("UnityProject/" + source_path), b"original")
+        with zipfile.ZipFile(
+            io.BytesIO(self.manager.read_bytes(refreshed["entry_artifact"]))
+        ) as archive:
+            self.assertEqual(archive.read("UnityProject/" + source_path), b"repaired")
+        self.assertTrue(
+            refreshed["entry_artifact"]["relative_path"].endswith(
+                "validated_unity_project_post_quality.zip"
+            )
+        )
 
     def test_unproven_semantic_criterion_fails(self):
         payload = self.manager.read_json(self.state["sound_validation_result"])

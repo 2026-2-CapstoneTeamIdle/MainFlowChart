@@ -24,6 +24,7 @@ class UnityTemplateTest(unittest.TestCase):
             "base_damaged",
             "wave_started",
             "boss_arrived",
+            "boss_spawn",
         ):
             with self.subTest(cue=cue):
                 self.assertIn(f'"{cue}"', source)

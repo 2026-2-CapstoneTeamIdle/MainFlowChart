@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -224,6 +225,26 @@ def test_streaming_runner_emits_curated_progress_and_keeps_jsonl(
     assert "[AGENT][edit]" in output
     assert "[AGENT][finalize]" in output
     assert len(events_path.read_text(encoding="utf-8").splitlines()) == 3
+
+
+def test_streaming_runner_enforces_timeout_after_stdout_closes(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    stderr_path = tmp_path / "stderr.log"
+    script = "import sys,time; sys.stdout.close(); time.sleep(3)"
+    started = time.monotonic()
+
+    with pytest.raises(TimeoutError, match="CODEX_PROCESS_TIMEOUT"):
+        _stream_codex_process(
+            command=[sys.executable, "-c", script],
+            prompt="implement",
+            cwd=tmp_path,
+            environment=dict(os.environ),
+            timeout_seconds=1,
+            events_path=events_path,
+            stderr_path=stderr_path,
+        )
+
+    assert time.monotonic() - started < 2.5
 
 
 def test_progress_reporter_does_not_treat_unity_paths_as_validation(
