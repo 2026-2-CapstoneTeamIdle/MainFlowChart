@@ -3,6 +3,7 @@ const statusText = document.querySelector("#status-text");
 const requestForm = document.querySelector("#request-form");
 const imageStyle = document.querySelector("#image-style");
 const customImage = document.querySelector("#custom-image");
+const customImageHelp = document.querySelector("#custom-image-help");
 const modelGrid = document.querySelector("#model-grid");
 const modelSettingsContent = document.querySelector("#model-settings-content");
 const modelSettingsToggle = document.querySelector("#model-settings-toggle");
@@ -17,22 +18,230 @@ const openUnityButton = document.querySelector("#open-unity-button");
 const previewButton = document.querySelector("#preview-button");
 const stopButton = document.querySelector("#stop-button");
 const copyLogButton = document.querySelector("#copy-log-button");
+const progressLabel = document.querySelector("#progress-label");
+const progressPercent = document.querySelector("#progress-percent");
+const progressFill = document.querySelector("#progress-fill");
+const progressTrack = document.querySelector(".workflow-progress__track");
+const progressTime = document.querySelector("#progress-time");
+const completionNotifications = document.querySelector("#completion-notifications");
+const gameBuilder = document.querySelector("#game-builder");
+const agentHarnessSettings = document.querySelector("#agent-harness-settings");
+const agentModel = document.querySelector("#agent-model");
+const agentReasoningEffort = document.querySelector("#agent-reasoning-effort");
+const agentFastMode = document.querySelector("#agent-fast-mode");
+const agentFastModeField = document.querySelector("#agent-fast-mode-field");
+const agentSettingsHelp = document.querySelector("#agent-settings-help");
 
 const providerLabels = { local: "LocalAI", openai: "OpenAI API", gemini: "Gemini API", vastai: "Vast.ai", placeholder: "Placeholder", procedural: "Procedural", elevenlabs: "ElevenLabs API" };
+const notificationSettingKey = "mainflow.completionNotifications";
+const agentHarnessCatalog = {
+  codex_cli: {
+    models: [
+      ["default", "기본 · 추천 모델 세트"],
+      ["gpt-6.1-sol", "GPT-6.1 Sol · 고성능"],
+      ["gpt-6-astra", "GPT-6 Astra · 최고 난도"],
+      ["gpt-6.1-terra", "GPT-6.1 Terra · 빠른 정밀 작업"],
+      ["gpt-6-sol", "GPT-6 Sol · 고성능"],
+      ["gpt-6-luna", "GPT-6 Luna · 속도·비용 우선"],
+      ["gpt-5.6-sol", "GPT-5.6 Sol"],
+      ["gpt-5.6-terra", "GPT-5.6 Terra"],
+      ["gpt-5.6-luna", "GPT-5.6 Luna"],
+    ],
+    efforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultModel: "gpt-5.6-luna",
+    defaultEffort: "medium",
+    help: "Codex CLI의 작업별 모델과 model_reasoning_effort를 지정합니다. Fast mode는 지원 모델에서 더 빠른 service tier를 사용하며 추가 사용량 또는 비용이 발생할 수 있습니다.",
+  },
+  claude_code: {
+    models: [
+      ["sonnet", "Claude Sonnet · 균형형"],
+      ["opus", "Claude Opus · 품질 우선"],
+      ["haiku", "Claude Haiku · 속도 우선"],
+    ],
+    efforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultModel: "sonnet",
+    defaultEffort: "medium",
+    help: "Claude Code CLI의 모델 alias와 --effort를 지정합니다. Claude Code에는 Codex Fast service tier 토글을 적용하지 않습니다.",
+  },
+};
+const agentHarnessSelections = {};
+let activeAgentBuilder = null;
 let currentJobId = null;
 let currentJob = null;
 let pollTimer = null;
+let notificationAudioContext = null;
+let notifiedMilestones = new Set();
+let toastTimer = null;
 
 function showToast(message, error = false) {
+  window.clearTimeout(toastTimer);
   toast.textContent = message;
   toast.className = `toast toast--visible${error ? " toast--error" : ""}`;
-  window.setTimeout(() => { toast.className = "toast"; }, 3500);
+  toastTimer = window.setTimeout(() => { toast.className = "toast"; }, error ? 8000 : 3500);
+}
+
+function replaceSelectOptions(select, entries, selectedValue) {
+  select.replaceChildren();
+  entries.forEach(([value, label]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    option.selected = value === selectedValue;
+    select.append(option);
+  });
+}
+
+function updateAgentHarnessSettings() {
+  if (activeAgentBuilder && agentHarnessCatalog[activeAgentBuilder]) {
+    agentHarnessSelections[activeAgentBuilder] = {
+      model: agentModel.value,
+      effort: agentReasoningEffort.value,
+    };
+  }
+  const builder = gameBuilder.value;
+  const catalog = agentHarnessCatalog[builder];
+  agentHarnessSettings.hidden = !catalog;
+  if (!catalog) {
+    activeAgentBuilder = null;
+    return;
+  }
+  const saved = agentHarnessSelections[builder] || {};
+  replaceSelectOptions(agentModel, catalog.models, saved.model || catalog.defaultModel);
+  replaceSelectOptions(
+    agentReasoningEffort,
+    catalog.efforts.map((effort) => [effort, effort]),
+    saved.effort || catalog.defaultEffort,
+  );
+  agentFastModeField.hidden = builder !== "codex_cli";
+  agentSettingsHelp.textContent = catalog.help;
+  activeAgentBuilder = builder;
+}
+
+function notificationSettingEnabled() {
+  return Boolean(completionNotifications?.checked);
+}
+
+function saveNotificationSetting() {
+  try {
+    window.localStorage.setItem(notificationSettingKey, String(notificationSettingEnabled()));
+  } catch (_error) {
+    // Private browser sessions may reject localStorage; the current-page setting still works.
+  }
+}
+
+function restoreNotificationSetting() {
+  try {
+    completionNotifications.checked = window.localStorage.getItem(notificationSettingKey) === "true";
+  } catch (_error) {
+    completionNotifications.checked = false;
+  }
+}
+
+async function prepareCompletionNotifications({ requestPermission = false } = {}) {
+  if (!notificationSettingEnabled()) return;
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  try {
+    if (AudioContextClass && !notificationAudioContext) {
+      notificationAudioContext = new AudioContextClass();
+    }
+  } catch (_error) {
+    notificationAudioContext = null;
+  }
+  const resumeAudio = notificationAudioContext?.state === "suspended"
+    ? notificationAudioContext.resume().catch(() => {})
+    : Promise.resolve();
+  if (requestPermission && "Notification" in window) {
+    if (Notification.permission === "default") {
+      const permission = await Notification.requestPermission().catch(() => "denied");
+      if (permission !== "granted") {
+        showToast("Chrome 알림 권한이 없어 소리 알림만 사용합니다.");
+      }
+    } else if (Notification.permission === "denied") {
+      showToast("Chrome 알림이 차단되어 소리 알림만 사용합니다.");
+    }
+  } else if (requestPermission && !("Notification" in window)) {
+    showToast("이 브라우저는 시스템 알림을 지원하지 않아 소리만 사용합니다.");
+  }
+  await resumeAudio;
+}
+
+async function playNotificationTone(kind) {
+  if (!notificationSettingEnabled()) return;
+  try {
+    await prepareCompletionNotifications();
+    const context = notificationAudioContext;
+    if (!context || context.state !== "running") return;
+    const frequencies = kind === "feature"
+      ? [659, 880]
+      : kind === "success"
+        ? [523, 659, 784]
+        : [440, 330, 247];
+    const now = context.currentTime;
+    frequencies.forEach((frequency, index) => {
+      const start = now + index * 0.13;
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = kind === "failure" ? "triangle" : "sine";
+      oscillator.frequency.setValueAtTime(frequency, start);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.12, start + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.18);
+      oscillator.connect(gain).connect(context.destination);
+      oscillator.start(start);
+      oscillator.stop(start + 0.2);
+    });
+  } catch (_error) {
+    // Notifications must never interrupt job polling or rendering.
+  }
+}
+
+function showSystemNotification(title, body, tag) {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  try {
+    const notification = new Notification(title, { body, tag, renotify: true });
+    notification.addEventListener("click", () => {
+      window.focus();
+      notification.close();
+    });
+  } catch (_error) {
+    // Some browser/OS combinations can revoke notification access mid-session.
+  }
+}
+
+function notifyJobMilestone(job, milestone) {
+  if (!notificationSettingEnabled()) return;
+  const key = `${job.job_id || currentJobId}:${milestone}`;
+  if (notifiedMilestones.has(key)) return;
+  notifiedMilestones.add(key);
+  if (milestone === "feature") {
+    void playNotificationTone("feature");
+    showSystemNotification(
+      "겜만툴 · Feature 분석 완료",
+      `${job.features.length}개 Feature를 확인하고 Confirm 또는 Reject를 선택하세요.`,
+      key,
+    );
+    return;
+  }
+  const succeeded = job.status === "completed";
+  const cancelled = job.status === "cancelled";
+  void playNotificationTone(succeeded ? "success" : "failure");
+  showSystemNotification(
+    succeeded ? "겜만툴 · 게임 생성 완료" : cancelled ? "겜만툴 · 작업 중단" : "겜만툴 · 게임 생성 실패",
+    succeeded
+      ? `프로젝트 ${job.project_id || ""} 생성이 완료되었습니다.`
+      : cancelled
+        ? "요청한 게임 생성 작업이 중단되었습니다."
+        : `프로젝트 ${job.project_id || ""} 생성이 실패했습니다. 개발 로그를 확인하세요.`,
+    key,
+  );
 }
 
 function updateCustomImageState() {
   const customSelected = imageStyle.value === "Custom";
-  customImage.disabled = !customSelected;
-  if (!customSelected) customImage.value = "";
+  customImage.required = customSelected;
+  customImageHelp.textContent = customSelected
+    ? "Custom 스타일에는 PNG/JPG 참고 이미지가 반드시 필요합니다."
+    : "선택한 스타일과 함께 캐릭터·배경·색감 참고 자료로 전달합니다.";
 }
 
 function setModelSettingsExpanded(expanded) {
@@ -68,13 +277,34 @@ async function copyWorkflowLog() {
   }
 }
 
+function formatApiError(payload, status) {
+  const detail = payload?.detail;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail.map((item) => {
+      if (typeof item === "string") return item;
+      if (!item || typeof item !== "object") return String(item);
+      const location = Array.isArray(item.loc)
+        ? item.loc.filter((part) => part !== "body").join(".")
+        : "";
+      const message = item.msg || item.message || JSON.stringify(item);
+      return location ? `${location}: ${message}` : message;
+    }).filter(Boolean);
+    if (messages.length) return messages.join("\n");
+  }
+  if (detail && typeof detail === "object") {
+    return detail.message || JSON.stringify(detail);
+  }
+  return `요청 실패 (${status})`;
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: { "Content-Type": "application/json", Accept: "application/json", ...(options.headers || {}) },
     ...options,
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.detail || `요청 실패 (${response.status})`);
+  if (!response.ok) throw new Error(formatApiError(payload, response.status));
   return payload;
 }
 
@@ -169,6 +399,7 @@ async function fileToPayload(file) {
 
 async function startJob(mode) {
   if (!requestForm.reportValidity()) return;
+  if (notificationSettingEnabled()) void prepareCompletionNotifications({ requestPermission: true });
   setRunButtons(true);
   try {
     await saveModels({ quiet: true });
@@ -176,6 +407,9 @@ async function startJob(mode) {
     const payload = {
       mode,
       game_builder: form.get("game_builder"),
+      agent_model: form.get("agent_model") || null,
+      agent_reasoning_effort: form.get("agent_reasoning_effort") || null,
+      agent_fast_mode: form.get("game_builder") === "codex_cli" && agentFastMode.checked,
       image_style: form.get("image_style"), mood_style: form.get("mood_style"),
       genre: form.get("genre"), viewpoint: form.get("viewpoint"),
       condition: form.get("condition"),
@@ -183,6 +417,7 @@ async function startJob(mode) {
     };
     const job = await api("/api/jobs", { method: "POST", body: JSON.stringify(payload) });
     currentJobId = job.job_id;
+    notifiedMilestones = new Set();
     featurePanel.classList.add("is-hidden");
     phaseBadge.textContent = "Feature 분석 중";
     workflowLog.textContent = "";
@@ -229,11 +464,16 @@ function renderJob(job) {
   phaseBadge.textContent = label;
   workflowLog.textContent = job.logs.length ? job.logs.join("\n") : "프로세스를 시작하는 중입니다...";
   workflowLog.scrollTop = workflowLog.scrollHeight;
+  renderProgress(job);
   if (job.status === "awaiting_confirmation") {
     renderFeatures(job.features);
     featurePanel.classList.remove("is-hidden");
+    notifyJobMilestone(job, "feature");
   } else {
     featurePanel.classList.add("is-hidden");
+  }
+  if (["completed", "failed", "cancelled"].includes(job.status)) {
+    notifyJobMilestone(job, "terminal");
   }
   const previewBuilding = job.preview_status === "building";
   const active = ["analyzing_features", "awaiting_confirmation", "running", "cancelling"].includes(job.status) || previewBuilding;
@@ -247,6 +487,30 @@ function renderJob(job) {
   openUnityButton.disabled = !canOpenUnity;
   renderPreviewButton(job);
   if (job.status === "failed" && job.error) showToast(job.error, true);
+}
+
+function formatDuration(totalSeconds) {
+  if (!Number.isFinite(totalSeconds)) return "--:--";
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return hours > 0
+    ? `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`
+    : `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+}
+
+function renderProgress(job) {
+  const percent = Math.min(100, Math.max(0, Number(job.progress_percent) || 0));
+  progressLabel.textContent = job.progress_label || "처리 중";
+  progressPercent.textContent = `${percent}%`;
+  progressFill.style.width = `${percent}%`;
+  progressTrack.setAttribute("aria-valuenow", String(percent));
+  const elapsed = formatDuration(Number(job.elapsed_seconds));
+  const estimate = job.estimated_total_seconds == null
+    ? "사용자 승인 대기"
+    : `예상 ${formatDuration(Number(job.estimated_total_seconds))}`;
+  progressTime.textContent = `처리 시간 ${elapsed} / ${estimate}`;
 }
 
 function renderPreviewButton(job) {
@@ -328,6 +592,7 @@ function renderFeatures(features) {
 
 async function decide(action) {
   if (!currentJobId) return;
+  if (action === "reject") notifiedMilestones.delete(`${currentJobId}:feature`);
   document.querySelector("#confirm-button").disabled = true;
   document.querySelector("#reject-button").disabled = true;
   try {
@@ -354,6 +619,8 @@ function escapeHtml(value) {
 
 async function initialize() {
   updateCustomImageState();
+  updateAgentHarnessSettings();
+  restoreNotificationSetting();
   try {
     const [health, models] = await Promise.all([api("/api/health"), api("/api/config/models")]);
     statusDot.className = "status-dot status-dot--ready";
@@ -367,6 +634,13 @@ async function initialize() {
 }
 
 imageStyle.addEventListener("change", updateCustomImageState);
+gameBuilder.addEventListener("change", updateAgentHarnessSettings);
+completionNotifications.addEventListener("change", () => {
+  saveNotificationSetting();
+  if (notificationSettingEnabled()) {
+    void prepareCompletionNotifications({ requestPermission: true });
+  }
+});
 modelSettingsToggle.addEventListener("click", () => {
   setModelSettingsExpanded(modelSettingsToggle.getAttribute("aria-expanded") !== "true");
 });

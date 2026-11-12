@@ -33,6 +33,7 @@ from game_pipeline.feature_contract import build_feature_contract
 from game_pipeline.project_context_index import build_project_context_index
 from game_pipeline.repair_loop import validate_and_repair
 from game_pipeline.scene_visual_assets import with_scene_visual_assets
+from game_pipeline.presentation_sound_assets import with_presentation_sound_assets
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -99,6 +100,23 @@ def design_game_logic_node(
             if item["asset_id"] not in preset_ids
         ]
         log(f"레벨에 배치된 오브젝트 이미지 요청을 추가합니다: {', '.join(added_ids)}")
+    presentation_game_spec = with_presentation_sound_assets(
+        game_spec, design["design_v2"]["presentation_plan"]
+    )
+    if presentation_game_spec is not game_spec:
+        previous_ids = {item["asset_id"] for item in game_spec["asset_requirements"]}
+        game_spec = presentation_game_spec
+        design = build_game_logic_design(
+            game_spec,
+            design_intent=request["condition"],
+            variation_seed=variation_seed,
+        )
+        added_ids = [
+            item["asset_id"]
+            for item in game_spec["asset_requirements"]
+            if item["asset_id"] not in previous_ids
+        ]
+        log(f"UI·게임 피드백 효과음 요청을 추가합니다: {', '.join(added_ids)}")
     unity_generator = UnityProjectGenerator()
     image_request = unity_generator.build_asset_request(
         design,
@@ -231,28 +249,29 @@ def design_game_logic_node(
             "design-review",
             "design v2 documents and validation plan passed deterministic validation",
         )
-        development_loop.mark_passed(
-            "module-selection",
-            f"selected {len(design['selected_modules'])} reusable Unity modules",
-        )
-        for module_id in design["selected_modules"]:
+        if not agent_harness_enabled:
             development_loop.mark_passed(
-                f"bind-module-{module_id.replace('_', '-')}",
-                f"catalog resolved {module_id} to a repository-owned component",
+                "module-selection",
+                f"selected {len(design['selected_modules'])} reusable Unity modules",
             )
-        development_loop.mark_passed(
-            "configure-content",
-            "content definitions and placement counts passed design v2 validation",
-        )
-        for zone in design["design_v2"]["level_plan"]["zones"]:
+            for module_id in design["selected_modules"]:
+                development_loop.mark_passed(
+                    f"bind-module-{module_id.replace('_', '-')}",
+                    f"catalog resolved {module_id} to a repository-owned component",
+                )
             development_loop.mark_passed(
-                f"assemble-zone-{zone['zone_id'].replace('_', '-')}",
-                f"zone {zone['zone_id']} route and planned content passed deterministic checks",
+                "configure-content",
+                "content definitions and placement counts passed design v2 validation",
             )
-        development_loop.mark_passed(
-            "bind-presentation",
-            "HUD, transition, camera, and feedback requirements are present in presentation_plan",
-        )
+            for zone in design["design_v2"]["level_plan"]["zones"]:
+                development_loop.mark_passed(
+                    f"assemble-zone-{zone['zone_id'].replace('_', '-')}",
+                    f"zone {zone['zone_id']} route and planned content passed deterministic checks",
+                )
+            development_loop.mark_passed(
+                "bind-presentation",
+                "HUD, transition, camera, and feedback requirements are present in presentation_plan",
+            )
         feature_generator = None
         if design["unsupported_mechanics"] and game_builder == "pipeline":
             log(f"기존 모듈에 없는 기능을 {feature_provider} 모델로 생성합니다.")

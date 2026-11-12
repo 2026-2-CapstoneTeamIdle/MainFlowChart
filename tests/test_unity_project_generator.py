@@ -110,6 +110,9 @@ class UnityProjectGeneratorTest(unittest.TestCase):
         self.assertTrue(all(item["asset_type"] == "image" for item in image_request["assets"]))
         self.assertTrue(all(item["asset_type"] == "sound" for item in sound_request["assets"]))
         self.assertTrue(
+            all(item["generation_spec"]["audio_cue"] for item in sound_request["assets"])
+        )
+        self.assertTrue(
             all(
                 item["unity_binding_key"].startswith("asset_registry:")
                 for item in image_request["assets"]

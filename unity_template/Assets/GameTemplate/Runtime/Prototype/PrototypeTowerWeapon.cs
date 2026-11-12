@@ -11,12 +11,14 @@ namespace TeamIdle.GameTemplate.Prototype
         private float range = 4f;
         private float attacksPerSecond = 1.2f;
         private float damage = 12f;
+        private float splashRadius;
 
         public string TowerTypeId { get; private set; } = "basic";
         public int Level { get; private set; } = 1;
         public float Range => range;
         public float AttacksPerSecond => attacksPerSecond;
         public float Damage => damage;
+        public float SplashRadius => splashRadius;
 
         public void Configure(Projectile2D prefab)
         {
@@ -28,7 +30,8 @@ namespace TeamIdle.GameTemplate.Prototype
             string towerTypeId,
             float attackRange,
             float attackRate,
-            float attackDamage
+            float attackDamage,
+            float attackSplashRadius = 0f
         )
         {
             projectilePrefab = prefab;
@@ -36,6 +39,7 @@ namespace TeamIdle.GameTemplate.Prototype
             range = Mathf.Max(0.1f, attackRange);
             attacksPerSecond = Mathf.Max(0.1f, attackRate);
             damage = Mathf.Max(0.1f, attackDamage);
+            splashRadius = Mathf.Max(0f, attackSplashRadius);
             Level = 1;
         }
 
@@ -66,7 +70,17 @@ namespace TeamIdle.GameTemplate.Prototype
             }
 
             var direction = ((Vector2)target.position - (Vector2)transform.position).normalized;
-            projectiles.Spawn(projectilePrefab, transform.position, direction, damage, 10f);
+            var projectile = projectiles.Spawn(
+                projectilePrefab,
+                transform.position,
+                direction,
+                damage,
+                10f
+            );
+            if (projectile != null)
+            {
+                projectile.ConfigureSplash(splashRadius);
+            }
             nextAttackTime = Time.time + 1f / attacksPerSecond;
         }
 

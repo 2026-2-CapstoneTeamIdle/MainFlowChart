@@ -31,6 +31,7 @@ class CodexHarnessSettings:
     invocation_timeout_seconds: int
     total_timeout_seconds: int
     max_repairs: int
+    service_tier: str | None = None
 
     @classmethod
     def from_environment(cls) -> CodexHarnessSettings:
@@ -51,7 +52,10 @@ class CodexHarnessSettings:
         reasoning = os.environ.get("MAINFLOW_CODEX_REASONING_EFFORT", "medium").strip() or None
         if reasoning not in {None, "low", "medium", "high", "xhigh", "max", "ultra"}:
             raise ValueError("MAINFLOW_CODEX_REASONING_EFFORT has an unsupported value")
-        return cls(executable, model, reasoning, timeout, total_timeout, max_repairs)
+        service_tier = os.environ.get("MAINFLOW_CODEX_SERVICE_TIER", "").strip() or None
+        if service_tier not in {None, "fast"}:
+            raise ValueError("MAINFLOW_CODEX_SERVICE_TIER must be 'fast' when configured")
+        return cls(executable, model, reasoning, timeout, total_timeout, max_repairs, service_tier)
 
 
 def _discover_codex_executable() -> str | None:

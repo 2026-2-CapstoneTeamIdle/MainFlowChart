@@ -58,8 +58,10 @@ STAGE_CUSTOMIZATION_GUIDANCE = {
         "mechanics instead of repeating generic defaults."
     ),
     "presentation_plan": (
-        "Specify request-specific HUD states, feedback, camera behavior, particles, and animation "
-        "cues while preserving required asset identifiers."
+        "Design a complete request-specific Unity uGUI presentation: choose a coherent palette "
+        "and typography direction, divide the HUD into intentional anchored regions, specify the "
+        "visible data hierarchy, and define concrete pause/result/failure or choice-screen "
+        "elements. Keep gameplay readable at 16:9 and preserve required asset identifiers."
     ),
     "validation_plan": (
         "Turn the requested mechanics and generated content into concrete automated steps and "

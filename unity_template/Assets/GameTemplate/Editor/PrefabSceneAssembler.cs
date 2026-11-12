@@ -333,12 +333,13 @@ namespace TeamIdle.GameTemplate.Editor
                     continue;
                 }
 
-                // Platformer gameplay geometry is authored by LevelPlan. Rendering blueprint
-                // feature/objective markers on top of it produced unrelated colored blocks and
-                // made different requests look like the same sample scene with extra noise.
+                // Feature and objective entries describe requirements, not scene geometry.
+                // Tower-defense landmarks are also abstract blueprint markers; rendering them
+                // as sprites covers the path and build points with unrelated colored blocks.
                 if (
-                    context.Config.Genre == "Platformer"
-                    && (entity.archetype == "feature_marker" || entity.archetype == "objective")
+                    entity.archetype == "feature_marker"
+                    || entity.archetype == "objective"
+                    || (context.Config.Genre == "TowerDefense" && entity.archetype == "landmark")
                 )
                 {
                     continue;

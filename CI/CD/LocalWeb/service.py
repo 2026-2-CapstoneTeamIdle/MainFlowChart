@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -230,6 +231,14 @@ class UploadedImage(BaseModel):
 class GenerationRequest(BaseModel):
     mode: Literal["generate", "test-generate"]
     game_builder: Literal["pipeline", "codex_cli", "claude_code"] = "pipeline"
+    agent_model: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    agent_reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    agent_fast_mode: bool = False
     image_style: str
     mood_style: str
     genre: str
@@ -255,6 +264,16 @@ class GenerationRequest(BaseModel):
         validate_genre_condition_compatibility(self.genre, self.condition)
         if self.image_style == "Custom" and self.custom_image is None:
             raise ValueError("Custom image style requires a PNG/JPG reference")
+        if self.game_builder == "pipeline":
+            self.agent_model = None
+            self.agent_reasoning_effort = None
+            self.agent_fast_mode = False
+        else:
+            default_models = {"codex_cli": "gpt-5.6-luna", "claude_code": "sonnet"}
+            self.agent_model = self.agent_model or default_models[self.game_builder]
+            self.agent_reasoning_effort = self.agent_reasoning_effort or "medium"
+            if self.game_builder == "claude_code" and self.agent_fast_mode:
+                raise ValueError("Fast mode is only supported by the Codex CLI harness")
         return self
 
 
@@ -265,6 +284,9 @@ class WorkflowJob:
     request_file: Path
     job_root: Path
     game_builder: str = "pipeline"
+    agent_model: str | None = None
+    agent_reasoning_effort: str | None = None
+    agent_fast_mode: bool = False
     status: str = "analyzing_features"
     stage: str = "condition_feature_analysis"
     logs: list[str] = field(default_factory=list)
@@ -278,6 +300,9 @@ class WorkflowJob:
     preview_error: str | None = None
     preview_cancel_requested: bool = False
     process: subprocess.Popen[str] | None = None
+    progress_percent: int = 2
+    progress_label: str = "Feature 분석 준비"
+    progress_started_at: float = field(default_factory=time.monotonic, repr=False)
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     def append_log(self, value: str) -> None:
@@ -286,16 +311,70 @@ class WorkflowJob:
             return
         with self.lock:
             self.logs.append(line)
+            self._update_progress(line)
             if len(self.logs) > MAX_LOG_LINES:
                 del self.logs[: len(self.logs) - MAX_LOG_LINES]
             with (self.job_root / "workflow.log").open("a", encoding="utf-8") as file:
                 file.write(line + "\n")
 
+    def reset_progress_clock(self) -> None:
+        with self.lock:
+            self.progress_started_at = time.monotonic()
+
+    def _update_progress(self, line: str) -> None:
+        milestones = (
+            ("게임 생성 파이프라인이 완료", 100, "게임 생성 완료"),
+            ("독립 Validator AI", 98, "최종 품질 평가"),
+            ("최종 에셋과 Unity 실행 증거", 96, "최종 요구사항 검증"),
+            ("목표 화면과 Unity 캡처", 92, "시각 품질 검증"),
+            ("실제 이미지 백엔드가 없어 목표 이미지", 92, "시각 검증 정리"),
+            ("검증을 통과한 이미지/사운드", 88, "에셋 적용"),
+            ("사운드 에셋을 검증", 84, "사운드 검증"),
+            ("이미지 에셋을 검증", 82, "이미지 검증"),
+            ("에셋 검증서를 생성", 78, "에셋 검증 기준 생성"),
+            ("사운드 에셋", 74, "사운드 생성"),
+            ("임시 에셋을 사용해", 72, "게임 구조 검증"),
+            ("이미지 에셋을 생성", 68, "이미지 생성"),
+            ("Unity 컴파일·Play Mode", 58, "Unity 컴파일·실행 검증"),
+            ("[AGENT][finalize]", 55, "Agent 구현 결과 정리"),
+            ("[AGENT][validate]", 52, "Agent 자체 검토"),
+            ("[AGENT][edit]", 47, "Unity 코드 작성·수정"),
+            ("[AGENT][plan]", 42, "구현 계획 수립"),
+            ("[AGENT][context]", 36, "Unity 프로젝트 문맥 분석"),
+            ("설치된 Codex CLI", 30, "Codex CLI 구현"),
+            ("설치된 Claude Code", 30, "Claude Code 구현"),
+            ("콘텐츠 변형 시드", 27, "게임 구성 구체화"),
+            ("게임 로직을 설계", 24, "게임 로직 설계"),
+            ("Feature 구성을 승인", 18, "게임 생성 준비"),
+            ("Feature 분석이 끝났", 15, "Feature 승인 대기"),
+            ("Feature 분석을 시작", 3, "Feature 분석"),
+        )
+        for marker, percent, label in milestones:
+            if marker in line:
+                if percent >= self.progress_percent:
+                    self.progress_percent = percent
+                    self.progress_label = label
+                return
+
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
+            elapsed = max(0, int(time.monotonic() - self.progress_started_at))
+            if self.status in {"completed", "failed", "cancelled"}:
+                estimated_total = elapsed
+            elif self.status == "awaiting_confirmation":
+                estimated_total = None
+            elif self.status == "analyzing_features":
+                estimated_total = max(60, int(elapsed / max(self.progress_percent / 15, 0.05)))
+            else:
+                projected = int(elapsed / max(self.progress_percent / 100, 0.05))
+                estimated_total = max(1200, elapsed + 60, projected)
             return {
                 "job_id": self.job_id,
                 "mode": self.mode,
+                "game_builder": self.game_builder,
+                "agent_model": self.agent_model,
+                "agent_reasoning_effort": self.agent_reasoning_effort,
+                "agent_fast_mode": self.agent_fast_mode,
                 "status": self.status,
                 "stage": self.stage,
                 "features": list(self.features),
@@ -307,6 +386,10 @@ class WorkflowJob:
                 "preview_url": self.preview_url,
                 "preview_error": self.preview_error,
                 "logs": list(self.logs),
+                "progress_percent": self.progress_percent,
+                "progress_label": self.progress_label,
+                "elapsed_seconds": elapsed,
+                "estimated_total_seconds": estimated_total,
             }
 
 
@@ -465,10 +548,20 @@ class WorkflowJobManager:
             request_file=request_file,
             job_root=job_root,
             game_builder=request.game_builder,
+            agent_model=request.agent_model,
+            agent_reasoning_effort=request.agent_reasoning_effort,
+            agent_fast_mode=request.agent_fast_mode,
         )
         with self.lock:
             self.jobs[job_id] = job
         job.append_log(f"[WEB] 작업 {job_id}의 Feature 분석을 시작합니다.")
+        if request.game_builder in {"codex_cli", "claude_code"}:
+            builder_label = "Codex CLI" if request.game_builder == "codex_cli" else "Claude Code"
+            fast_label = " · Fast" if request.agent_fast_mode else ""
+            job.append_log(
+                f"[WEB] Agent Harness 설정: {builder_label} · model={request.agent_model} · "
+                f"reasoning={request.agent_reasoning_effort}{fast_label}"
+            )
         self._start_preview(job)
         return job
 
@@ -486,6 +579,9 @@ class WorkflowJobManager:
                 raise ValueError("Feature 확인 대기 상태에서만 Confirm할 수 있습니다.")
             job.status = "running"
             job.stage = "workflow"
+            job.progress_percent = 18
+            job.progress_label = "게임 생성 준비"
+            job.progress_started_at = time.monotonic()
         job.append_log("[WEB] Feature 구성을 승인했습니다. 게임 생성 단계를 계속합니다.")
         thread = threading.Thread(target=self._run_generation, args=(job,), daemon=True)
         thread.start()
@@ -501,6 +597,9 @@ class WorkflowJobManager:
             job.features = []
             job.error = None
             job.cancel_requested = False
+            job.progress_percent = 3
+            job.progress_label = "Feature 재분석"
+            job.progress_started_at = time.monotonic()
         job.append_log("[WEB] Feature 구성을 거절했습니다. Condition 분석을 다시 실행합니다.")
         self._start_preview(job)
         return job
@@ -667,7 +766,13 @@ class WorkflowJobManager:
             str(preview_path),
         ]
         environment = self.settings.process_environment()
-        _configure_game_builder_environment(environment, job.game_builder)
+        _configure_game_builder_environment(
+            environment,
+            job.game_builder,
+            model=job.agent_model,
+            reasoning_effort=job.agent_reasoning_effort,
+            fast_mode=job.agent_fast_mode,
+        )
         return_code = self._stream_process(job, command, environment)
         if _is_cancelled(job):
             return
@@ -706,7 +811,13 @@ class WorkflowJobManager:
         environment["MAINFLOW_APPROVED_LOGIC_ANALYSIS"] = str(approved_logic_path)
         environment["MAINFLOW_UNITY_PROJECT_REPORT_FILE"] = str(unity_project_report)
         environment["MAINFLOW_OPEN_UNITY_EDITOR"] = "0"
-        _configure_game_builder_environment(environment, job.game_builder)
+        _configure_game_builder_environment(
+            environment,
+            job.game_builder,
+            model=job.agent_model,
+            reasoning_effort=job.agent_reasoning_effort,
+            fast_mode=job.agent_fast_mode,
+        )
         command = [
             sys.executable,
             "-m",
@@ -871,7 +982,14 @@ def _save_custom_image(job_root: Path, upload: UploadedImage) -> Path:
     return destination
 
 
-def _configure_game_builder_environment(environment: dict[str, str], game_builder: str) -> None:
+def _configure_game_builder_environment(
+    environment: dict[str, str],
+    game_builder: str,
+    *,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+    fast_mode: bool = False,
+) -> None:
     environment["MAINFLOW_GAME_BUILDER"] = game_builder
     if game_builder not in {"codex_cli", "claude_code"}:
         return
@@ -880,6 +998,20 @@ def _configure_game_builder_environment(environment: dict[str, str], game_builde
     environment["MAINFLOW_DESIGN_V2_PROVIDER"] = "deterministic"
     environment["MAINFLOW_BLUEPRINT_PROVIDER"] = "deterministic"
     environment["MAINFLOW_CODEX_STATIC_CHECKLISTS"] = "1"
+    if game_builder == "codex_cli":
+        if model:
+            environment["MAINFLOW_CODEX_MODEL"] = "" if model == "default" else model
+        if reasoning_effort:
+            environment["MAINFLOW_CODEX_REASONING_EFFORT"] = reasoning_effort
+        if fast_mode:
+            environment["MAINFLOW_CODEX_SERVICE_TIER"] = "fast"
+        else:
+            environment.pop("MAINFLOW_CODEX_SERVICE_TIER", None)
+    elif game_builder == "claude_code":
+        if model:
+            environment["MAINFLOW_CLAUDE_MODEL"] = model
+        if reasoning_effort:
+            environment["MAINFLOW_CLAUDE_REASONING_EFFORT"] = reasoning_effort
 
 
 def _atomic_write_json(path: Path, payload: object) -> None:

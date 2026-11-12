@@ -19,6 +19,13 @@ namespace TeamIdle.GameTemplate.Core
         public const string Attack = "attack";
         public const string Activity = "activity";
         public const string Ui = "ui";
+        public const string TowerBuilt = "tower_built";
+        public const string TowerUpgraded = "tower_upgraded";
+        public const string EnemyDefeated = "enemy_defeated";
+        public const string BaseDamaged = "base_damaged";
+        public const string WaveStarted = "wave_started";
+        public const string BossArrived = "boss_arrived";
+        public const string BossSpawn = "boss_spawn";
 
         public static event Action<string> Raised;
 

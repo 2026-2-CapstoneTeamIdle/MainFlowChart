@@ -14,6 +14,10 @@ from game_pipeline.design_catalog import normalize_game_spec
 from game_pipeline.genre_feature_enricher import (
     create_genre_feature_enricher_from_environment,
 )
+from game_pipeline.requirement_constraints import (
+    filter_conflicting_features,
+    filter_genre_conflicting_features,
+)
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -52,12 +56,19 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
     analysis: AnalysisResult = manager.read_json(state["analysis"])
     approved_logic = _load_approved_logic_analysis(manager, request)
     features = approved_logic["features"] if approved_logic is not None else analysis["features"]
+    features, rejected_conflicts = filter_conflicting_features(features, request["condition"])
+    if rejected_conflicts:
+        log(
+            "사용자가 명시적으로 제외한 기능을 요구사항에서 제거했습니다: "
+            + ", ".join(item["name"] for item in rejected_conflicts)
+        )
     condition_report: dict[str, object] = {
         "provider": "none",
         "model_role": "condition_feature_analysis",
         "detected_feature_count": len(features),
         "explicit_feature_count": len(features),
         "added_feature_count": 0,
+        "explicit_constraint_rejections": rejected_conflicts,
         "status": "approved_preview" if approved_logic is not None else "disabled",
     }
     try:
@@ -70,9 +81,14 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
                 condition=request["condition"],
                 detected_features=features,
             )
-            features = condition_analysis.features
+            features, newly_rejected = filter_conflicting_features(
+                condition_analysis.features,
+                request["condition"],
+            )
+            rejected_conflicts.extend(newly_rejected)
             condition_report = {
                 **condition_analysis.report,
+                "explicit_constraint_rejections": rejected_conflicts,
                 "status": (
                     "partial"
                     if condition_analysis.report.get("failed_request_count", 0)
@@ -113,6 +129,7 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
         "genre_feature_count": 0,
         "added_features": [],
         "rejected_features": [],
+        "explicit_constraint_rejections": rejected_conflicts,
         "status": "approved_preview" if approved_logic is not None else "disabled",
     }
     try:
@@ -134,9 +151,14 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
                     "lose_conditions": baseline["lose_conditions"],
                 },
             )
-            features = enrichment.features
+            features, newly_rejected = filter_conflicting_features(
+                enrichment.features,
+                request["condition"],
+            )
+            rejected_conflicts.extend(newly_rejected)
             enrichment_report = {
                 **enrichment.report,
+                "explicit_constraint_rejections": rejected_conflicts,
                 "status": (
                     "partial" if enrichment.report.get("failed_request_count", 0) else "passed"
                 ),
@@ -157,6 +179,20 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
             "error": f"{type(error).__name__}: {error}",
         }
         log(f"장르 필수 기능 보강에 실패해 사용자 기능만 사용합니다: {error}")
+
+    # Run a final genre-aware pass after both LLM stages.  The condition and genre
+    # enrichers can independently hallucinate a generic player attack from tower
+    # attacks; that must not become a final validation requirement.
+    features, genre_rejected = filter_genre_conflicting_features(
+        features,
+        request["condition"],
+        request["genre"],
+    )
+    if genre_rejected:
+        rejected_conflicts.extend(genre_rejected)
+        condition_report["explicit_constraint_rejections"] = rejected_conflicts
+        enrichment_report["explicit_constraint_rejections"] = rejected_conflicts
+        log("장르 소유권 규칙에 따라 플레이어 공격으로 오인된 타워 공격 기능을 제거했습니다.")
 
     manager.write_json(
         state["project_id"],

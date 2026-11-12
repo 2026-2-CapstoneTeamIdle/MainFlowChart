@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from game_pipeline.requirement_constraints import feature_conflict_reason
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -110,6 +111,10 @@ FEATURE_PATTERNS: tuple[tuple[str, tuple[str, ...], str], ...] = (
 # produced meaningless generated features such as just "크기" or "회전속도". Dynamic code
 # generation receives sentence-sized, semantically complete requirements instead.
 CLAUSE_SEPARATOR = re.compile(r"\s*(?:[.!?]+|;|\r?\n)\s*")
+PLAYER_ATTACK_SUBJECT = re.compile(
+    r"(?:플레이어|캐릭터|주인공)(?:가|는|이|의)?[^.!?\r\n]{0,30}"
+    r"(?:적|목표|대상)?[^.!?\r\n]{0,12}(?:공격|타격|피해|처치)"
+)
 
 
 # Node 계약
@@ -132,9 +137,20 @@ def analysis_node(state: AnalysisAgentInput) -> AnalysisAgentOutput:
 
     for name, patterns, description in FEATURE_PATTERNS:
         if any(pattern in compact_condition for pattern in patterns):
+            if name == "공격" and not PLAYER_ATTACK_SUBJECT.search(condition):
+                # A bare "공격" in a tower/enemy sentence is not evidence that the
+                # player owns an attack action.
+                continue
             if name == "공격" and any(
                 specific in matched_names for specific in ("8방향 공격", "자동 공격")
             ):
+                continue
+            candidate = {
+                "feature_id": "candidate",
+                "name": name,
+                "description": description,
+            }
+            if feature_conflict_reason(candidate, condition) is not None:
                 continue
             matched_names.add(name)
             features.append(

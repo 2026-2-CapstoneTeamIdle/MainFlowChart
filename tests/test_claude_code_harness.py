@@ -16,7 +16,7 @@ def _settings(executable: Path) -> ClaudeCodeHarnessSettings:
     return ClaudeCodeHarnessSettings(
         executable=executable,
         model="sonnet",
-        reasoning_effort=None,
+        reasoning_effort="high",
         invocation_timeout_seconds=60,
         total_timeout_seconds=120,
         max_repairs=2,
@@ -71,6 +71,7 @@ def test_claude_runner_uses_print_mode_schema_and_user_login(
     assert command[command.index("--output-format") + 1] == "json"
     assert command[command.index("--permission-mode") + 1] == "acceptEdits"
     assert command[command.index("--model") + 1] == "sonnet"
+    assert command[command.index("--effort") + 1] == "high"
     assert json.loads(command[command.index("--json-schema") + 1]) == COMPLETION_SCHEMA
     assert captured["kwargs"]["cwd"] == project.resolve()
     assert "ANTHROPIC_API_KEY" not in captured["kwargs"]["env"]
@@ -92,5 +93,6 @@ def test_claude_writes_claude_md_instructions(tmp_path: Path) -> None:
     )
 
     instructions = (project / "CLAUDE.md").read_text(encoding="utf-8")
-    assert "Missing mechanics assigned to Claude Code" in instructions
+    assert "Gameplay modules and mechanics assigned to Claude Code" in instructions
+    assert "compatibility scaffold, not a finished genre template" in instructions
     assert "Do not launch Unity Editor" in instructions

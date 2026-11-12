@@ -41,6 +41,31 @@ SOUND_KIND_KEYWORDS: tuple[tuple[SoundAssetKind, tuple[str, ...]], ...] = (
 # Ambiguous words are phrase-only: "피해" alone also means "avoid", "사망" alone also fits enemies.
 SOUND_CUE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
+        "tower_built",
+        ("tower_built", "tower construction succeeds", "타워 건설 성공", "건설 성공"),
+    ),
+    (
+        "tower_upgraded",
+        ("tower_upgraded", "tower upgrade succeeds", "타워 업그레이드 성공"),
+    ),
+    (
+        "enemy_defeated",
+        ("enemy_defeated", "enemy health reaches zero", "적 처치", "적 격파"),
+    ),
+    (
+        "base_damaged",
+        ("base_damaged", "enemy reaches base", "기지 피해", "기지 도달"),
+    ),
+    (
+        "wave_started",
+        ("wave_started", "preparation expires", "웨이브 시작"),
+    ),
+    (
+        "boss_arrived",
+        ("boss_arrived", "boss wave begins", "보스 등장", "보스 웨이브 시작"),
+    ),
+    ("boss_spawn", ("boss_spawn",)),
+    (
         "game_over",
         ("패배", "게임오버", "게임 오버", "플레이어 사망", "game over", "defeat", "player death"),
     ),
@@ -48,11 +73,14 @@ SOUND_CUE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "game_clear",
         ("승리", "클리어", "엔딩", "victory", "stage clear", "game clear", "level clear", "ending"),
     ),
-    ("level_up", ("레벨업", "레벨 업", "level up")),
+    ("level_up", ("level_up", "레벨업", "레벨 업", "level up")),
     ("checkpoint", ("체크포인트", "checkpoint")),
     ("jump", ("점프", "jump")),
     ("card_play", ("카드", "card")),
-    ("pickup", ("획득", "수집", "아이템", "코인", "경험치", "pickup", "collect", "coin")),
+    (
+        "pickup",
+        ("xp_pickup", "획득", "수집", "아이템", "코인", "경험치", "pickup", "collect", "coin"),
+    ),
     ("enemy_hit", ("적 피격", "적이 맞", "적이 피해", "enemy hit", "enemy hurt", "enemy damage")),
     ("player_hit", ("피격", "피해를 입", "피해 입", "데미지", "hit", "damage", "hurt")),
     ("attack", ("공격", "발사", "타격", "사격", "attack", "shoot", "fire")),
@@ -163,6 +191,7 @@ def build_sound_generation_spec(purpose: str, description: str) -> SoundGenerati
         )
     return {
         "kind": kind,
+        "audio_cue": classify_sound_cue(purpose, description, kind),
         "target_duration_seconds": duration,
         "loop": loop,
         "channels": channels,  # type: ignore[typeddict-item]

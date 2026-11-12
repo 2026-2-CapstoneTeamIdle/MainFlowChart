@@ -5,11 +5,16 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from game_pipeline.game_quality_validator_ai import GameQualityValidatorAI
 from mainflow.ArtifactManager import ArtifactManager
-from mainflow.nodes.game_quality_validator import game_quality_validator_node
+from mainflow.nodes.game_quality_validator import (
+    _normalize_placeholder_visual_limitation,
+    _repair_and_review_quality,
+    game_quality_validator_node,
+)
 from MCP.llm_types import LLMConversationMessage, LLMProviderResponse, LLMToolCall
 from MCP.manager import MCPManager, MCPToolDefinition
 from MCP.server import mcp
@@ -93,6 +98,223 @@ class QualityProvider:
 
 
 class GameQualityValidatorAITest(unittest.TestCase):
+    def test_successful_quality_repair_replaces_final_package_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manager = ArtifactManager(Path(temporary_directory) / "workspace")
+            project_id = manager.create_project()
+            state: dict[str, object] = {"project_id": project_id}
+            for key in (
+                "parsed_request",
+                "logic_analysis",
+                "game_logic_draft",
+                "game_validation_result",
+                "image_validation_result",
+                "sound_validation_result",
+                "integrated_game",
+                "final_validation_result",
+            ):
+                state[key] = manager.write_json(
+                    project_id,
+                    "validation",
+                    f"fixture_{key}.json",
+                    {"status": "passed"},
+                    producer="test",
+                )
+            refreshed = manager.write_json(
+                project_id,
+                "validation",
+                "final_validation_result_post_quality.json",
+                {"status": "passed", "entry_artifact": {"sha256": "repaired"}},
+                producer="final_validation",
+            )
+            initial_report = {
+                "status": "needs_revision",
+                "findings": [
+                    {
+                        "severity": "warning",
+                        "category": "gameplay",
+                        "message": "Repair the gameplay source",
+                        "evidence": ["Assets/Game.cs"],
+                    }
+                ],
+            }
+            repaired_report = {"status": "passed", "findings": []}
+
+            with (
+                patch.dict(os.environ, {"MAINFLOW_GAME_BUILDER": "codex_cli"}),
+                patch(
+                    "mainflow.nodes.game_quality_validator.ArtifactManager",
+                    return_value=manager,
+                ),
+                patch(
+                    "mainflow.nodes.game_quality_validator.run_codex_quality_review",
+                    return_value=initial_report,
+                ),
+                patch(
+                    "mainflow.nodes.game_quality_validator._repair_and_review_quality",
+                    return_value=repaired_report,
+                ),
+                patch(
+                    "mainflow.nodes.final_validation.final_validation_node",
+                    return_value={"final_validation_result": refreshed},
+                ) as final_validation,
+            ):
+                output = game_quality_validator_node(state)  # type: ignore[arg-type]
+
+        self.assertEqual(output["final_validation_result"], refreshed)
+        final_validation.assert_called_once()
+        self.assertEqual(final_validation.call_args.kwargs["artifact_variant"], "post_quality")
+
+    def test_placeholder_visual_gap_is_an_informational_limitation(self) -> None:
+        report = {
+            "status": "needs_revision",
+            "requirement_coverage": [
+                {
+                    "requirement": "Placeholder visual validation was skipped",
+                    "status": "unverifiable",
+                    "evidence": [
+                        "visual validation skipped because placeholder images were suppressed"
+                    ],
+                }
+            ],
+            "findings": [
+                {
+                    "severity": "warning",
+                    "category": "visual",
+                    "message": "Visual validation was skipped because placeholder images were suppressed",
+                    "evidence": [],
+                }
+            ],
+        }
+
+        normalized = _normalize_placeholder_visual_limitation(  # type: ignore[arg-type]
+            report, {"status": "passed"}
+        )
+
+        self.assertEqual(normalized["status"], "passed")
+        self.assertEqual(normalized["findings"][0]["severity"], "info")
+
+    def test_placeholder_normalization_preserves_unrelated_quality_failure(self) -> None:
+        report = {
+            "status": "needs_revision",
+            "requirement_coverage": [],
+            "findings": [
+                {
+                    "severity": "warning",
+                    "category": "visual",
+                    "message": "Visual validation skipped while placeholder art is disabled",
+                    "evidence": [],
+                },
+                {
+                    "severity": "warning",
+                    "category": "gameplay",
+                    "message": "Upgrade UI does not show projected combat stats",
+                    "evidence": ["TowerDefenseGameController.cs"],
+                },
+            ],
+        }
+
+        normalized = _normalize_placeholder_visual_limitation(  # type: ignore[arg-type]
+            report, {"status": "passed"}
+        )
+
+        self.assertEqual(normalized["status"], "needs_revision")
+        self.assertEqual(normalized["findings"][0]["severity"], "info")
+        self.assertEqual(normalized["findings"][1]["severity"], "warning")
+
+    def test_quality_findings_trigger_repair_and_fresh_unity_evidence(self) -> None:
+        manager = MagicMock()
+        manager.ensure_project.return_value = Path("C:/synthetic/workspace")
+        initial_report = {
+            "status": "needs_revision",
+            "findings": [
+                {
+                    "severity": "error",
+                    "category": "gameplay",
+                    "message": "Cannon splash is not applied on projectile impact",
+                    "evidence": ["Assets/GameTemplate/Runtime/TowerDefense/CannonTower.cs:42"],
+                }
+            ],
+            "limitations": [],
+        }
+        evidence = {
+            "game_logic_draft": {"status": "generated"},
+            "parsed_request": {"condition": "Defend the base"},
+        }
+        harness = MagicMock()
+        harness.repair_quality_findings.return_value = SimpleNamespace(
+            status="passed",
+            checks=[{"criterion_id": "unity.runtime_smoke", "passed": True}],
+            issues=[],
+            unity_log="UNITY_RUNTIME_SMOKE_OK",
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {"MAINFLOW_GAME_BUILDER": "codex_cli", "MAINFLOW_GAME_QUALITY_REPAIRS": "2"},
+            ),
+            patch("game_pipeline.codex_cli.CodexHarnessSettings.from_environment"),
+            patch("game_pipeline.codex_cli.CodexGameHarness", return_value=harness),
+            patch(
+                "mainflow.nodes.game_quality_validator.run_codex_quality_review",
+                return_value={"status": "passed", "findings": []},
+            ) as review,
+        ):
+            result = _repair_and_review_quality("test-project", manager, evidence, initial_report)
+
+        self.assertEqual(result["status"], "passed")
+        harness.repair_quality_findings.assert_called_once()
+        self.assertEqual(
+            review.call_args.kwargs["evidence"]["post_quality_unity_validation"]["status"], "passed"
+        )
+
+    def test_quality_repair_uses_second_attempt_after_unity_rollback(self) -> None:
+        manager = MagicMock()
+        manager.ensure_project.return_value = Path("C:/synthetic/workspace")
+        report = {
+            "status": "needs_revision",
+            "findings": [
+                {
+                    "severity": "error",
+                    "category": "gameplay",
+                    "message": "Ranged enemy behavior is missing",
+                    "evidence": [
+                        "game/unity_project/Assets/GameTemplate/Runtime/TowerDefense/Enemy.cs"
+                    ],
+                }
+            ],
+            "limitations": [],
+        }
+        evidence = {
+            "game_logic_draft": {"status": "generated"},
+            "parsed_request": {"condition": "Defend the base"},
+        }
+        harness = MagicMock()
+        harness.repair_quality_findings.side_effect = [
+            RuntimeError("error CS0103: helper type was not found"),
+            SimpleNamespace(status="passed", checks=[], issues=[], unity_log="passed"),
+        ]
+        with (
+            patch.dict(
+                os.environ,
+                {"MAINFLOW_GAME_BUILDER": "codex_cli", "MAINFLOW_GAME_QUALITY_REPAIRS": "2"},
+            ),
+            patch("game_pipeline.codex_cli.CodexHarnessSettings.from_environment"),
+            patch("game_pipeline.codex_cli.CodexGameHarness", return_value=harness),
+            patch(
+                "mainflow.nodes.game_quality_validator.run_codex_quality_review",
+                return_value={"status": "passed", "findings": []},
+            ),
+        ):
+            result = _repair_and_review_quality("test-project", manager, evidence, report)
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(harness.repair_quality_findings.call_count, 2)
+        second_findings = harness.repair_quality_findings.call_args_list[1].kwargs["findings"]
+        self.assertTrue(
+            any("previous quality patch" in finding["message"] for finding in second_findings)
+        )
+
     def test_independent_validator_uses_project_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             workspace = Path(temporary_directory) / "workspace"

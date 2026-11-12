@@ -12,6 +12,23 @@ TEMPLATE_ROOT = REPOSITORY_ROOT / "unity_template"
 
 
 class UnityTemplateTest(unittest.TestCase):
+    def test_game_audio_cues_include_tower_defense_events(self) -> None:
+        source = (TEMPLATE_ROOT / "Assets/GameTemplate/Runtime/Core/GameAudioCues.cs").read_text(
+            encoding="utf-8"
+        )
+
+        for cue in (
+            "tower_built",
+            "tower_upgraded",
+            "enemy_defeated",
+            "base_damaged",
+            "wave_started",
+            "boss_arrived",
+            "boss_spawn",
+        ):
+            with self.subTest(cue=cue):
+                self.assertIn(f'"{cue}"', source)
+
     def test_feature_checklist_resets_persistent_bootstrap_between_tests(self) -> None:
         checklist_tests = (
             TEMPLATE_ROOT / "Assets/Tests/PlayMode/FeatureChecklistTests.cs"
@@ -21,6 +38,27 @@ class UnityTemplateTest(unittest.TestCase):
         self.assertIn("bootstrap.gameObject.SetActive(false);", checklist_tests)
         self.assertIn("Object.Destroy(bootstrap.gameObject);", checklist_tests)
         self.assertIn("GameBootstrap.Instance", checklist_tests)
+
+    def test_bootstrap_restores_generated_modules_that_unity_did_not_deserialize(self):
+        source = (TEMPLATE_ROOT / "Assets/GameTemplate/Runtime/Core/GameBootstrap.cs").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("RestoreGeneratedModules(root);", source)
+        self.assertIn('validationProbe.Pass("template.module_restored", moduleId);', source)
+
+    def test_agent_harness_runtime_requires_player_facing_ugui(self) -> None:
+        source = (TEMPLATE_ROOT / "Assets/GameTemplate/Editor/RuntimeSmokeValidator.cs").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("ValidateAgentHarnessUi", source)
+        self.assertIn("CanvasScaler.ScaleMode.ScaleWithScreenSize", source)
+        self.assertIn("PrototypeSceneController IMGUI debug panel", source)
+        self.assertIn('GetMethod(\n                        "OnGUI",', source)
+        self.assertIn("BindingFlags.DeclaredOnly", source)
+        self.assertIn("legacyDebugUi.enabled && hasLegacyOnGui", source)
+        self.assertIn("UNITY_UI_QUALITY_OK", source)
 
     def test_template_metadata_matches_pipeline_contract(self) -> None:
         metadata = json.loads((TEMPLATE_ROOT / "template.json").read_text(encoding="utf-8"))
@@ -332,6 +370,40 @@ class UnityTemplateTest(unittest.TestCase):
         self.assertIn("runtime.initial_state_viable", smoke)
         self.assertIn("runtime.validation_probe_failed", smoke)
         self.assertIn("FindObjectsByType<ValidationProbe>", smoke)
+
+    def test_runtime_smoke_phase_delays_ignore_game_time_scale(self) -> None:
+        smoke = (TEMPLATE_ROOT / "Assets/GameTemplate/Editor/RuntimeSmokeValidator.cs").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "private static float PhaseElapsed => Time.realtimeSinceStartup - phaseStartedAt;",
+            smoke,
+        )
+        self.assertNotIn("Time.timeSinceLevelLoad - phaseStartedAt", smoke)
+
+    def test_runtime_smoke_records_genre_causal_chains(self) -> None:
+        smoke = (TEMPLATE_ROOT / "Assets/GameTemplate/Editor/RuntimeSmokeValidator.cs").read_text(
+            encoding="utf-8"
+        )
+
+        for transition_id in (
+            "platformer.collectible_to_progress",
+            "platformer.hazard_to_health",
+            "platformer.death_to_checkpoint",
+            "platformer.requirements_to_clear",
+            "tower.build_to_currency",
+            "tower.spawn_to_path",
+            "tower.attack_to_damage",
+            "tower.death_to_reward",
+            "survivor.spawn_to_chase",
+            "survivor.attack_to_damage",
+            "survivor.death_to_progression",
+            "survivor.xp_to_choices",
+            "survivor.choice_to_stat",
+        ):
+            self.assertIn(f'MarkCausalTransition("{transition_id}")', smoke)
+        self.assertIn('Debug.Log("UNITY_CAUSAL_TRANSITION_OK:" + transitionId)', smoke)
 
     def test_template_meta_guids_are_unique(self) -> None:
         owners: dict[str, Path] = {}

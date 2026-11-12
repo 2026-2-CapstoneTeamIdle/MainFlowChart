@@ -59,6 +59,31 @@ GENRE_RUNTIME_INVARIANTS: dict[GenreProfile, tuple[str, ...]] = {
     ),
 }
 
+REQUIRED_CAUSAL_TRANSITIONS: dict[GenreProfile, tuple[str, ...]] = {
+    "Platformer": (
+        "platformer.collectible_to_progress",
+        "platformer.hazard_to_health",
+        "platformer.death_to_checkpoint",
+        "platformer.requirements_to_clear",
+    ),
+    "TowerDefense": (
+        "tower.build_to_currency",
+        "tower.spawn_to_path",
+        "tower.attack_to_damage",
+        "tower.death_to_reward",
+    ),
+    "SurvivorLike": (
+        "survivor.spawn_to_chase",
+        "survivor.attack_to_damage",
+        "survivor.death_to_progression",
+        "survivor.xp_to_choices",
+        "survivor.choice_to_stat",
+    ),
+    "CardGame": (),
+    "VisualNovel": (),
+    "RaisingSimulation": (),
+}
+
 
 def runtime_invariants_for_genre(genre: GenreProfile) -> list[str]:
     """Return common and genre-specific rules as an immutable prompt/validation contract."""

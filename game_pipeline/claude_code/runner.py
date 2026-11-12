@@ -57,6 +57,8 @@ class ClaudeCodeCliRunner:
             command.extend(["--permission-mode", "plan"])
         if self.settings.model:
             command.extend(["--model", self.settings.model])
+        if self.settings.reasoning_effort:
+            command.extend(["--effort", self.settings.reasoning_effort])
 
         started = time.monotonic()
         try:

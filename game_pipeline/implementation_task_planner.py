@@ -15,6 +15,9 @@ def build_implementation_tasks(
     if not 60 <= time_budget_seconds <= 21_600:
         raise ValueError("Game development time budget must be between 60 and 21600 seconds")
 
+    if design.get("agent_harness_mode") == "whole_project":
+        return _build_agent_harness_tasks(design, time_budget_seconds)
+
     tasks: list[ImplementationTask] = [
         _task(
             "design-review",
@@ -152,6 +155,75 @@ def build_implementation_tasks(
             ),
         ]
     )
+    return {
+        "plan_version": "1.0.0",
+        "genre": design["game_spec"]["genre"],
+        "time_budget_seconds": time_budget_seconds,
+        "tasks": tasks,
+    }
+
+
+def _build_agent_harness_tasks(
+    design: GameLogicDesign,
+    time_budget_seconds: int,
+) -> ImplementationTaskPlan:
+    """Build a task graph where the CLI agent owns gameplay instead of catalog reuse."""
+
+    requirements = design.get("codex_harness_requirements", [])
+    tasks = [
+        _task(
+            "design-review",
+            "design_review",
+            "Validate requirements and contracts without accepting preset gameplay as complete.",
+            [],
+            ["the exact user request and every inferred feature are implementation inputs"],
+        ),
+        _task(
+            "unity-project-generation",
+            "project_generation",
+            "Generate only the Unity compatibility scaffold and immutable contracts.",
+            ["design-review"],
+            ["the scaffold opens and exposes host validation and asset-binding entry points"],
+        ),
+        _task(
+            "project-context-review",
+            "project_context_review",
+            (
+                "Let the CLI agent implement the whole connected game and audit copied gameplay "
+                f"for {len(requirements)} required module/mechanic identities."
+            ),
+            ["unity-project-generation"],
+            [
+                "every feature is traced to request-specific runtime behavior",
+                "copied genre behavior is adapted or replaced instead of assumed complete",
+                "scene, UI, progression, content, and feedback form one playable loop",
+            ],
+        ),
+        _task(
+            "unity-playmode-validation",
+            "unity_validation",
+            "Compile the agent-owned project and execute the host Play Mode scenarios.",
+            ["project-context-review"],
+            [
+                "Unity batch compilation and scene assembly pass",
+                "all executable validation scenarios pass in Play Mode",
+            ],
+        ),
+        _task(
+            "quality-evaluation",
+            "quality_evaluation",
+            "Score the implemented game against requirements rather than template similarity.",
+            ["unity-playmode-validation"],
+            ["objective game quality score meets the configured threshold"],
+        ),
+        _task(
+            "package-project",
+            "packaging",
+            "Package the validated Unity project and development evidence.",
+            ["quality-evaluation"],
+            ["a Unity project archive and harness evidence are available"],
+        ),
+    ]
     return {
         "plan_version": "1.0.0",
         "genre": design["game_spec"]["genre"],

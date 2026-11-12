@@ -132,10 +132,14 @@ def render_sfx(category: str, mood: str, seconds: float, loop: bool, seed: str) 
     out: list[float]
 
     if category == "ui":
-        freq = root * 8
+        # Keep UI cues short and recognizable while making independent events distinct.
+        # The asset-specific seed prevents several UI requests from becoming byte-identical.
+        freq = root * (7.0 + 2.0 * rng.random())
+        overtone = 1.7 + 0.6 * rng.random()
+        decay = 22.0 + 8.0 * rng.random()
         out = [
-            (_osc(waveform, two_pi * freq * t) + 0.4 * math.sin(two_pi * freq * 2 * t))
-            * math.exp(-t * 25)
+            (_osc(waveform, two_pi * freq * t) + 0.4 * math.sin(two_pi * freq * overtone * t))
+            * math.exp(-t * decay)
             * min(1.0, t / 0.002)
             for t in (n / SAMPLE_RATE for n in range(count))
         ]
@@ -166,9 +170,20 @@ def render_sfx(category: str, mood: str, seconds: float, loop: bool, seed: str) 
         ]
         out = _loop_crossfade(out, fade) if loop else out
     else:  # generic gameplay action: short rising chirp
+        # Generic actions used to ignore ``seed`` entirely. Jump, checkpoint and other
+        # same-duration cues therefore rendered as identical WAV files and the sound-set
+        # validator correctly rejected all but one. Preserve the category profile, but vary
+        # pitch, sweep and decay deterministically for each requested asset.
+        start = root * (3.5 + 1.5 * rng.random())
+        sweep = root * (4.5 + 2.5 * rng.random())
+        decay = 5.0 + 3.0 * rng.random()
+        overtone = 1.4 + 0.8 * rng.random()
         out = [
-            _osc(waveform, two_pi * (root * 4 + root * 6 * t / seconds) * t)
-            * math.exp(-t * 6)
+            (
+                _osc(waveform, two_pi * (start + sweep * t / seconds) * t)
+                + 0.12 * math.sin(two_pi * start * overtone * t)
+            )
+            * math.exp(-t * decay)
             * min(1.0, t / 0.004)
             for t in (n / SAMPLE_RATE for n in range(count))
         ]

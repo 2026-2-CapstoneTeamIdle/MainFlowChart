@@ -115,9 +115,9 @@ def user_input_node(state: UserInputAgentInput) -> UserInputAgentOutput:
         result["genre"] = genre_var.get()
         result["viewpoint"] = viewpoint_var.get()
         result["condition"] = condition_var.get().strip()
-        if image_style_var.get() == "Custom":
-            if not custom_image_var.get():
-                raise ValueError("Custom 이미지 스타일에는 PNG/JPG 파일이 필요합니다.")
+        if image_style_var.get() == "Custom" and not custom_image_var.get():
+            raise ValueError("Custom 이미지 스타일에는 PNG/JPG 파일이 필요합니다.")
+        if custom_image_var.get():
             result["custom_image_path"] = custom_image_var.get()
         root.destroy()
 

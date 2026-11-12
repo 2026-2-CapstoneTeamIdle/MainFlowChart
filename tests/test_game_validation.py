@@ -85,6 +85,63 @@ class UnityProjectValidatorTest(unittest.TestCase):
             [issue["code"] for issue in outcome.issues],
         )
 
+    def test_static_validation_rejects_unstable_generated_module_layout(self) -> None:
+        source_path = (
+            self.unity_root / "Assets/GameTemplate/Runtime/Platformer/BundledGeneratedModules.cs"
+        )
+        source_path.write_text(
+            """
+[GeneratedGameModule("generated_feature_01")]
+internal sealed class GeneratedFeature01Module : GameModuleBehaviour { }
+[GeneratedGameModule("generated_feature_02")]
+internal sealed class GeneratedFeature02Module : GameModuleBehaviour { }
+""",
+            encoding="utf-8",
+        )
+
+        outcome = UnityProjectValidator(mode="static").validate(
+            self.unity_root,
+            self.draft,
+            self.request,
+        )
+
+        self.assertEqual(outcome.status, "failed")
+        issue = next(
+            item
+            for item in outcome.issues
+            if item["code"] == "UNITY_GENERATED_MODULE_SOURCE_LAYOUT_INVALID"
+        )
+        self.assertIn("contains 2 generated MonoBehaviours", issue["message"])
+        self.assertIn("must be public", issue["message"])
+
+    def test_static_validation_ignores_attributes_added_to_legacy_aggregate_modules(self) -> None:
+        source_path = (
+            self.unity_root / "Assets/GameTemplate/Runtime/Platformer/PlatformerModules.cs"
+        )
+        source = source_path.read_text(encoding="utf-8")
+        source_path.write_text(
+            source.replace(
+                "public sealed class PlatformerMovementModule",
+                '[GeneratedGameModule("platformer_movement")]\n'
+                "    public sealed class PlatformerMovementModule",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        outcome = UnityProjectValidator(mode="static").validate(
+            self.unity_root,
+            self.draft,
+            self.request,
+        )
+
+        layout = next(
+            check
+            for check in outcome.checks
+            if check["criterion_id"] == "unity.generated_module_source_layout"
+        )
+        self.assertTrue(layout["passed"])
+
     def test_failed_diagnostic_project_still_reaches_unity_validation(self) -> None:
         failed_draft = cast(GameLogicDraft, {**self.draft, "status": "failed"})
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using UnityEngine;
 
 namespace TeamIdle.GameTemplate.Core
@@ -87,6 +88,7 @@ namespace TeamIdle.GameTemplate.Core
         {
             var context = new GameContext(config, validationProbe);
             var root = moduleRoot == null ? transform : moduleRoot;
+            RestoreGeneratedModules(root);
             var moduleIds = new HashSet<string>(StringComparer.Ordinal);
             var discovered = new Dictionary<string, IGameModule>(StringComparer.Ordinal);
 
@@ -146,11 +148,11 @@ namespace TeamIdle.GameTemplate.Core
                 }
             }
 
-            if (initializedModules.Count != expectedCount)
+            if (initializedModules.Count < expectedCount)
             {
                 validationProbe.Fail(
                     "template.module_count",
-                    $"Expected {expectedCount} initialized modules but found {initializedModules.Count}."
+                    $"Expected at least {expectedCount} initialized modules but found {initializedModules.Count}."
                 );
             }
 
@@ -158,6 +160,90 @@ namespace TeamIdle.GameTemplate.Core
                 "template.bootstrap_ready",
                 $"UNITY_TEMPLATE_READY:{config.GameTitle}:{config.Genre}:{initializedModules.Count}"
             );
+        }
+
+        private void RestoreGeneratedModules(Transform root)
+        {
+            var existing = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var behaviour in root.GetComponentsInChildren<MonoBehaviour>(true))
+            {
+                if (behaviour is IGameModule module && !string.IsNullOrWhiteSpace(module.ModuleId))
+                {
+                    existing.Add(module.ModuleId);
+                }
+            }
+
+            var generatedTypes = DiscoverGeneratedModuleTypes();
+            foreach (var moduleId in config.SelectedModules)
+            {
+                if (
+                    existing.Contains(moduleId)
+                    || !generatedTypes.TryGetValue(moduleId, out var type)
+                )
+                {
+                    continue;
+                }
+
+                try
+                {
+                    root.gameObject.AddComponent(type);
+                    existing.Add(moduleId);
+                    validationProbe.Pass("template.module_restored", moduleId);
+                }
+                catch (Exception exception)
+                {
+                    validationProbe.Fail(
+                        "template.module_restore",
+                        $"{moduleId}: {exception.Message}"
+                    );
+                }
+            }
+        }
+
+        private static Dictionary<string, Type> DiscoverGeneratedModuleTypes()
+        {
+            var discovered = new Dictionary<string, Type>(StringComparer.Ordinal);
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                Type[] types;
+                try
+                {
+                    types = assembly.GetTypes();
+                }
+                catch (ReflectionTypeLoadException exception)
+                {
+                    types = Array.FindAll(exception.Types, type => type != null);
+                }
+
+                foreach (var type in types)
+                {
+                    if (
+                        type == null
+                        || type.IsAbstract
+                        || !typeof(GameModuleBehaviour).IsAssignableFrom(type)
+                    )
+                    {
+                        continue;
+                    }
+
+                    var attributes = type.GetCustomAttributes(
+                        typeof(GeneratedGameModuleAttribute),
+                        false
+                    );
+                    if (
+                        attributes.Length == 0
+                        || attributes[0] is not GeneratedGameModuleAttribute attribute
+                        || string.IsNullOrWhiteSpace(attribute.ModuleId)
+                    )
+                    {
+                        continue;
+                    }
+
+                    discovered.TryAdd(attribute.ModuleId, type);
+                }
+            }
+
+            return discovered;
         }
 
         private void InitializeModule(GameContext context, IGameModule module)
