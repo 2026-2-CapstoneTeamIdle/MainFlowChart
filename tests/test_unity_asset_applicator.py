@@ -302,12 +302,20 @@ class UnityAssetApplicatorTest(unittest.TestCase):
             ("UI", "선택지 결정 효과음"): "ui",
             ("행동", "행동 완료 효과음"): "activity",
             ("아이템", "코인 획득"): "pickup",
+            ("tower_built feedback", "tower construction succeeds"): "tower_built",
+            ("tower_upgraded feedback", "tower upgrade succeeds"): "tower_upgraded",
+            ("enemy_defeated feedback", "enemy health reaches zero"): "enemy_defeated",
+            ("base_damaged feedback", "enemy reaches base"): "base_damaged",
+            ("wave_started feedback", "preparation expires"): "wave_started",
+            ("boss_arrived feedback", "boss wave begins"): "boss_arrived",
             ("효과음", "알 수 없는 소리"): "",
         }
         for (purpose, description), expected in cases.items():
-            kind = build_sound_generation_spec(purpose, description)["kind"]
+            generation_spec = build_sound_generation_spec(purpose, description)
+            kind = generation_spec["kind"]
             with self.subTest(purpose=purpose, description=description):
                 self.assertEqual(classify_sound_cue(purpose, description, kind), expected)
+                self.assertEqual(generation_spec["audio_cue"], expected)
 
     def test_every_catalog_sound_has_a_cue(self) -> None:
         for genre, profile in GENRE_PRESETS.items():

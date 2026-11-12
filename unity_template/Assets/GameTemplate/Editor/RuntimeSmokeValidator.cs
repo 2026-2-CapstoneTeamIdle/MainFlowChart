@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using TeamIdle.GameTemplate.Common;
 using TeamIdle.GameTemplate.Core;
 using TeamIdle.GameTemplate.Platformer;
@@ -438,7 +439,18 @@ namespace TeamIdle.GameTemplate.Editor
 
             var legacyDebugUi =
                 UnityEngine.Object.FindFirstObjectByType<PrototypeSceneController>();
-            if (legacyDebugUi != null && legacyDebugUi.enabled)
+            var hasLegacyOnGui =
+                legacyDebugUi != null
+                && legacyDebugUi
+                    .GetType()
+                    .GetMethod(
+                        "OnGUI",
+                        BindingFlags.Instance
+                            | BindingFlags.Public
+                            | BindingFlags.NonPublic
+                            | BindingFlags.DeclaredOnly
+                    ) != null;
+            if (legacyDebugUi != null && legacyDebugUi.enabled && hasLegacyOnGui)
             {
                 issue = "PrototypeSceneController IMGUI debug panel must be disabled or replaced";
                 return false;

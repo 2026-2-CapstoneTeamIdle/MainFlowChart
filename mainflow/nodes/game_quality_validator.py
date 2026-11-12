@@ -85,6 +85,7 @@ def game_quality_validator_node(
             report = cast(
                 GameValidatorAIResult, {"contract_version": CONTRACT_VERSION, **ai_report}
             )
+        report = _normalize_placeholder_visual_limitation(report, final_result)
         if (
             final_result.get("status") == "passed"
             and report.get("status") == "needs_revision"
@@ -207,7 +208,10 @@ def _repair_and_review_quality(
             }
             record(f"unity_validation_{attempt:02d}", evidence["post_quality_unity_validation"])
             reviewed = review(project_root=workspace, project_id=project_id, evidence=evidence)
-            report = cast(GameValidatorAIResult, reviewed)
+            report = _normalize_placeholder_visual_limitation(
+                cast(GameValidatorAIResult, reviewed),
+                evidence.get("final_validation_result", {"status": "passed"}),
+            )
             record(f"audit_{attempt:02d}", report)
             if report.get("status") == "passed":
                 return report
@@ -226,6 +230,52 @@ def _repair_and_review_quality(
             )
             continue
     return report
+
+
+def _normalize_placeholder_visual_limitation(
+    report: GameValidatorAIResult,
+    final_result: dict[str, Any],
+) -> GameValidatorAIResult:
+    """Keep an unavailable real-art backend from becoming a standalone quality failure."""
+
+    if final_result.get("status") != "passed":
+        return report
+
+    def is_placeholder_visual(item: dict[str, Any]) -> bool:
+        text = " ".join(
+            [
+                str(item.get("category", "")),
+                str(item.get("message", "")),
+                str(item.get("requirement", "")),
+                *(str(value) for value in item.get("evidence", [])),
+            ]
+        ).lower()
+        return (
+            "visual" in text
+            and "placeholder" in text
+            and any(marker in text for marker in ("skip", "disabled", "suppressed"))
+        )
+
+    findings: list[dict[str, Any]] = []
+    for finding in report.get("findings", []):
+        if is_placeholder_visual(finding) and finding.get("severity") in {"error", "warning"}:
+            findings.append({**finding, "severity": "info"})
+        else:
+            findings.append(finding)
+
+    unresolved_findings = [
+        finding for finding in findings if finding.get("severity") in {"error", "warning"}
+    ]
+    unresolved_coverage = [
+        item
+        for item in report.get("requirement_coverage", [])
+        if item.get("status") != "satisfied" and not is_placeholder_visual(item)
+    ]
+    status = report.get("status")
+    if status == "needs_revision" and not unresolved_findings and not unresolved_coverage:
+        status = "passed"
+
+    return cast(GameValidatorAIResult, {**report, "status": status, "findings": findings})
 
 
 def _hard_failure_report(evidence: dict[str, Any]) -> GameValidatorAIResult:

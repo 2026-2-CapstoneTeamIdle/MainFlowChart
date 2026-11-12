@@ -41,6 +41,61 @@ def _request_payload() -> dict[str, str]:
     }
 
 
+def test_web_ui_exposes_completion_notifications() -> None:
+    html = (LOCAL_WEB_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    script = (LOCAL_WEB_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="completion-notifications"' in html
+    assert "Notification.requestPermission()" in script
+    assert 'notifyJobMilestone(job, "feature")' in script
+    assert 'notifyJobMilestone(job, "terminal")' in script
+    assert "playNotificationTone" in script
+
+
+def test_web_ui_exposes_provider_specific_harness_settings() -> None:
+    html = (LOCAL_WEB_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    script = (LOCAL_WEB_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="agent-harness-settings"' in html
+    assert 'name="agent_model"' in html
+    assert 'name="agent_reasoning_effort"' in html
+    assert 'name="agent_fast_mode"' in html
+    for model in (
+        "default",
+        "gpt-6.1-sol",
+        "gpt-6-astra",
+        "gpt-6.1-terra",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    ):
+        assert f'["{model}",' in script
+    assert '["sonnet", "Claude Sonnet · 균형형"]' in script
+    assert 'defaultModel: "gpt-5.6-luna"' in script
+    assert "updateAgentHarnessSettings" in script
+
+
+def test_web_ui_allows_optional_reference_image_for_every_style() -> None:
+    html = (LOCAL_WEB_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    script = (LOCAL_WEB_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+    custom_input = html.split('id="custom-image"', maxsplit=1)[1].split(">", maxsplit=1)[0]
+    assert "disabled" not in custom_input
+    assert "customImage.required = customSelected" in script
+    assert 'customImage.value = ""' not in script
+
+
+def test_web_ui_formats_fastapi_validation_errors() -> None:
+    script = (LOCAL_WEB_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "function formatApiError(payload, status)" in script
+    assert 'item.loc.filter((part) => part !== "body").join(".")' in script
+    assert 'messages.join("\\n")' in script
+    assert "new Error(formatApiError(payload, response.status))" in script
+
+
 def test_settings_store_never_returns_api_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     service = _load_service_module()
     state_root = tmp_path / ".localweb"
@@ -132,9 +187,15 @@ def test_generation_request_accepts_codex_cli_builder():
     request = service.GenerationRequest(
         mode="generate",
         game_builder="codex_cli",
+        agent_model="gpt-6.1-sol",
+        agent_reasoning_effort="high",
+        agent_fast_mode=True,
         **_request_payload(),
     )
     assert request.game_builder == "codex_cli"
+    assert request.agent_model == "gpt-6.1-sol"
+    assert request.agent_reasoning_effort == "high"
+    assert request.agent_fast_mode is True
 
 
 def test_generation_request_accepts_claude_code_builder():
@@ -142,9 +203,24 @@ def test_generation_request_accepts_claude_code_builder():
     request = service.GenerationRequest(
         mode="generate",
         game_builder="claude_code",
+        agent_model="opus",
+        agent_reasoning_effort="xhigh",
         **_request_payload(),
     )
     assert request.game_builder == "claude_code"
+    assert request.agent_model == "opus"
+    assert request.agent_reasoning_effort == "xhigh"
+
+
+def test_generation_request_rejects_fast_mode_for_claude_code():
+    service = _load_service_module()
+    with pytest.raises(ValueError, match="Fast mode is only supported"):
+        service.GenerationRequest(
+            mode="generate",
+            game_builder="claude_code",
+            agent_fast_mode=True,
+            **_request_payload(),
+        )
 
 
 def test_generation_request_rejects_explicit_conflicting_genre():
@@ -348,13 +424,51 @@ def test_codex_builder_environment_disables_api_backed_planning():
         "MAINFLOW_CONDITION_FEATURE_PROVIDER": "openai",
         "MAINFLOW_DESIGN_V2_PROVIDER": "local",
     }
-    service._configure_game_builder_environment(environment, "codex_cli")
+    service._configure_game_builder_environment(
+        environment,
+        "codex_cli",
+        model="gpt-6.1-sol",
+        reasoning_effort="high",
+        fast_mode=True,
+    )
     assert environment["MAINFLOW_GAME_BUILDER"] == "codex_cli"
     assert environment["MAINFLOW_CONDITION_FEATURE_PROVIDER"] == "off"
     assert environment["MAINFLOW_GENRE_FEATURE_PROVIDER"] == "off"
     assert environment["MAINFLOW_DESIGN_V2_PROVIDER"] == "deterministic"
     assert environment["MAINFLOW_BLUEPRINT_PROVIDER"] == "deterministic"
     assert environment["MAINFLOW_CODEX_STATIC_CHECKLISTS"] == "1"
+    assert environment["MAINFLOW_CODEX_MODEL"] == "gpt-6.1-sol"
+    assert environment["MAINFLOW_CODEX_REASONING_EFFORT"] == "high"
+    assert environment["MAINFLOW_CODEX_SERVICE_TIER"] == "fast"
+
+
+def test_claude_builder_environment_applies_model_and_effort():
+    service = _load_service_module()
+    environment: dict[str, str] = {}
+
+    service._configure_game_builder_environment(
+        environment,
+        "claude_code",
+        model="opus",
+        reasoning_effort="xhigh",
+    )
+
+    assert environment["MAINFLOW_CLAUDE_MODEL"] == "opus"
+    assert environment["MAINFLOW_CLAUDE_REASONING_EFFORT"] == "xhigh"
+
+
+def test_codex_default_model_defers_to_cli_configuration():
+    service = _load_service_module()
+    environment = {"MAINFLOW_CODEX_MODEL": "gpt-5.6-luna"}
+
+    service._configure_game_builder_environment(
+        environment,
+        "codex_cli",
+        model="default",
+        reasoning_effort="medium",
+    )
+
+    assert environment["MAINFLOW_CODEX_MODEL"] == ""
 
 
 def test_workflow_summary_extracts_failed_stage_and_features(

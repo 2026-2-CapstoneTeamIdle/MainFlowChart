@@ -70,6 +70,28 @@ class RequestAnalysisTest(unittest.TestCase):
                 )
                 self.assertEqual(manager.read_bytes(custom_reference), source.read_bytes())
 
+    def test_reference_image_is_imported_for_non_custom_style(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            workspace = root / "workspace"
+            source = root / "reference.png"
+            source.write_bytes(b"\x89PNG\r\n\x1a\nreference-image-data")
+
+            with patch.dict(os.environ, {"MAINFLOW_WORKSPACE": str(workspace)}):
+                state = parse_input_node(
+                    {
+                        "image_style": "Pixel Art",
+                        "mood_style": "Fantasy",
+                        "genre": "플랫포머",
+                        "viewpoint": "사이드뷰",
+                        "condition": "점프해서 목표에 도달한다.",
+                        "custom_image_path": str(source),
+                    }
+                )
+                request = ArtifactManager().read_json(state["parsed_request"])
+
+                self.assertIsNotNone(request["custom_image"])
+
     def test_analysis_preserves_unknown_clause_for_dynamic_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             workspace = Path(temporary_directory) / "workspace"

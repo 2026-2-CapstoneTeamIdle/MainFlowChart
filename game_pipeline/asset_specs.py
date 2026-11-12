@@ -41,6 +41,30 @@ SOUND_KIND_KEYWORDS: tuple[tuple[SoundAssetKind, tuple[str, ...]], ...] = (
 # Ambiguous words are phrase-only: "피해" alone also means "avoid", "사망" alone also fits enemies.
 SOUND_CUE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
+        "tower_built",
+        ("tower_built", "tower construction succeeds", "타워 건설 성공", "건설 성공"),
+    ),
+    (
+        "tower_upgraded",
+        ("tower_upgraded", "tower upgrade succeeds", "타워 업그레이드 성공"),
+    ),
+    (
+        "enemy_defeated",
+        ("enemy_defeated", "enemy health reaches zero", "적 처치", "적 격파"),
+    ),
+    (
+        "base_damaged",
+        ("base_damaged", "enemy reaches base", "기지 피해", "기지 도달"),
+    ),
+    (
+        "wave_started",
+        ("wave_started", "preparation expires", "웨이브 시작"),
+    ),
+    (
+        "boss_arrived",
+        ("boss_arrived", "boss wave begins", "보스 등장", "보스 웨이브 시작"),
+    ),
+    (
         "game_over",
         ("패배", "게임오버", "게임 오버", "플레이어 사망", "game over", "defeat", "player death"),
     ),
@@ -163,6 +187,7 @@ def build_sound_generation_spec(purpose: str, description: str) -> SoundGenerati
         )
     return {
         "kind": kind,
+        "audio_cue": classify_sound_cue(purpose, description, kind),
         "target_duration_seconds": duration,
         "loop": loop,
         "channels": channels,  # type: ignore[typeddict-item]

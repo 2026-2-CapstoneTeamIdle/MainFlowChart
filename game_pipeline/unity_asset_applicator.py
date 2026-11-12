@@ -307,7 +307,8 @@ class UnityAssetApplicator:
             "audio_cue": (
                 ""
                 if is_image
-                else classify_sound_cue(item["purpose"], item["description"], str(spec["kind"]))
+                else str(spec.get("audio_cue", ""))
+                or classify_sound_cue(item["purpose"], item["description"], str(spec["kind"]))
             ),
         }
 

@@ -14,7 +14,7 @@ from game_pipeline.codex_cli.config import _integer_environment
 class ClaudeCodeHarnessSettings:
     executable: Path
     model: str | None
-    reasoning_effort: None
+    reasoning_effort: str | None
     invocation_timeout_seconds: int
     total_timeout_seconds: int
     max_repairs: int
@@ -40,10 +40,13 @@ class ClaudeCodeHarnessSettings:
         if permission_mode not in {"default", "acceptEdits", "plan", "dontAsk"}:
             raise ValueError("MAINFLOW_CLAUDE_PERMISSION_MODE has an unsupported value")
         model = os.environ.get("MAINFLOW_CLAUDE_MODEL", "sonnet").strip() or None
+        reasoning = os.environ.get("MAINFLOW_CLAUDE_REASONING_EFFORT", "medium").strip() or None
+        if reasoning not in {None, "low", "medium", "high", "xhigh", "max"}:
+            raise ValueError("MAINFLOW_CLAUDE_REASONING_EFFORT has an unsupported value")
         return cls(
             Path(discovered).resolve(),
             model,
-            None,
+            reasoning,
             timeout,
             total_timeout,
             max_repairs,

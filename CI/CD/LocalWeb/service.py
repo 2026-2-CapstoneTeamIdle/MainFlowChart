@@ -231,6 +231,14 @@ class UploadedImage(BaseModel):
 class GenerationRequest(BaseModel):
     mode: Literal["generate", "test-generate"]
     game_builder: Literal["pipeline", "codex_cli", "claude_code"] = "pipeline"
+    agent_model: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    agent_reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    agent_fast_mode: bool = False
     image_style: str
     mood_style: str
     genre: str
@@ -256,6 +264,16 @@ class GenerationRequest(BaseModel):
         validate_genre_condition_compatibility(self.genre, self.condition)
         if self.image_style == "Custom" and self.custom_image is None:
             raise ValueError("Custom image style requires a PNG/JPG reference")
+        if self.game_builder == "pipeline":
+            self.agent_model = None
+            self.agent_reasoning_effort = None
+            self.agent_fast_mode = False
+        else:
+            default_models = {"codex_cli": "gpt-5.6-luna", "claude_code": "sonnet"}
+            self.agent_model = self.agent_model or default_models[self.game_builder]
+            self.agent_reasoning_effort = self.agent_reasoning_effort or "medium"
+            if self.game_builder == "claude_code" and self.agent_fast_mode:
+                raise ValueError("Fast mode is only supported by the Codex CLI harness")
         return self
 
 
@@ -266,6 +284,9 @@ class WorkflowJob:
     request_file: Path
     job_root: Path
     game_builder: str = "pipeline"
+    agent_model: str | None = None
+    agent_reasoning_effort: str | None = None
+    agent_fast_mode: bool = False
     status: str = "analyzing_features"
     stage: str = "condition_feature_analysis"
     logs: list[str] = field(default_factory=list)
@@ -350,6 +371,10 @@ class WorkflowJob:
             return {
                 "job_id": self.job_id,
                 "mode": self.mode,
+                "game_builder": self.game_builder,
+                "agent_model": self.agent_model,
+                "agent_reasoning_effort": self.agent_reasoning_effort,
+                "agent_fast_mode": self.agent_fast_mode,
                 "status": self.status,
                 "stage": self.stage,
                 "features": list(self.features),
@@ -523,10 +548,20 @@ class WorkflowJobManager:
             request_file=request_file,
             job_root=job_root,
             game_builder=request.game_builder,
+            agent_model=request.agent_model,
+            agent_reasoning_effort=request.agent_reasoning_effort,
+            agent_fast_mode=request.agent_fast_mode,
         )
         with self.lock:
             self.jobs[job_id] = job
         job.append_log(f"[WEB] 작업 {job_id}의 Feature 분석을 시작합니다.")
+        if request.game_builder in {"codex_cli", "claude_code"}:
+            builder_label = "Codex CLI" if request.game_builder == "codex_cli" else "Claude Code"
+            fast_label = " · Fast" if request.agent_fast_mode else ""
+            job.append_log(
+                f"[WEB] Agent Harness 설정: {builder_label} · model={request.agent_model} · "
+                f"reasoning={request.agent_reasoning_effort}{fast_label}"
+            )
         self._start_preview(job)
         return job
 
@@ -731,7 +766,13 @@ class WorkflowJobManager:
             str(preview_path),
         ]
         environment = self.settings.process_environment()
-        _configure_game_builder_environment(environment, job.game_builder)
+        _configure_game_builder_environment(
+            environment,
+            job.game_builder,
+            model=job.agent_model,
+            reasoning_effort=job.agent_reasoning_effort,
+            fast_mode=job.agent_fast_mode,
+        )
         return_code = self._stream_process(job, command, environment)
         if _is_cancelled(job):
             return
@@ -770,7 +811,13 @@ class WorkflowJobManager:
         environment["MAINFLOW_APPROVED_LOGIC_ANALYSIS"] = str(approved_logic_path)
         environment["MAINFLOW_UNITY_PROJECT_REPORT_FILE"] = str(unity_project_report)
         environment["MAINFLOW_OPEN_UNITY_EDITOR"] = "0"
-        _configure_game_builder_environment(environment, job.game_builder)
+        _configure_game_builder_environment(
+            environment,
+            job.game_builder,
+            model=job.agent_model,
+            reasoning_effort=job.agent_reasoning_effort,
+            fast_mode=job.agent_fast_mode,
+        )
         command = [
             sys.executable,
             "-m",
@@ -935,7 +982,14 @@ def _save_custom_image(job_root: Path, upload: UploadedImage) -> Path:
     return destination
 
 
-def _configure_game_builder_environment(environment: dict[str, str], game_builder: str) -> None:
+def _configure_game_builder_environment(
+    environment: dict[str, str],
+    game_builder: str,
+    *,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+    fast_mode: bool = False,
+) -> None:
     environment["MAINFLOW_GAME_BUILDER"] = game_builder
     if game_builder not in {"codex_cli", "claude_code"}:
         return
@@ -944,6 +998,20 @@ def _configure_game_builder_environment(environment: dict[str, str], game_builde
     environment["MAINFLOW_DESIGN_V2_PROVIDER"] = "deterministic"
     environment["MAINFLOW_BLUEPRINT_PROVIDER"] = "deterministic"
     environment["MAINFLOW_CODEX_STATIC_CHECKLISTS"] = "1"
+    if game_builder == "codex_cli":
+        if model:
+            environment["MAINFLOW_CODEX_MODEL"] = "" if model == "default" else model
+        if reasoning_effort:
+            environment["MAINFLOW_CODEX_REASONING_EFFORT"] = reasoning_effort
+        if fast_mode:
+            environment["MAINFLOW_CODEX_SERVICE_TIER"] = "fast"
+        else:
+            environment.pop("MAINFLOW_CODEX_SERVICE_TIER", None)
+    elif game_builder == "claude_code":
+        if model:
+            environment["MAINFLOW_CLAUDE_MODEL"] = model
+        if reasoning_effort:
+            environment["MAINFLOW_CLAUDE_REASONING_EFFORT"] = reasoning_effort
 
 
 def _atomic_write_json(path: Path, payload: object) -> None:

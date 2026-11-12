@@ -30,16 +30,17 @@ def parse_input_node(state: ParseInputAgentInput) -> ParseInputAgentOutput:
     manager = ArtifactManager()
     custom_source: Path | None = None
     custom_suffix = ""
-    if state["image_style"] == "Custom":
-        custom_source = Path(state["custom_image_path"])
+    custom_image_path = state.get("custom_image_path")
+    if custom_image_path:
+        custom_source = Path(custom_image_path)
         custom_suffix = custom_source.suffix.lower()
         if custom_suffix not in {".png", ".jpg", ".jpeg"}:
-            raise ValueError("Custom image must be a PNG or JPG file")
+            raise ValueError("Reference image must be a PNG or JPG file")
         content = custom_source.read_bytes()
         is_png = content.startswith(b"\x89PNG\r\n\x1a\n")
         is_jpeg = content.startswith(b"\xff\xd8") and content.endswith(b"\xff\xd9")
         if not (is_png or is_jpeg):
-            raise ValueError("Custom image content is not a valid PNG or JPG file")
+            raise ValueError("Reference image content is not a valid PNG or JPG file")
 
     project_id = manager.create_project()
     custom_image = None

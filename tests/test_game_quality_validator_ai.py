@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from game_pipeline.game_quality_validator_ai import GameQualityValidatorAI
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.nodes.game_quality_validator import (
+    _normalize_placeholder_visual_limitation,
     _repair_and_review_quality,
     game_quality_validator_node,
 )
@@ -97,6 +98,63 @@ class QualityProvider:
 
 
 class GameQualityValidatorAITest(unittest.TestCase):
+    def test_placeholder_visual_gap_is_an_informational_limitation(self) -> None:
+        report = {
+            "status": "needs_revision",
+            "requirement_coverage": [
+                {
+                    "requirement": "Placeholder visual validation was skipped",
+                    "status": "unverifiable",
+                    "evidence": [
+                        "visual validation skipped because placeholder images were suppressed"
+                    ],
+                }
+            ],
+            "findings": [
+                {
+                    "severity": "warning",
+                    "category": "visual",
+                    "message": "Visual validation was skipped because placeholder images were suppressed",
+                    "evidence": [],
+                }
+            ],
+        }
+
+        normalized = _normalize_placeholder_visual_limitation(  # type: ignore[arg-type]
+            report, {"status": "passed"}
+        )
+
+        self.assertEqual(normalized["status"], "passed")
+        self.assertEqual(normalized["findings"][0]["severity"], "info")
+
+    def test_placeholder_normalization_preserves_unrelated_quality_failure(self) -> None:
+        report = {
+            "status": "needs_revision",
+            "requirement_coverage": [],
+            "findings": [
+                {
+                    "severity": "warning",
+                    "category": "visual",
+                    "message": "Visual validation skipped while placeholder art is disabled",
+                    "evidence": [],
+                },
+                {
+                    "severity": "warning",
+                    "category": "gameplay",
+                    "message": "Upgrade UI does not show projected combat stats",
+                    "evidence": ["TowerDefenseGameController.cs"],
+                },
+            ],
+        }
+
+        normalized = _normalize_placeholder_visual_limitation(  # type: ignore[arg-type]
+            report, {"status": "passed"}
+        )
+
+        self.assertEqual(normalized["status"], "needs_revision")
+        self.assertEqual(normalized["findings"][0]["severity"], "info")
+        self.assertEqual(normalized["findings"][1]["severity"], "warning")
+
     def test_quality_findings_trigger_repair_and_fresh_unity_evidence(self) -> None:
         manager = MagicMock()
         manager.ensure_project.return_value = Path("C:/synthetic/workspace")

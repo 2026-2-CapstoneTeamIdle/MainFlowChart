@@ -172,6 +172,22 @@ class ProviderTest(unittest.TestCase):
         self.assertAlmostEqual(wav_duration(horror), plans[0].duration_seconds, places=2)
         self.assertNotEqual(horror, cozy)
 
+    def test_procedural_same_category_assets_are_distinct(self):
+        jump, checkpoint = plan_sound_assets(
+            request(
+                item("jump_sfx", "점프", "짧은 점프 동작 효과음"),
+                item("checkpoint_reached_sfx", "체크포인트", "체크포인트 활성화 효과음"),
+            ),
+            PARSED,
+        )
+
+        provider = ProceduralSoundProvider()
+        jump_audio = provider.generate(jump).audio
+        checkpoint_audio = provider.generate(checkpoint).audio
+
+        self.assertEqual((jump.category, checkpoint.category), ("action", "action"))
+        self.assertNotEqual(jump_audio, checkpoint_audio)
+
     def test_mp3_duration_reads_rate_from_frames(self):
         self.assertAlmostEqual(mp3_duration(fake_mp3(0.9)), 0.9, delta=0.03)
         with self.assertRaises(SoundProviderError):

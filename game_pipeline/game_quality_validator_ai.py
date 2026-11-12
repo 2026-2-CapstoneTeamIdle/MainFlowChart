@@ -140,6 +140,9 @@ of truth for preserved user requirements, selected modules, exact project classe
 events. Use it to choose the Unity files that need closer inspection; never replace exact identifiers
 with a natural-language summary. A passed report requires all hard validators to pass and no error
 finding. Missing runtime evidence is unverifiable, never automatically satisfied.
+If visual validation was deliberately skipped because the configured image backend produced only
+placeholders, record that only as an info-level limitation. It must not create a warning/error or
+cause needs_revision by itself; evaluate primitive fallback readability separately.
 
 HOST_EVIDENCE:
 {json.dumps(evidence, ensure_ascii=False, indent=2)}
@@ -195,7 +198,7 @@ Return only one JSON object with this exact shape:
         except json.JSONDecodeError as error:
             raise ValueError("Game Validator AI returned invalid JSON") from error
         if not isinstance(payload, dict):
-            raise ValueError("Game Validator AI report must be a JSON object")
+            raise TypeError("Game Validator AI report must be a JSON object")
 
         status = payload.get("status")
         score = payload.get("score")
@@ -216,7 +219,7 @@ Return only one JSON object with this exact shape:
         if not isinstance(findings, list) or len(findings) > 50:
             raise ValueError("Game Validator AI findings must contain at most 50 entries")
         if not isinstance(strengths, list) or not isinstance(limitations, list):
-            raise ValueError("Game Validator AI strengths and limitations must be arrays")
+            raise TypeError("Game Validator AI strengths and limitations must be arrays")
         if not isinstance(inspected_files, list) or not inspected_files:
             raise ValueError("Game Validator AI must report inspected files")
 
@@ -257,7 +260,7 @@ Return only one JSON object with this exact shape:
     @staticmethod
     def _coverage(value: object) -> GameValidatorRequirement:
         if not isinstance(value, dict):
-            raise ValueError("Requirement coverage entries must be objects")
+            raise TypeError("Requirement coverage entries must be objects")
         requirement = value.get("requirement")
         status = value.get("status")
         evidence = value.get("evidence")
@@ -274,7 +277,7 @@ Return only one JSON object with this exact shape:
     @staticmethod
     def _finding(value: object) -> GameValidatorFinding:
         if not isinstance(value, dict):
-            raise ValueError("Game Validator AI findings must be objects")
+            raise TypeError("Game Validator AI findings must be objects")
         severity = value.get("severity")
         category = value.get("category")
         message = value.get("message")

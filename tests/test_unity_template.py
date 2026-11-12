@@ -12,6 +12,22 @@ TEMPLATE_ROOT = REPOSITORY_ROOT / "unity_template"
 
 
 class UnityTemplateTest(unittest.TestCase):
+    def test_game_audio_cues_include_tower_defense_events(self) -> None:
+        source = (TEMPLATE_ROOT / "Assets/GameTemplate/Runtime/Core/GameAudioCues.cs").read_text(
+            encoding="utf-8"
+        )
+
+        for cue in (
+            "tower_built",
+            "tower_upgraded",
+            "enemy_defeated",
+            "base_damaged",
+            "wave_started",
+            "boss_arrived",
+        ):
+            with self.subTest(cue=cue):
+                self.assertIn(f'"{cue}"', source)
+
     def test_feature_checklist_resets_persistent_bootstrap_between_tests(self) -> None:
         checklist_tests = (
             TEMPLATE_ROOT / "Assets/Tests/PlayMode/FeatureChecklistTests.cs"
@@ -38,6 +54,9 @@ class UnityTemplateTest(unittest.TestCase):
         self.assertIn("ValidateAgentHarnessUi", source)
         self.assertIn("CanvasScaler.ScaleMode.ScaleWithScreenSize", source)
         self.assertIn("PrototypeSceneController IMGUI debug panel", source)
+        self.assertIn('GetMethod(\n                        "OnGUI",', source)
+        self.assertIn("BindingFlags.DeclaredOnly", source)
+        self.assertIn("legacyDebugUi.enabled && hasLegacyOnGui", source)
         self.assertIn("UNITY_UI_QUALITY_OK", source)
 
     def test_template_metadata_matches_pipeline_contract(self) -> None:

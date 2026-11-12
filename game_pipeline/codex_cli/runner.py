@@ -77,6 +77,8 @@ class CodexCliRunner:
             command.extend(["--model", self.settings.model])
         if self.settings.reasoning_effort:
             command.extend(["--config", f"model_reasoning_effort={self.settings.reasoning_effort}"])
+        if self.settings.service_tier:
+            command.extend(["--config", f'service_tier="{self.settings.service_tier}"'])
         command.append("-")
 
         started = time.monotonic()

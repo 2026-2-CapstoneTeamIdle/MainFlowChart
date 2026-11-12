@@ -101,6 +101,7 @@ class ImageGenerationSpec(TypedDict):
 
 class SoundGenerationSpec(TypedDict):
     kind: SoundAssetKind
+    audio_cue: str
     target_duration_seconds: float
     loop: bool
     channels: AudioChannelMode

@@ -385,6 +385,11 @@ design or validation JSON to conceal a missing implementation. Do not run Unity;
 will compile and execute Play Mode after your edits. Add focused Unity Test Framework
 PlayMode regression tests tagged `FeatureChecklist` for each repaired gameplay behavior;
 assert observable state transitions rather than checking that a class or method exists.
+For upgrade UI findings, show explicit current-to-projected values using the same formula as the
+purchase operation, then refresh the panel after purchase. For audio integration findings, read
+`Assets/GameTemplate/Generated/AssetRequests/sound_asset_request.json`, preserve every
+`generation_spec.audio_cue`, and raise the exact cue at the successful gameplay transition. Do not
+invent an alternate cue ID or treat scene-bound audio as proof that the event is wired.
 Before adding a cross-file type reference, read the referenced class and its namespace and
 either import that namespace or use the fully-qualified type name. Put every new public Unity
 component in a filename-matched source file so Unity can serialize it. Treat authored normal
@@ -704,7 +709,8 @@ and validation records. Check requirement coverage, connected gameplay, progress
 balance, presentation, and asset integration. Hard validator failures cannot be overruled. Cite
 project-relative paths or hard check IDs for every nontrivial conclusion.
 If the image backend deliberately produced placeholders and visual validation is marked skipped,
-record that as a limitation; do not fail the game solely because no real image asset was applied.
+record that only as an info-level limitation; do not emit a warning/error or fail the game solely
+because no real image asset was applied. Judge primitive fallback readability separately.
 Check actual gameplay behavior independently of the hard smoke-test status. If post-quality
 Unity validation evidence exists, prefer it over the earlier pre-repair run.
 
@@ -783,6 +789,8 @@ Read every file below before editing code:
 - `Assets/GameTemplate/Generated/GameLogicDesign.json`
 - `Assets/GameTemplate/Generated/GameBlueprint.json`
 - every JSON file in `Assets/GameTemplate/Generated/Design/`
+- `Assets/GameTemplate/Generated/AssetRequests/image_asset_request.json`
+- `Assets/GameTemplate/Generated/AssetRequests/sound_asset_request.json`
 - `Assets/GameTemplate/Generated/GenerationRequest.json`
 - `Assets/GameTemplate/Runtime/Core/IGeneratedFeatureModule.cs`
 - existing runtime and editor scripts under `Assets/GameTemplate/`
@@ -808,6 +816,16 @@ Read every file below before editing code:
 - Connect HUD values and screen visibility to actual runtime state. Health, objective/progress,
   currency/score/time, pause, choice, clear, failure, restart, and genre-specific controls must
   update from the systems they represent instead of displaying hard-coded sample text.
+- When an upgrade can be previewed before purchase, its player-facing panel must show the current
+  and projected post-upgrade values (`before -> after`) for every affected combat stat, including
+  damage, attacks per second/cooldown, range, and splash radius when applicable. Use the same
+  upgrade formula for the preview and the actual purchase so the displayed values cannot drift.
+- Treat every sound item in `sound_asset_request.json` as a runtime integration contract. Preserve
+  its `generation_spec.audio_cue`, raise that exact cue through `GameAudioCues.Raise(...)` at the
+  successful gameplay transition (not merely on button click), and ensure the event fires once per
+  transition. Tower construction, tower upgrade, enemy defeat, base damage, wave start, and boss
+  arrival must remain distinct cues when requested. Imported/scene-bound audio without a matching
+  gameplay raise is incomplete.
 - Do not merely write a design, TODO, placeholder, or disconnected component.
 - Treat every cached `UnityEngine.Object` reference as scene-lifetime state. Before accessing a
   cached component in `Update`, `FixedUpdate`, a coroutine, or an event callback, use Unity's

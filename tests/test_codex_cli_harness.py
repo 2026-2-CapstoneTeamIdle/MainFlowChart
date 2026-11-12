@@ -49,6 +49,7 @@ def _settings(executable: Path) -> CodexHarnessSettings:
         invocation_timeout_seconds=60,
         total_timeout_seconds=120,
         max_repairs=2,
+        service_tier="fast",
     )
 
 
@@ -169,6 +170,7 @@ def test_runner_uses_scoped_workspace_and_does_not_forward_api_keys(
     assert "--json" in command
     assert command[command.index("--model") + 1] == "gpt-test"
     assert "model_reasoning_effort=high" in command
+    assert 'service_tier="fast"' in command
     environment = captured["kwargs"]["environment"]
     assert "OPENAI_API_KEY" not in environment
     assert "GEMINI_API_KEY" not in environment
@@ -328,11 +330,13 @@ def test_codex_defaults_to_luna_medium(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setenv("MAINFLOW_CODEX_CLI_PATH", str(executable))
     monkeypatch.delenv("MAINFLOW_CODEX_MODEL", raising=False)
     monkeypatch.delenv("MAINFLOW_CODEX_REASONING_EFFORT", raising=False)
+    monkeypatch.delenv("MAINFLOW_CODEX_SERVICE_TIER", raising=False)
 
     settings = CodexHarnessSettings.from_environment()
 
     assert settings.model == "gpt-5.6-luna"
     assert settings.reasoning_effort == "medium"
+    assert settings.service_tier is None
 
 
 def test_prepares_generated_source_roots_before_codex(tmp_path: Path) -> None:
@@ -413,6 +417,9 @@ def test_codex_prompts_reserve_unity_process_ownership_for_host(tmp_path: Path) 
     assert "presentation_plan.json` as an implementation contract" in instructions
     assert "PrototypeSceneController` IMGUI debug panel" in instructions
     assert "1280x720 and 1920x1080" in instructions
+    assert "sound_asset_request.json" in instructions
+    assert "generation_spec.audio_cue" in instructions
+    assert "before -> after" in instructions
     assert "Do not launch" in implementation and "Unity" in implementation
     assert "substantially the same game" in implementation
     assert "Do not launch Unity Editor" in repair
