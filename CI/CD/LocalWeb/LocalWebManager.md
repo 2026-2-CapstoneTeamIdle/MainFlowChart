@@ -1,6 +1,6 @@
 # Local Web Manager
 
-버전: **1.3.1**
+버전: **1.4.0**
 
 `CI/CD/LocalWeb`은 MainFlowChart를 `http://127.0.0.1:8000`에서 설정하고 실행하는 로컬
 전용 웹 서비스다. 메인 LangGraph의 Edge는 바꾸지 않으며, 웹 계층이 Feature 승인 단계를
@@ -11,6 +11,8 @@
 - 실제 프로젝트 역할별 AI Provider/Model 선택
 - Docker 내부 Codex CLI 설치, 브라우저 Device Code 로그인 및 웹 로그아웃
 - Docker `codex-auth` 전용 볼륨을 통한 Codex 로그인 유지
+- Docker 내부 Unity `6000.0.71f1` Editor, WebGL Build Support 및 가상 디스플레이
+- Docker `unity-license` 전용 볼륨을 통한 Unity 라이선스 유지
 - AI 모델 설정 영역 기본 접힘 및 토글 표시
 - LocalAI 등록 모델 목록 선택
 - OpenAI, Gemini, Vast.ai, ElevenLabs API 키의 서버 전용 저장
@@ -66,6 +68,9 @@ LocalWeb의 기본 실행 방식이다. 저장소 최상위에서 실행한다.
 ```powershell
 docker compose -f "CI/CD/LocalWeb/compose.yaml" up --build -d
 ```
+
+첫 빌드에서는 Unity Editor와 WebGL 모듈을 내려받으므로 약 7.5GB 이상의 네트워크 다운로드와
+20GB 이상의 Docker 저장공간이 필요할 수 있다. 이후 실행은 Docker 레이어 캐시를 재사용한다.
 
 브라우저:
 
@@ -156,18 +161,55 @@ uv run --locked python -m uvicorn --app-dir "CI/CD/LocalWeb" app:app `
 
 실행을 끝낼 때는 터미널에서 `Ctrl+C`를 누른다.
 
+### Docker Unity 라이선스
+
+이미지에는 프로젝트와 같은 버전인 Unity `6000.0.71f1` Editor, WebGL Build Support,
+Unity CLI와 Xvfb 가상 디스플레이가 포함된다. Unity 라이선스는 이미지나 Git에 포함하지 않고
+다음 Volume에만 저장한다.
+
+```text
+main-flow-chart-unity-license
+└─ /home/mainflow/.local/share/unity3d/Unity/Unity_lic.ulf
+```
+
+Unity Personal을 사용하는 개인 개발 환경에서는 컨테이너를 시작한 다음 로그인과 라이선스
+활성화를 한 번 수행한다. `unity auth login`이 출력한 주소를 호스트 브라우저에서 열어
+로그인을 완료한다.
+
+```powershell
+docker compose -f "CI/CD/LocalWeb/compose.yaml" exec local-web unity auth login
+docker compose -f "CI/CD/LocalWeb/compose.yaml" exec local-web `
+  unity license activate --personal --accept-eula
+docker compose -f "CI/CD/LocalWeb/compose.yaml" exec local-web `
+  unity license status --format json
+```
+
+조직에서 발급받은 `.ulf` 파일이 있다면 값이나 파일 내용을 로그에 출력하지 말고 제공된
+스크립트로 가져온다.
+
+```powershell
+& "CI/CD/LocalWeb/ImportUnityLicense.ps1" `
+  -LicensePath "C:\secure\Unity_lic.ulf"
+```
+
+`docker compose ... down`은 Unity 로그인과 라이선스 Volume을 보존한다. `down -v`는 Codex
+인증과 Unity 인증·라이선스 Volume을 모두 삭제하므로 다시 활성화해야 한다. 라이선스 파일은
+계정 자격 증명처럼 취급하며 Git에 추가하거나 팀 채팅에 첨부하지 않는다.
+
 ### WebGL Preview 사전 조건
 
-Preview는 생성된 Unity 프로젝트를 실제 WebGL 플레이어로 빌드한다. LocalWeb을 실행하는
-컴퓨터에 다음 항목이 필요하다.
+Preview는 생성된 Unity 프로젝트를 실제 WebGL 플레이어로 빌드한다. Docker 실행에서는
+이미지에 다음 항목이 포함된다.
 
 1. Unity Editor
 2. 같은 Editor 버전의 **WebGL Build Support** 모듈
 3. 해당 컴퓨터에서 활성화된 Unity 라이선스
 
-Editor를 자동으로 찾지 못하면 LocalWeb 서버를 시작한 PowerShell에서 경로를 지정한다.
-프로젝트 버전의 Editor에 WebGL 모듈이 없고 다른 설치 Editor에 모듈이 있으면, 명시적인
-`UNITY_EDITOR_PATH`가 없는 경우 WebGL 모듈이 있는 최신 Editor를 자동으로 사용한다.
+Docker Compose는 `UNITY_EDITOR_PATH=/opt/unity/Editor/Unity`를 자동 설정한다. 직접 Python
+실행 방식을 사용할 때 Editor를 자동으로 찾지 못하면 LocalWeb 서버를 시작한 PowerShell에서
+경로를 지정한다. 프로젝트 버전의 Editor에 WebGL 모듈이 없고 다른 설치 Editor에 모듈이
+있으면, 명시적인 `UNITY_EDITOR_PATH`가 없는 경우 WebGL 모듈이 있는 최신 Editor를 자동으로
+사용한다.
 
 ```powershell
 $env:UNITY_EDITOR_PATH = "C:\Program Files\Unity\Hub\Editor\6000.3.20f1\Editor\Unity.exe"
@@ -176,30 +218,30 @@ uv run --locked python -m uvicorn --app-dir "CI/CD/LocalWeb" app:app `
   --host 127.0.0.1 --port 8000 --reload
 ```
 
-현재 Linux 기반 LocalWeb Docker 이미지에는 Unity Editor와 라이선스가 포함되어 있지 않다.
-따라서 Docker에서 일반 생성 기능은 사용할 수 있지만 WebGL Preview 빌드는 실패 사유를
-로그에 표시한다. Preview까지 사용하려면 위처럼 Windows 호스트에서 LocalWeb을 직접
-실행하거나, 별도의 Unity Build Server/라이선스가 포함된 실행 환경을 연결해야 한다.
+Editor와 WebGL 모듈은 이미지에 포함되지만 라이선스 자체는 사용자 또는 조직마다 다르므로
+포함하지 않는다. 위의 라이선스 활성화가 끝난 뒤에 컴파일, Play Mode 테스트, 화면 캡처와
+WebGL Preview가 Docker 안에서 실행된다.
 
 ## 사용 순서
 
-1. Docker로 LocalWeb을 시작하고 `Codex 연결`에서 로그인 상태를 확인한다.
-2. Codex CLI 구현 방식을 사용할 경우 `Device Code로 로그인`을 완료한다.
-3. `기능별 AI 설정`의 `설정 펼치기`를 누르고 각 역할의 Provider와 Model을 고른다.
-4. API Provider를 선택했다면 `API 인증 정보`에 해당 키를 입력한다.
-5. `설정 저장`을 누른다.
-6. 이미지 스타일, 분위기, 장르, 시점, Condition을 입력한다.
-7. `Generate` 또는 `test-Generate`를 누른다.
-8. 로그에서 Condition 분석 진행을 확인한다.
-9. `조합 예정 Feature`에서 출처를 확인한다.
+1. Docker로 LocalWeb을 시작한다.
+2. 최초 한 번 Unity 로그인과 라이선스 활성화를 완료한다.
+3. `Codex 연결`에서 로그인 상태를 확인하고 `Device Code로 로그인`을 완료한다.
+4. `기능별 AI 설정`의 `설정 펼치기`를 누르고 각 역할의 Provider와 Model을 고른다.
+5. API Provider를 선택했다면 `API 인증 정보`에 해당 키를 입력한다.
+6. `설정 저장`을 누른다.
+7. 이미지 스타일, 분위기, 장르, 시점, Condition을 입력한다.
+8. `Generate` 또는 `test-Generate`를 누른다.
+9. 로그에서 Condition 분석 진행을 확인한다.
+10. `조합 예정 Feature`에서 출처를 확인한다.
    - `사용자 요청`: Condition에서 직접 추출
    - `요청 의존`: 요청 기능이 동작하기 위한 선행 기능
    - `장르 필수`: 선택한 장르의 기본 플레이에 필요한 기능
-10. 목록이 맞으면 Confirm, 다시 분석하려면 Reject를 누른다.
-11. 완료 또는 실패까지 하단 로그를 확인한다.
-12. 생성 성공 후 WebGL 빌드가 끝나면 `Preview 플레이`를 눌러 새 탭에서 게임을 실행한다.
+11. 목록이 맞으면 Confirm, 다시 분석하려면 Reject를 누른다.
+12. 완료 또는 실패까지 하단 로그를 확인한다.
+13. 생성 성공 후 WebGL 빌드가 끝나면 `Preview 플레이`를 눌러 새 탭에서 게임을 실행한다.
     빌드가 실패하거나 중단되면 같은 버튼으로 다시 빌드할 수 있다.
-13. 게임 검증이 실패했더라도 프로젝트 ID와 Unity 프로젝트가 남아 있으면
+14. 게임 검증이 실패했더라도 프로젝트 ID와 Unity 프로젝트가 남아 있으면
     `Preview 다시 빌드`를 눌러 현재 실패 상태의 게임을 직접 확인할 수 있다. 이 Preview는
     디버깅 편의 기능이며 실패한 검증 결과를 성공으로 바꾸지는 않는다.
 
@@ -258,6 +300,6 @@ OpenAPI 문서는 `http://127.0.0.1:8000/docs`에서 확인한다.
 - 동시에 여러 생성 작업을 실행할 수 있지만 LocalAI가 모델을 교체 서빙한다면 GPU 메모리와
   응답 시간이 크게 증가할 수 있다.
 - `test-Generate`의 Visual Checklist는 Unity 화면 캡처를 사용하므로 그래픽 렌더링 가능한
-  Unity 실행 환경이 필요하다.
+  Unity 실행 환경이 필요하다. Docker 구성은 이를 위해 Xvfb 가상 디스플레이를 자동 실행한다.
 - WebGL Preview 빌드 중에는 같은 Unity 프로젝트를 Editor로 열 수 없다. LocalWeb은 자동
   Editor 실행을 끄고 Preview가 끝난 뒤 `Unity Editor 열기` 버튼을 활성화한다.

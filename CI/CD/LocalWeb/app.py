@@ -25,7 +25,7 @@ codex_auth_manager = CodexAuthManager()
 app = FastAPI(
     title="MainFlowChart Local Web",
     description="Local-only web shell for the MainFlowChart workflow.",
-    version="1.3.1",
+    version="1.4.0",
 )
 app.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
 

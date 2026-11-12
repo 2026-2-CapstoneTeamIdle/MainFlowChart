@@ -168,6 +168,7 @@ def test_runner_uses_scoped_workspace_and_does_not_forward_api_keys(
     command = captured["command"]
     assert command[command.index("--cd") + 1] == str(project.resolve())
     assert command[command.index("--sandbox") + 1] == "workspace-write"
+    assert "--skip-git-repo-check" in command
     assert "--json" in command
     assert command[command.index("--model") + 1] == "gpt-test"
     assert "model_reasoning_effort=high" in command

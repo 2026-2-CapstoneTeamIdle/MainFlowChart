@@ -66,6 +66,7 @@ class CodexCliRunner:
             str(root),
             "--sandbox",
             sandbox,
+            "--skip-git-repo-check",
             "--json",
             "--ignore-rules",
             "--output-schema",

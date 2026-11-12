@@ -8,6 +8,7 @@ services:
       dockerfile: CI/CD/LocalWeb/Dockerfile
       args:
         CODEX_CLI_VERSION: ${CODEX_CLI_VERSION:-0.167.2}
+        UNITY_EDITOR_IMAGE: ${UNITY_EDITOR_IMAGE:-unityci/editor:ubuntu-6000.0.71f1-webgl-3}
     image: main-flow-chart-local-web:local
     environment:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -23,8 +24,13 @@ services:
       MAINFLOW_WORKSPACE: /app/workspace
       MAINFLOW_CODEX_CLI_PATH: /usr/local/bin/codex
       CODEX_HOME: /home/mainflow/.codex
+      UNITY_EDITOR_PATH: /opt/unity/Editor/Unity
+      UNITY_CLI_HOME: /opt/unity-cli
+      UNITY_NO_CONSENT_PROMPT: "1"
+      DISPLAY: :99
       HOME: /home/mainflow
       PYTHONUNBUFFERED: "1"
+    shm_size: "2gb"
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
@@ -34,7 +40,22 @@ services:
       - type: volume
         source: codex-auth
         target: /home/mainflow/.codex
+      - type: volume
+        source: unity-license
+        target: /home/mainflow/.local/share/unity3d
+      - type: volume
+        source: unity-config
+        target: /home/mainflow/.config
+      - type: volume
+        source: unity-cache
+        target: /home/mainflow/.cache/unity3d
 
 volumes:
   codex-auth:
     name: main-flow-chart-codex-auth
+  unity-license:
+    name: main-flow-chart-unity-license
+  unity-config:
+    name: main-flow-chart-unity-config
+  unity-cache:
+    name: main-flow-chart-unity-cache
