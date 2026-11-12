@@ -7,6 +7,8 @@ from datetime import date
 from pathlib import Path
 from typing import cast
 
+from game_pipeline.asset_specs import build_sound_generation_spec, classify_sound_cue
+from game_pipeline.design_catalog import GENRE_PRESETS
 from game_pipeline.unity_asset_applicator import UnityAssetApplicator
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
@@ -213,6 +215,7 @@ class UnityAssetApplicatorTest(unittest.TestCase):
         self.assertTrue(bgm["loop"])
         self.assertEqual(bgm["unity_load_type"], "streaming")
         self.assertEqual(bgm["mixer_group"], "Music")
+        self.assertEqual(bgm["audio_cue"], "scene_start")
         rebuild_request = self.manager.resolve_project_path(
             self.project_id,
             "game/unity_project/Assets/GameTemplate/Generated/GenerationRequest.json",
@@ -276,6 +279,44 @@ class UnityAssetApplicatorTest(unittest.TestCase):
             "Image application is disabled",
             " ".join(skipped_result.manifest["warnings"]),
         )
+
+    def test_sound_cues_follow_purpose_and_description(self) -> None:
+        cases = {
+            ("배경음악", "스테이지 반복 배경음악"): "scene_start",
+            ("배경음악", "승리 엔딩 음악"): "game_clear",
+            ("배경음악", "패배 시 게임오버 음악"): "game_over",
+            ("환경음", "숲 바람 소리"): "scene_start",
+            ("점프", "짧은 점프 효과음"): "jump",
+            ("공격", "타워 발사 효과음"): "attack",
+            ("피격", "적의 공격에 맞았을 때"): "player_hit",
+            ("효과음", "적 피격 효과음"): "enemy_hit",
+            ("효과음", "player hurt"): "player_hit",
+            # Partial-word matches that used to misfire (PR review).
+            ("효과음", "타워 build 사운드"): "",
+            ("효과음", "guitar 스트럼"): "",
+            ("효과음", "clear하고 맑은 종소리"): "",
+            ("효과음", "장애물을 피해 이동하는 소리"): "",
+            ("효과음", "적 사망 효과음"): "",
+            ("효과음", "stage clear fanfare"): "game_clear",
+            ("카드 사용", "카드를 사용할 때의 효과음"): "card_play",
+            ("UI", "선택지 결정 효과음"): "ui",
+            ("행동", "행동 완료 효과음"): "activity",
+            ("아이템", "코인 획득"): "pickup",
+            ("효과음", "알 수 없는 소리"): "",
+        }
+        for (purpose, description), expected in cases.items():
+            kind = build_sound_generation_spec(purpose, description)["kind"]
+            with self.subTest(purpose=purpose, description=description):
+                self.assertEqual(classify_sound_cue(purpose, description, kind), expected)
+
+    def test_every_catalog_sound_has_a_cue(self) -> None:
+        for genre, profile in GENRE_PRESETS.items():
+            for item in profile["asset_requirements"]:
+                if item["asset_type"] != "sound":
+                    continue
+                kind = build_sound_generation_spec(item["purpose"], item["description"])["kind"]
+                with self.subTest(genre=genre, asset_id=item["asset_id"]):
+                    self.assertTrue(classify_sound_cue(item["purpose"], item["description"], kind))
 
     @staticmethod
     def _image_item(asset_id: str, required: bool) -> dict[str, object]:

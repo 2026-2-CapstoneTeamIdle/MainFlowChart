@@ -18,7 +18,10 @@ namespace TeamIdle.GameTemplate.TowerDefense
             Lives = Mathf.Max(0, Lives - Mathf.Max(0, amount));
             LivesChanged?.Invoke(Lives);
             if (Lives == 0)
+            {
                 Defeated?.Invoke();
+                GameAudioCues.Raise(GameAudioCues.GameOver);
+            }
         }
 
         protected override void OnInitialize(GameContext context)

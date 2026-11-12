@@ -193,6 +193,7 @@ namespace TeamIdle.GameTemplate.Card
             applyEffect?.Invoke(card);
             deck.Discard(card);
             CardPlayed?.Invoke(card);
+            GameAudioCues.Raise(GameAudioCues.CardPlay);
             return true;
         }
 

@@ -679,6 +679,7 @@ class AssetBindingEntry(TypedDict):
     unity_load_type: str
     mixer_group: str
     spatial_blend: float
+    audio_cue: str  # gameplay event that plays a sound; empty for images
 
 
 class AssetBindingManifest(TypedDict):

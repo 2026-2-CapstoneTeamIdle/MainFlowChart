@@ -31,6 +31,7 @@ namespace TeamIdle.GameTemplate.Common
             TotalCount += amount;
             Persist(itemId, next);
             Collected?.Invoke(itemId, amount, next);
+            GameAudioCues.Raise(GameAudioCues.Pickup);
             Changed?.Invoke(itemId, next);
             return true;
         }

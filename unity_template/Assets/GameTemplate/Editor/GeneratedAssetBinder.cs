@@ -35,6 +35,7 @@ namespace TeamIdle.GameTemplate.Editor
             public string unity_load_type = string.Empty;
             public string mixer_group = string.Empty;
             public float spatial_blend;
+            public string audio_cue = string.Empty;
         }
 
         [Serializable]
@@ -499,7 +500,7 @@ namespace TeamIdle.GameTemplate.Editor
             var audioRoot = generatedRoot.Find("Audio");
             if (audioRoot == null)
             {
-                audioRoot = new GameObject("Audio").transform;
+                audioRoot = new GameObject("Audio", typeof(GeneratedAudioCuePlayer)).transform;
                 audioRoot.SetParent(generatedRoot, false);
             }
             var source = new GameObject(
@@ -510,7 +511,18 @@ namespace TeamIdle.GameTemplate.Editor
             source.clip = clip;
             source.loop = entry.loop;
             source.spatialBlend = Mathf.Clamp01(entry.spatial_blend);
-            source.playOnAwake = entry.kind == "bgm" || entry.kind == "ambience";
+            // GeneratedAudioCuePlayer starts each sound on its gameplay cue instead of on awake.
+            source.playOnAwake = false;
+            if (!string.IsNullOrEmpty(entry.audio_cue))
+            {
+                audioRoot
+                    .GetComponent<GeneratedAudioCuePlayer>()
+                    .AddBinding(
+                        entry.audio_cue,
+                        source,
+                        entry.kind == "bgm" || entry.kind == "ambience"
+                    );
+            }
             if (!string.IsNullOrWhiteSpace(entry.mixer_group))
             {
                 report.warnings.Add(

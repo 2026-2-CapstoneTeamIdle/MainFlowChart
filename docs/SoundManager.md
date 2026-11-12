@@ -72,7 +72,25 @@ uv run --locked python -m mainflow.run_flow --image-style "Pixel Art" --mood-sty
 uv run --locked python -m unittest tests.test_sound_generation tests.test_sound_validation -v
 ```
 
-## 5. 현재 한계
+## 5. Unity 재생 연결
+
+`apply_assets_to_game`은 요청서의 `purpose`/`description`으로 각 사운드의 `audio_cue`를 정해 `AssetBindingManifest.json`에 기록한다(`game_pipeline/asset_specs.py`의 `SOUND_CUE_KEYWORDS`). Unity 빌드 시 `GeneratedAssetBinder`가 `GeneratedGame/Audio`에 `GeneratedAudioCuePlayer`를 붙이고, 게임플레이 코드가 `GameAudioCues.Raise(...)`로 큐를 발생시키면 해당 사운드를 재생한다.
+
+| 큐 | 발생 지점 |
+|---|---|
+| `scene_start` | 씬 시작 (일반 BGM·환경음) |
+| `game_clear` / `game_over` | 골 도달 / 플레이어 사망·기지 파괴 (엔딩·승리·패배 음악은 이때 기존 BGM을 멈추고 재생) |
+| `player_hit` / `enemy_hit` | `Player` 태그 오브젝트의 체력 감소 / 그 외 오브젝트의 체력 감소 |
+| `jump`, `attack`, `pickup`, `level_up`, `checkpoint` | 점프, 투사체 발사, 아이템·경험치 획득, 레벨업, 체크포인트 |
+| `card_play`, `ui`, `activity` | 카드 사용, 선택지·업그레이드 선택, 육성 행동 완료 |
+
+맞는 큐가 없는 효과음은 재생되지 않고 매니페스트 `warnings`에 남는다.
+
+같은 큐에 사운드가 여러 개 연결되면 음악은 첫 번째 트랙 하나만 재생하고(다른 음악은 모두 정지), 효과음은 매번 하나를 무작위로 골라 재생한다.
+
+큐 분류는 키워드 매칭이다. 영문 키워드는 단어 단위로만 맞추고(`ui`가 `guitar`·`build`에 걸리지 않음), `피해`·`사망`·`clear`처럼 뜻이 여러 개인 단어는 `피해를 입`·`플레이어 사망`·`stage clear` 같은 구문으로만 맞춘다.
+
+## 6. 현재 한계
 
 - `validate_sound`는 `sound_pipeline/SoundValidationPlan.md`의 G1(기술 QC)·G2(DSP 보정)·중복 검사·판정까지 구현돼 있다 (`sound_pipeline/validation.py`). 결과는 `validation/sound_validation_result.json`·`validation/sound_profile.json`, 보정본은 `generated/sounds/processed/<asset>.wav`에 저장한다. `mp3_*` 형식을 쓸 때만 MP3 디코딩에 ffmpeg가 필요하다(기본 PCM/WAV는 필요 없음). Docker 이미지에는 포함돼 있지만 Windows에서 `uv run`으로 실행하면 직접 설치해 PATH에 넣어야 한다 (예: `winget install Gyan.FFmpeg`). ffmpeg가 없으면 MP3 에셋은 결함으로 보지 않고 `sound-validator-unavailable` issue와 함께 REVIEW로 둔다.
 - G3(내용 적합성 모델)·후보 선택·G5 믹스 테스트·라우드니스 위계는 아직 없다. `apply_assets_to_game`도 아직 검증 결과와 보정본을 반영하지 않는다.

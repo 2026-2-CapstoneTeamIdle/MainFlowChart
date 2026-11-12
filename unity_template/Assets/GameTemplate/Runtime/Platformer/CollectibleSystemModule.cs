@@ -31,6 +31,7 @@ namespace TeamIdle.GameTemplate.Platformer
             CollectedCount++;
             Score = Mathf.Max(0, Score + amount);
             Collected?.Invoke(CollectedCount, requiredCount);
+            GameAudioCues.Raise(GameAudioCues.Pickup);
         }
 
         protected override void OnInitialize(GameContext context)
