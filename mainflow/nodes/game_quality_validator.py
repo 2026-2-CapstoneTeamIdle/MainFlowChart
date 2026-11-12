@@ -150,6 +150,7 @@ def _repair_and_review_quality(
         review = run_claude_code_quality_review
 
     report = initial_report
+    previous_repair_error = ""
     record("audit_00", report)
     for attempt in range(1, max_repairs + 1):
         actionable = [
@@ -176,6 +177,19 @@ def _repair_and_review_quality(
         ]
         if not actionable:
             break
+        if previous_repair_error:
+            actionable.append(
+                {
+                    "severity": "error",
+                    "category": "integration",
+                    "message": (
+                        "The previous quality patch was rolled back after Unity validation. "
+                        "Use a different, compile-safe implementation and first resolve this "
+                        f"failure: {previous_repair_error}"
+                    ),
+                    "evidence": [],
+                }
+            )
         log(f"독립 품질 평가의 기능 누락을 CLI Agent가 수정합니다 ({attempt}/{max_repairs}).")
         try:
             outcome = harness.repair_quality_findings(
@@ -198,18 +212,19 @@ def _repair_and_review_quality(
             if report.get("status") == "passed":
                 return report
         except Exception as error:  # noqa: BLE001 - preserve the original audit and project
-            record(f"repair_error_{attempt:02d}", {"error": f"{type(error).__name__}: {error}"})
+            previous_repair_error = f"{type(error).__name__}: {error}"
+            record(f"repair_error_{attempt:02d}", {"error": previous_repair_error})
             report = cast(
                 GameValidatorAIResult,
                 {
                     **report,
                     "limitations": [
                         *report.get("limitations", []),
-                        f"Quality repair {attempt} could not pass Unity: {type(error).__name__}: {error}",
+                        f"Quality repair {attempt} could not pass Unity: {previous_repair_error}",
                     ],
                 },
             )
-            break
+            continue
     return report
 
 

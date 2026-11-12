@@ -143,6 +143,53 @@ class GameQualityValidatorAITest(unittest.TestCase):
             review.call_args.kwargs["evidence"]["post_quality_unity_validation"]["status"], "passed"
         )
 
+    def test_quality_repair_uses_second_attempt_after_unity_rollback(self) -> None:
+        manager = MagicMock()
+        manager.ensure_project.return_value = Path("C:/synthetic/workspace")
+        report = {
+            "status": "needs_revision",
+            "findings": [
+                {
+                    "severity": "error",
+                    "category": "gameplay",
+                    "message": "Ranged enemy behavior is missing",
+                    "evidence": [
+                        "game/unity_project/Assets/GameTemplate/Runtime/TowerDefense/Enemy.cs"
+                    ],
+                }
+            ],
+            "limitations": [],
+        }
+        evidence = {
+            "game_logic_draft": {"status": "generated"},
+            "parsed_request": {"condition": "Defend the base"},
+        }
+        harness = MagicMock()
+        harness.repair_quality_findings.side_effect = [
+            RuntimeError("error CS0103: helper type was not found"),
+            SimpleNamespace(status="passed", checks=[], issues=[], unity_log="passed"),
+        ]
+        with (
+            patch.dict(
+                os.environ,
+                {"MAINFLOW_GAME_BUILDER": "codex_cli", "MAINFLOW_GAME_QUALITY_REPAIRS": "2"},
+            ),
+            patch("game_pipeline.codex_cli.CodexHarnessSettings.from_environment"),
+            patch("game_pipeline.codex_cli.CodexGameHarness", return_value=harness),
+            patch(
+                "mainflow.nodes.game_quality_validator.run_codex_quality_review",
+                return_value={"status": "passed", "findings": []},
+            ),
+        ):
+            result = _repair_and_review_quality("test-project", manager, evidence, report)
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(harness.repair_quality_findings.call_count, 2)
+        second_findings = harness.repair_quality_findings.call_args_list[1].kwargs["findings"]
+        self.assertTrue(
+            any("previous quality patch" in finding["message"] for finding in second_findings)
+        )
+
     def test_independent_validator_uses_project_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             workspace = Path(temporary_directory) / "workspace"

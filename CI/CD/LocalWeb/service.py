@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -278,6 +279,9 @@ class WorkflowJob:
     preview_error: str | None = None
     preview_cancel_requested: bool = False
     process: subprocess.Popen[str] | None = None
+    progress_percent: int = 2
+    progress_label: str = "Feature 분석 준비"
+    progress_started_at: float = field(default_factory=time.monotonic, repr=False)
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     def append_log(self, value: str) -> None:
@@ -286,13 +290,63 @@ class WorkflowJob:
             return
         with self.lock:
             self.logs.append(line)
+            self._update_progress(line)
             if len(self.logs) > MAX_LOG_LINES:
                 del self.logs[: len(self.logs) - MAX_LOG_LINES]
             with (self.job_root / "workflow.log").open("a", encoding="utf-8") as file:
                 file.write(line + "\n")
 
+    def reset_progress_clock(self) -> None:
+        with self.lock:
+            self.progress_started_at = time.monotonic()
+
+    def _update_progress(self, line: str) -> None:
+        milestones = (
+            ("게임 생성 파이프라인이 완료", 100, "게임 생성 완료"),
+            ("독립 Validator AI", 98, "최종 품질 평가"),
+            ("최종 에셋과 Unity 실행 증거", 96, "최종 요구사항 검증"),
+            ("목표 화면과 Unity 캡처", 92, "시각 품질 검증"),
+            ("실제 이미지 백엔드가 없어 목표 이미지", 92, "시각 검증 정리"),
+            ("검증을 통과한 이미지/사운드", 88, "에셋 적용"),
+            ("사운드 에셋을 검증", 84, "사운드 검증"),
+            ("이미지 에셋을 검증", 82, "이미지 검증"),
+            ("에셋 검증서를 생성", 78, "에셋 검증 기준 생성"),
+            ("사운드 에셋", 74, "사운드 생성"),
+            ("임시 에셋을 사용해", 72, "게임 구조 검증"),
+            ("이미지 에셋을 생성", 68, "이미지 생성"),
+            ("Unity 컴파일·Play Mode", 58, "Unity 컴파일·실행 검증"),
+            ("[AGENT][finalize]", 55, "Agent 구현 결과 정리"),
+            ("[AGENT][validate]", 52, "Agent 자체 검토"),
+            ("[AGENT][edit]", 47, "Unity 코드 작성·수정"),
+            ("[AGENT][plan]", 42, "구현 계획 수립"),
+            ("[AGENT][context]", 36, "Unity 프로젝트 문맥 분석"),
+            ("설치된 Codex CLI", 30, "Codex CLI 구현"),
+            ("설치된 Claude Code", 30, "Claude Code 구현"),
+            ("콘텐츠 변형 시드", 27, "게임 구성 구체화"),
+            ("게임 로직을 설계", 24, "게임 로직 설계"),
+            ("Feature 구성을 승인", 18, "게임 생성 준비"),
+            ("Feature 분석이 끝났", 15, "Feature 승인 대기"),
+            ("Feature 분석을 시작", 3, "Feature 분석"),
+        )
+        for marker, percent, label in milestones:
+            if marker in line:
+                if percent >= self.progress_percent:
+                    self.progress_percent = percent
+                    self.progress_label = label
+                return
+
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
+            elapsed = max(0, int(time.monotonic() - self.progress_started_at))
+            if self.status in {"completed", "failed", "cancelled"}:
+                estimated_total = elapsed
+            elif self.status == "awaiting_confirmation":
+                estimated_total = None
+            elif self.status == "analyzing_features":
+                estimated_total = max(60, int(elapsed / max(self.progress_percent / 15, 0.05)))
+            else:
+                projected = int(elapsed / max(self.progress_percent / 100, 0.05))
+                estimated_total = max(1200, elapsed + 60, projected)
             return {
                 "job_id": self.job_id,
                 "mode": self.mode,
@@ -307,6 +361,10 @@ class WorkflowJob:
                 "preview_url": self.preview_url,
                 "preview_error": self.preview_error,
                 "logs": list(self.logs),
+                "progress_percent": self.progress_percent,
+                "progress_label": self.progress_label,
+                "elapsed_seconds": elapsed,
+                "estimated_total_seconds": estimated_total,
             }
 
 
@@ -486,6 +544,9 @@ class WorkflowJobManager:
                 raise ValueError("Feature 확인 대기 상태에서만 Confirm할 수 있습니다.")
             job.status = "running"
             job.stage = "workflow"
+            job.progress_percent = 18
+            job.progress_label = "게임 생성 준비"
+            job.progress_started_at = time.monotonic()
         job.append_log("[WEB] Feature 구성을 승인했습니다. 게임 생성 단계를 계속합니다.")
         thread = threading.Thread(target=self._run_generation, args=(job,), daemon=True)
         thread.start()
@@ -501,6 +562,9 @@ class WorkflowJobManager:
             job.features = []
             job.error = None
             job.cancel_requested = False
+            job.progress_percent = 3
+            job.progress_label = "Feature 재분석"
+            job.progress_started_at = time.monotonic()
         job.append_log("[WEB] Feature 구성을 거절했습니다. Condition 분석을 다시 실행합니다.")
         self._start_preview(job)
         return job

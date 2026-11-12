@@ -72,6 +72,24 @@ class GameDesignTest(unittest.TestCase):
         self.assertGreaterEqual(counts["checkpoint"], 2)
         self.assertIn("stage_result", plan["ui_screens"])
 
+    def test_selected_modules_include_catalog_modules_required_by_plan(self) -> None:
+        spec = normalize_game_spec(
+            "플랫포머",
+            {
+                "mechanics": [
+                    "platformer_movement",
+                    "health_damage",
+                    "air_dash",
+                    "game_timer",
+                ]
+            },
+        )
+
+        design = build_game_logic_design(spec)
+
+        self.assertIn("collectible_system", design["selected_modules"])
+        self.assertIn("goal_system", design["selected_modules"])
+
         design_v2 = design["design_v2"]
         self.assertEqual(
             set(design_v2),

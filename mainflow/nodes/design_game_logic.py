@@ -33,6 +33,7 @@ from game_pipeline.feature_contract import build_feature_contract
 from game_pipeline.project_context_index import build_project_context_index
 from game_pipeline.repair_loop import validate_and_repair
 from game_pipeline.scene_visual_assets import with_scene_visual_assets
+from game_pipeline.presentation_sound_assets import with_presentation_sound_assets
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -99,6 +100,23 @@ def design_game_logic_node(
             if item["asset_id"] not in preset_ids
         ]
         log(f"레벨에 배치된 오브젝트 이미지 요청을 추가합니다: {', '.join(added_ids)}")
+    presentation_game_spec = with_presentation_sound_assets(
+        game_spec, design["design_v2"]["presentation_plan"]
+    )
+    if presentation_game_spec is not game_spec:
+        previous_ids = {item["asset_id"] for item in game_spec["asset_requirements"]}
+        game_spec = presentation_game_spec
+        design = build_game_logic_design(
+            game_spec,
+            design_intent=request["condition"],
+            variation_seed=variation_seed,
+        )
+        added_ids = [
+            item["asset_id"]
+            for item in game_spec["asset_requirements"]
+            if item["asset_id"] not in previous_ids
+        ]
+        log(f"UI·게임 피드백 효과음 요청을 추가합니다: {', '.join(added_ids)}")
     unity_generator = UnityProjectGenerator()
     image_request = unity_generator.build_asset_request(
         design,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -30,7 +31,12 @@ from game_pipeline.codex_cli.harness import (
     prepare_design_for_codex,
 )
 from game_pipeline.codex_cli.preflight import CodexPreflightResult
-from game_pipeline.codex_cli.runner import CodexCliResult, CodexCliRunner
+from game_pipeline.codex_cli.runner import (
+    CodexCliResult,
+    CodexCliRunner,
+    _AgentProgressReporter,
+    _stream_codex_process,
+)
 from game_pipeline.implementation_task_planner import build_implementation_tasks
 from game_pipeline.unity_project_validator import UnityValidationOutcome
 
@@ -109,7 +115,7 @@ def test_quality_repair_keeps_only_unity_validated_source(
                 == "passed"
             )
         else:
-            with pytest.raises(RuntimeError, match="regressed Unity validation"):
+            with pytest.raises(RuntimeError, match="Unity validation failed|same Unity failure"):
                 harness.repair_quality_findings(
                     project_root=project,
                     draft={"status": "generated"},
@@ -122,6 +128,7 @@ def test_quality_repair_keeps_only_unity_validated_source(
         "repaired" if unity_status == "passed" else "original"
     )
     assert asset.read_bytes() == b"validated-image"
+    assert runner.run.call_count == (1 if unity_status == "passed" else 3)
 
 
 def test_runner_uses_scoped_workspace_and_does_not_forward_api_keys(
@@ -133,7 +140,8 @@ def test_runner_uses_scoped_workspace_and_does_not_forward_api_keys(
     executable.write_bytes(b"")
     captured: dict[str, object] = {}
 
-    def fake_run(command, **kwargs):
+    def fake_run(**kwargs):
+        command = kwargs["command"]
         captured["command"] = command
         captured["kwargs"] = kwargs
         answer = Path(command[command.index("--output-last-message") + 1])
@@ -147,7 +155,7 @@ def test_runner_uses_scoped_workspace_and_does_not_forward_api_keys(
 
     monkeypatch.setenv("OPENAI_API_KEY", "must-not-leak")
     monkeypatch.setenv("GEMINI_API_KEY", "must-not-leak")
-    with patch("game_pipeline.codex_cli.runner.subprocess.run", side_effect=fake_run):
+    with patch("game_pipeline.codex_cli.runner._stream_codex_process", side_effect=fake_run):
         result = CodexCliRunner(_settings(executable)).run(
             project_root=project,
             prompt="implement",
@@ -161,7 +169,7 @@ def test_runner_uses_scoped_workspace_and_does_not_forward_api_keys(
     assert "--json" in command
     assert command[command.index("--model") + 1] == "gpt-test"
     assert "model_reasoning_effort=high" in command
-    environment = captured["kwargs"]["env"]
+    environment = captured["kwargs"]["environment"]
     assert "OPENAI_API_KEY" not in environment
     assert "GEMINI_API_KEY" not in environment
     assert result.final_response == _completion()
@@ -175,7 +183,7 @@ def test_runner_rejects_non_jsonl_output(tmp_path: Path) -> None:
     executable.write_bytes(b"")
     completed = subprocess.CompletedProcess([], 0, stdout="not-json\n", stderr="")
     with (
-        patch("game_pipeline.codex_cli.runner.subprocess.run", return_value=completed),
+        patch("game_pipeline.codex_cli.runner._stream_codex_process", return_value=completed),
         pytest.raises(RuntimeError, match="stdout was not JSONL"),
     ):
         CodexCliRunner(_settings(executable)).run(
@@ -184,6 +192,65 @@ def test_runner_rejects_non_jsonl_output(tmp_path: Path) -> None:
             schema=COMPLETION_SCHEMA,
             audit_directory=tmp_path / "audit",
         )
+
+
+def test_streaming_runner_emits_curated_progress_and_keeps_jsonl(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    script = (
+        "import json,sys; sys.stdin.read(); "
+        "print(json.dumps({'type':'turn.started'}), flush=True); "
+        "print(json.dumps({'type':'item.completed','item':{'type':'file_change'}}), flush=True); "
+        "print(json.dumps({'type':'turn.completed'}), flush=True)"
+    )
+    events_path = tmp_path / "events.jsonl"
+    stderr_path = tmp_path / "stderr.log"
+
+    result = _stream_codex_process(
+        command=[sys.executable, "-c", script],
+        prompt="implement",
+        cwd=tmp_path,
+        environment=dict(os.environ),
+        timeout_seconds=10,
+        events_path=events_path,
+        stderr_path=stderr_path,
+    )
+
+    output = capsys.readouterr().out
+    assert result.returncode == 0
+    assert "[AGENT][context]" in output
+    assert "[AGENT][edit]" in output
+    assert "[AGENT][finalize]" in output
+    assert len(events_path.read_text(encoding="utf-8").splitlines()) == 3
+
+
+def test_progress_reporter_does_not_treat_unity_paths_as_validation(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    reporter = _AgentProgressReporter()
+    reporter.emit("context", "start")
+    reporter.observe(
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "command": "rg -n Goal Assets/GameTemplate/Runtime/UnityProject.cs",
+            },
+        }
+    )
+    reporter.observe(
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "command": "apply_patch tests/UnityRuntimeTests.cs",
+            },
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert "[AGENT][edit]" in output
+    assert "[AGENT][validate]" not in output
 
 
 def test_prepare_design_gives_harness_all_gameplay_mechanics() -> None:

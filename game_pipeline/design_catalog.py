@@ -519,6 +519,17 @@ def build_game_logic_design(
     unsupported = [
         mechanic for mechanic in game_spec["mechanics"] if mechanic not in MECHANIC_TO_MODULE
     ]
+    implementation_plan = build_implementation_plan(game_spec, unsupported)
+    known_catalog_modules = set(COMMON_MODULES) | set(MECHANIC_TO_MODULE.values())
+    planned_catalog_modules = _unique_strings(
+        [
+            module_id
+            for system in implementation_plan.get("systems", [])
+            for module_id in system.get("module_ids", [])
+            if module_id in known_catalog_modules
+        ]
+    )
+    selected_modules = _unique_strings(COMMON_MODULES + genre_modules + planned_catalog_modules)
     design_v2 = build_design_v2(game_spec, design_intent, variation_seed=variation_seed)
     validate_design_v2(design_v2)
     variation_id = (
@@ -535,10 +546,14 @@ def build_game_logic_design(
             "game_spec": game_spec,
             "common_modules": list(COMMON_MODULES),
             "genre_modules": genre_modules,
-            "selected_modules": _unique_strings(COMMON_MODULES + genre_modules),
+            # The implementation plan may require foundational catalog modules that the
+            # user's explicit mechanics did not mention (for example collectibles and a
+            # goal in a platformer). Keep the copied Unity scaffold consistent with that
+            # plan so host-owned configuration does not undo an agent repair later.
+            "selected_modules": selected_modules,
             "unsupported_mechanics": unsupported,
             "generated_modules": [],
-            "implementation_plan": build_implementation_plan(game_spec, unsupported),
+            "implementation_plan": implementation_plan,
             "implementation_tasks": {
                 "plan_version": "1.0.0",
                 "genre": game_spec["genre"],

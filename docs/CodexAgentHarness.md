@@ -41,6 +41,7 @@ $env:MAINFLOW_CODEX_TOTAL_TIMEOUT_SECONDS="7200"
 $env:MAINFLOW_CODEX_MAX_REPAIRS="6"
 $env:MAINFLOW_AGENT_POST_VALIDATION_REPAIRS="3"
 $env:MAINFLOW_GAME_QUALITY_REPAIRS="2"
+$env:MAINFLOW_GAME_QUALITY_UNITY_REPAIRS="2"
 ```
 
 ## 실행 경계
@@ -61,6 +62,10 @@ $env:MAINFLOW_GAME_QUALITY_REPAIRS="2"
 - 독립 품질 검수가 실제 기능 누락을 찾으면 근거 파일과 권고를 Codex에 전달한다. 수정 후
   Unity 컴파일·Play Mode를 다시 통과해야 다음 품질 검수를 진행하며, 실패한 변경은 복원한다.
   품질 수정은 기본 2회, `MAINFLOW_GAME_QUALITY_REPAIRS`로 0~3회까지 조정할 수 있다.
+  품질 수정에서 컴파일·런타임 오류가 생기면 변경 전체를 바로 폐기하지 않고 오류 로그를
+  같은 Agent에 다시 전달한다. 이 내부 수정 횟수는
+  `MAINFLOW_GAME_QUALITY_UNITY_REPAIRS`로 0~3회까지 조정한다. 내부 수정까지 실패하면
+  원본으로 복원한 뒤 다음 품질 수정 시도에 실패 원인을 함께 전달한다.
   placeholder 이미지 때문에 생략한 시각 검증은 별도 한계로 기록한다.
 
 ## UI 생성 기준

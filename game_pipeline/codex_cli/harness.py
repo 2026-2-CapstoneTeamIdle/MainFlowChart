@@ -385,6 +385,11 @@ design or validation JSON to conceal a missing implementation. Do not run Unity;
 will compile and execute Play Mode after your edits. Add focused Unity Test Framework
 PlayMode regression tests tagged `FeatureChecklist` for each repaired gameplay behavior;
 assert observable state transitions rather than checking that a class or method exists.
+Before adding a cross-file type reference, read the referenced class and its namespace and
+either import that namespace or use the fully-qualified type name. Put every new public Unity
+component in a filename-matched source file so Unity can serialize it. Treat authored normal
+gameplay duration separately from accelerated smoke-test time: preserve the requested runtime
+pacing while exposing deterministic state transitions that the host can test quickly.
 Return the required structured report.
 """
         try:
@@ -412,7 +417,22 @@ Return the required structured report.
                 {"status": outcome.status, "checks": outcome.checks, "issues": outcome.issues},
             )
             if outcome.status != "passed":
-                raise RuntimeError(f"Quality repair regressed Unity validation: {outcome.issues}")
+                try:
+                    unity_repairs = int(os.environ.get("MAINFLOW_GAME_QUALITY_UNITY_REPAIRS", "2"))
+                except ValueError as error:
+                    raise ValueError(
+                        "MAINFLOW_GAME_QUALITY_UNITY_REPAIRS must be an integer"
+                    ) from error
+                if not 0 <= unity_repairs <= 3:
+                    raise ValueError("MAINFLOW_GAME_QUALITY_UNITY_REPAIRS must be between 0 and 3")
+                outcome, _, _ = self._run_validation_repair_loop(
+                    project_root=project_root,
+                    draft=draft,
+                    request=request,
+                    phase=f"quality_repair_{iteration}",
+                    initial_outcome=outcome,
+                    max_repairs=unity_repairs,
+                )
             if os.environ.get("MAINFLOW_FEATURE_CHECKLIST_VALIDATION", "1") == "1":
                 from game_pipeline.dynamic_feature_checklist import load_generated_checklist
                 from game_pipeline.feature_checklist_validation import FeatureChecklistWorkflow
@@ -577,6 +597,19 @@ Return the required structured report.
             pending_baseline_outcome = outcome
             pending_baseline_evidence = evidence
             pending_baseline_severity = _failure_severity(outcome)
+            diagnostic_summary = _signature_diagnostics(outcome.unity_log)
+            failure_summary = (
+                diagnostic_summary[0]
+                if diagnostic_summary
+                else outcome.issues[0]
+                if outcome.issues
+                else "unknown Unity validation failure"
+            )
+            print(
+                f"[AGENT][repair] Unity 검증 오류 수정 {attempt + 1}/{repair_limit}: "
+                f"{failure_summary}",
+                flush=True,
+            )
             try:
                 repair = self.runner.run(
                     project_root=project_root,
@@ -906,6 +939,10 @@ point state, and gold deduction as one end-to-end pointer flow.
   may consume pointer input. Keep the build menu inactive until a build point is selected.
 If it reports `runtime.tower_spawn`, inspect `StartNextWave`, the wave timer, enemy creation,
 and the active scene; do not merely increase a timeout or suppress the scenario.
+When repairing a quality-audit patch, inspect namespaces and assembly boundaries for every new
+cross-file type. Add the correct `using` directive or fully qualify the type instead of deleting
+the repaired behavior. Keep normal five-minute (or user-requested) pacing in authored settings;
+accelerate only host test hooks and deterministic test scenarios.
 Do not launch Unity Editor or run Unity,
 Unity CLI/pipeline/MCP, or batch-mode commands; the host owns the next validation attempt. Return
 the required structured report.

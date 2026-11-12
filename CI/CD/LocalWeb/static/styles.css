@@ -68,6 +68,12 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .origin--requirement_dependency { background: #3b2d19; color: #ffd187; }
 .origin--genre_inferred { background: #253823; color: #9ee39a; }
 .log-panel { border-color: #2c3952; }
+.workflow-progress { margin: -4px 0 18px; padding: 16px 18px; border: 1px solid #293750; border-radius: 14px; background: #0b1321; }
+.workflow-progress__summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; color: #c9d6ea; font-size: .86rem; }
+.workflow-progress__summary strong { color: #8db4ff; font-size: 1rem; }
+.workflow-progress__track { height: 9px; margin-top: 11px; overflow: hidden; border-radius: 999px; background: #1b2639; }
+.workflow-progress__fill { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #427ce8, #7b68ee, #36c6a2); box-shadow: 0 0 14px #568bf066; transition: width .35s ease; }
+.workflow-progress__time { margin: 9px 0 0; color: #7f8da4; font: 600 .75rem ui-monospace, SFMono-Regular, Consolas, monospace; }
 .workflow-log { min-height: 280px; max-height: 580px; margin: 0; padding: 18px; overflow: auto; border: 1px solid #263149; border-radius: 14px; background: #070c14; color: #b8c8e4; font: 500 .8rem/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .workflow-log:focus { border-color: #568bf0; box-shadow: 0 0 0 3px #568bf020; outline: none; }
 .log-help { margin: -8px 0 12px; color: #7f8da4; font-size: .78rem; }

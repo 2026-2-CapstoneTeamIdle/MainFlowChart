@@ -30,6 +30,13 @@ from mainflow.contracts import (
     ValidationPlan,
 )
 
+from game_pipeline.presentation_sound_assets import feedback_sound_asset_id
+
+
+def _feedback_sound_id(sound_ids: list[str], cue_id: str) -> str:
+    specific = feedback_sound_asset_id(cue_id)
+    return specific if specific in sound_ids else (sound_ids[-1] if sound_ids else "")
+
 
 def build_design_v2(
     game_spec: GameSpec,
@@ -98,7 +105,7 @@ def _presentation_plan(
                     "cue_id": event,
                     "trigger": trigger,
                     "visual_feedback": feedback,
-                    "audio_asset_id": sound_ids[-1] if sound_ids else "",
+                    "audio_asset_id": _feedback_sound_id(sound_ids, event),
                 }
                 for event, trigger, feedback in (
                     ("tower_built", "tower construction succeeds", "show cost and new tower"),
@@ -193,25 +200,25 @@ def _presentation_plan(
                     "cue_id": "player_hit",
                     "trigger": "enemy contact damage accepted",
                     "visual_feedback": "HP 감소, 적색 플래시와 카메라 흔들림",
-                    "audio_asset_id": sound_ids[-1] if sound_ids else "",
+                    "audio_asset_id": _feedback_sound_id(sound_ids, "player_hit"),
                 },
                 {
                     "cue_id": "xp_pickup",
                     "trigger": "experience gem collected",
                     "visual_feedback": "경험치 바 증가와 획득 위치 팝",
-                    "audio_asset_id": sound_ids[-1] if sound_ids else "",
+                    "audio_asset_id": _feedback_sound_id(sound_ids, "xp_pickup"),
                 },
                 {
                     "cue_id": "level_up",
                     "trigger": "experience threshold reached",
                     "visual_feedback": "시간 정지 후 무작위 특전 3개 표시",
-                    "audio_asset_id": sound_ids[-1] if sound_ids else "",
+                    "audio_asset_id": _feedback_sound_id(sound_ids, "level_up"),
                 },
                 {
                     "cue_id": "boss_spawn",
                     "trigger": "survival timer reaches boss threshold",
                     "visual_feedback": "보스 경고와 카메라 강조",
-                    "audio_asset_id": sound_ids[-1] if sound_ids else "",
+                    "audio_asset_id": _feedback_sound_id(sound_ids, "boss_spawn"),
                 },
             ],
             "camera_effects": ["player follow", "hit shake", "boss emphasis"],
@@ -286,19 +293,19 @@ def _presentation_plan(
                 "cue_id": "player_hit",
                 "trigger": "player damaged",
                 "visual_feedback": "짧은 적색 플래시와 카메라 흔들림",
-                "audio_asset_id": sound_ids[-1] if sound_ids else "",
+                "audio_asset_id": _feedback_sound_id(sound_ids, "player_hit"),
             },
             {
                 "cue_id": "collectible_pickup",
                 "trigger": "collectible acquired",
                 "visual_feedback": "획득 위치 팝과 HUD 수치 갱신",
-                "audio_asset_id": sound_ids[-1] if sound_ids else "",
+                "audio_asset_id": _feedback_sound_id(sound_ids, "collectible_pickup"),
             },
             {
                 "cue_id": "checkpoint_reached",
                 "trigger": "checkpoint activated",
                 "visual_feedback": "체크포인트 색상 변화와 안내 문구",
-                "audio_asset_id": sound_ids[-1] if sound_ids else "",
+                "audio_asset_id": _feedback_sound_id(sound_ids, "checkpoint_reached"),
             },
         ],
         "camera_effects": ["player follow", "hit shake", "goal emphasis"],

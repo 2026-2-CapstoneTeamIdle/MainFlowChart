@@ -17,6 +17,11 @@ const openUnityButton = document.querySelector("#open-unity-button");
 const previewButton = document.querySelector("#preview-button");
 const stopButton = document.querySelector("#stop-button");
 const copyLogButton = document.querySelector("#copy-log-button");
+const progressLabel = document.querySelector("#progress-label");
+const progressPercent = document.querySelector("#progress-percent");
+const progressFill = document.querySelector("#progress-fill");
+const progressTrack = document.querySelector(".workflow-progress__track");
+const progressTime = document.querySelector("#progress-time");
 
 const providerLabels = { local: "LocalAI", openai: "OpenAI API", gemini: "Gemini API", vastai: "Vast.ai", placeholder: "Placeholder", procedural: "Procedural", elevenlabs: "ElevenLabs API" };
 let currentJobId = null;
@@ -229,6 +234,7 @@ function renderJob(job) {
   phaseBadge.textContent = label;
   workflowLog.textContent = job.logs.length ? job.logs.join("\n") : "프로세스를 시작하는 중입니다...";
   workflowLog.scrollTop = workflowLog.scrollHeight;
+  renderProgress(job);
   if (job.status === "awaiting_confirmation") {
     renderFeatures(job.features);
     featurePanel.classList.remove("is-hidden");
@@ -247,6 +253,30 @@ function renderJob(job) {
   openUnityButton.disabled = !canOpenUnity;
   renderPreviewButton(job);
   if (job.status === "failed" && job.error) showToast(job.error, true);
+}
+
+function formatDuration(totalSeconds) {
+  if (!Number.isFinite(totalSeconds)) return "--:--";
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return hours > 0
+    ? `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`
+    : `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+}
+
+function renderProgress(job) {
+  const percent = Math.min(100, Math.max(0, Number(job.progress_percent) || 0));
+  progressLabel.textContent = job.progress_label || "처리 중";
+  progressPercent.textContent = `${percent}%`;
+  progressFill.style.width = `${percent}%`;
+  progressTrack.setAttribute("aria-valuenow", String(percent));
+  const elapsed = formatDuration(Number(job.elapsed_seconds));
+  const estimate = job.estimated_total_seconds == null
+    ? "사용자 승인 대기"
+    : `예상 ${formatDuration(Number(job.estimated_total_seconds))}`;
+  progressTime.textContent = `처리 시간 ${elapsed} / ${estimate}`;
 }
 
 function renderPreviewButton(job) {

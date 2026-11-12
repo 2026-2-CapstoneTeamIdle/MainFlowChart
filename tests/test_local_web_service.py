@@ -212,6 +212,34 @@ def test_cancel_stops_running_process_tree_and_preserves_cancelled_state(
     assert result.status == "cancelled"
 
 
+def test_workflow_progress_tracks_agent_and_validation_milestones(tmp_path: Path):
+    service = _load_service_module()
+    job_root = tmp_path / "job-progress"
+    job_root.mkdir()
+    request_file = job_root / "request.json"
+    request_file.write_text("{}", encoding="utf-8")
+    job = service.WorkflowJob(
+        job_id="progress-job",
+        mode="generate",
+        request_file=request_file,
+        job_root=job_root,
+        status="running",
+        stage="workflow",
+        progress_percent=18,
+    )
+
+    job.append_log("[FLOW] 설치된 Codex CLI가 Unity 프로젝트 전체 문맥을 읽습니다.")
+    job.append_log("[AGENT][context] 관련 Unity 소스를 읽고 있습니다.")
+    job.append_log("[AGENT][edit] Unity 스크립트를 수정하고 있습니다.")
+    job.append_log("[FLOW] Unity 컴파일·Play Mode 검증 후 수정합니다.")
+    snapshot = job.snapshot()
+
+    assert snapshot["progress_percent"] == 58
+    assert snapshot["progress_label"] == "Unity 컴파일·실행 검증"
+    assert snapshot["elapsed_seconds"] >= 0
+    assert snapshot["estimated_total_seconds"] >= 1200
+
+
 def test_cancel_awaiting_confirmation_does_not_need_process(tmp_path: Path):
     service = _load_service_module()
     job_root = tmp_path / "job"
