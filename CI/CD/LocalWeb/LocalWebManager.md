@@ -1,6 +1,6 @@
 # Local Web Manager
 
-버전: **1.2.0**
+버전: **1.3.1**
 
 `CI/CD/LocalWeb`은 MainFlowChart를 `http://127.0.0.1:8000`에서 설정하고 실행하는 로컬
 전용 웹 서비스다. 메인 LangGraph의 Edge는 바꾸지 않으며, 웹 계층이 Feature 승인 단계를
@@ -9,6 +9,8 @@
 ## 제공 기능
 
 - 실제 프로젝트 역할별 AI Provider/Model 선택
+- Docker 내부 Codex CLI 설치, 브라우저 Device Code 로그인 및 웹 로그아웃
+- Docker `codex-auth` 전용 볼륨을 통한 Codex 로그인 유지
 - AI 모델 설정 영역 기본 접힘 및 토글 표시
 - LocalAI 등록 모델 목록 선택
 - OpenAI, Gemini, Vast.ai, ElevenLabs API 키의 서버 전용 저장
@@ -59,10 +61,10 @@ workspace/.localweb/secrets.env
 
 ## Docker 실행
 
-저장소 최상위에서 실행한다.
+LocalWeb의 기본 실행 방식이다. 저장소 최상위에서 실행한다.
 
 ```powershell
-docker compose -f "CI/CD/LocalWeb/compose.yaml" up --build
+docker compose -f "CI/CD/LocalWeb/compose.yaml" up --build -d
 ```
 
 브라우저:
@@ -77,6 +79,17 @@ http://127.0.0.1:8000
 docker compose -f "CI/CD/LocalWeb/compose.yaml" down
 ```
 
+Docker Desktop이 `unable to start` 상태이고 진단에 `wslUpdateRequired: true`가 표시되면
+관리자 PowerShell에서 WSL을 업데이트한 뒤 Windows와 Docker Desktop을 다시 시작한다.
+
+```powershell
+wsl --update
+wsl --shutdown
+```
+
+이 작업은 Windows 시스템 구성 변경이므로 프로젝트 명령과 분리해서 사용자가 직접 승인하고
+실행한다.
+
 Docker의 LocalWeb 컨테이너는 호스트 LocalAI를 기본적으로
 `http://host.docker.internal:8080/v1`에서 찾는다. 다른 주소를 쓰면 실행 전에 지정한다.
 
@@ -89,7 +102,48 @@ docker compose -f "CI/CD/LocalWeb/compose.yaml" up --build
 LocalAI Compose와 함께 같은 Docker 네트워크에서 실행할 때는 서비스 주소에 맞춰
 `http://Local-AIModel:8080/v1`을 사용할 수 있다.
 
+### Docker Codex 로그인
+
+LocalWeb 이미지는 `@openai/codex`를 포함한다. 웹을 처음 열면 상단 `Codex 연결` 영역에서
+설치와 로그인 상태를 확인한다.
+
+1. `Device Code로 로그인`을 누른다.
+2. 화면에 표시된 `로그인 페이지 열기`를 누른다.
+3. ChatGPT 계정으로 로그인하고 일회용 코드를 입력한다.
+4. LocalWeb의 상태가 `로그인 완료`로 바뀐 뒤 Codex CLI 구현 방식을 사용한다.
+
+공용 PC에서 사용을 마치거나 계정을 바꾸려면 `Codex 로그아웃`을 누른다. 확인 후
+`codex logout`이 실행되어 전용 Volume의 인증 정보만 제거되며 프로젝트 파일과 설정은
+유지된다.
+
+로그인 캐시는 다음 Docker Volume에 저장된다.
+
+```text
+main-flow-chart-codex-auth
+└─ /home/mainflow/.codex/auth.json
+```
+
+- 캐시는 컨테이너 이미지, Git, Workspace, Workflow 로그에 포함되지 않는다.
+- Device Code와 로그인 프로세스 출력은 LocalWeb 서버 메모리에만 보관한다.
+- `docker compose ... down`은 로그인 Volume을 보존한다.
+- `docker compose ... down -v` 또는 해당 Volume 삭제 후에는 다시 로그인해야 한다.
+- `auth.json`에는 접근 토큰이 있으므로 복사, 공유, 커밋하지 않는다.
+
+CLI 상태만 직접 확인할 때는 다음 명령을 사용한다.
+
+```powershell
+docker compose -f "CI/CD/LocalWeb/compose.yaml" exec local-web codex --version
+docker compose -f "CI/CD/LocalWeb/compose.yaml" exec local-web codex login status
+docker compose -f "CI/CD/LocalWeb/compose.yaml" exec local-web codex logout
+```
+
+Device Code 기능을 사용할 수 없는 계정에서는 컨테이너 터미널에서 로그인 절차를 실행할 수
+있지만, 인증 결과는 동일한 `codex-auth` Volume에 저장해야 한다.
+
 ## Python으로 직접 실행
+
+Docker 문제를 진단할 때만 사용하는 보조 방식이다. Codex CLI 기능을 사용하려면 Windows
+호스트에도 Codex CLI 설치와 로그인이 별도로 필요하다.
 
 저장소 최상위에서 기존 잠금 환경을 설치한 뒤 LocalWeb 의존성을 추가한다.
 
@@ -129,21 +183,23 @@ uv run --locked python -m uvicorn --app-dir "CI/CD/LocalWeb" app:app `
 
 ## 사용 순서
 
-1. `기능별 AI 설정`의 `설정 펼치기`를 누르고 각 역할의 Provider와 Model을 고른다.
-2. API Provider를 선택했다면 `API 인증 정보`에 해당 키를 입력한다.
-3. `설정 저장`을 누른다.
-4. 이미지 스타일, 분위기, 장르, 시점, Condition을 입력한다.
-5. `Generate` 또는 `test-Generate`를 누른다.
-6. 로그에서 Condition 분석 진행을 확인한다.
-7. `조합 예정 Feature`에서 출처를 확인한다.
+1. Docker로 LocalWeb을 시작하고 `Codex 연결`에서 로그인 상태를 확인한다.
+2. Codex CLI 구현 방식을 사용할 경우 `Device Code로 로그인`을 완료한다.
+3. `기능별 AI 설정`의 `설정 펼치기`를 누르고 각 역할의 Provider와 Model을 고른다.
+4. API Provider를 선택했다면 `API 인증 정보`에 해당 키를 입력한다.
+5. `설정 저장`을 누른다.
+6. 이미지 스타일, 분위기, 장르, 시점, Condition을 입력한다.
+7. `Generate` 또는 `test-Generate`를 누른다.
+8. 로그에서 Condition 분석 진행을 확인한다.
+9. `조합 예정 Feature`에서 출처를 확인한다.
    - `사용자 요청`: Condition에서 직접 추출
    - `요청 의존`: 요청 기능이 동작하기 위한 선행 기능
    - `장르 필수`: 선택한 장르의 기본 플레이에 필요한 기능
-8. 목록이 맞으면 Confirm, 다시 분석하려면 Reject를 누른다.
-9. 완료 또는 실패까지 하단 로그를 확인한다.
-10. 생성 성공 후 WebGL 빌드가 끝나면 `Preview 플레이`를 눌러 새 탭에서 게임을 실행한다.
+10. 목록이 맞으면 Confirm, 다시 분석하려면 Reject를 누른다.
+11. 완료 또는 실패까지 하단 로그를 확인한다.
+12. 생성 성공 후 WebGL 빌드가 끝나면 `Preview 플레이`를 눌러 새 탭에서 게임을 실행한다.
     빌드가 실패하거나 중단되면 같은 버튼으로 다시 빌드할 수 있다.
-11. 게임 검증이 실패했더라도 프로젝트 ID와 Unity 프로젝트가 남아 있으면
+13. 게임 검증이 실패했더라도 프로젝트 ID와 Unity 프로젝트가 남아 있으면
     `Preview 다시 빌드`를 눌러 현재 실패 상태의 게임을 직접 확인할 수 있다. 이 Preview는
     디버깅 편의 기능이며 실패한 검증 결과를 성공으로 바꾸지는 않는다.
 
@@ -181,6 +237,9 @@ Reject할 때마다 분석 근거를 보존하기 위해 새로운 Preview 프�
 | Method | Path | 설명 |
 |---|---|---|
 | GET | `/api/health` | 서버/Workflow 연결 상태 |
+| GET | `/api/codex/auth` | Docker 내부 Codex CLI 설치·로그인 상태 |
+| POST | `/api/codex/auth/device` | 메모리에서 Device Code 로그인 시작 |
+| POST | `/api/codex/auth/logout` | Docker 인증 Volume에서 Codex 자격 증명 제거 |
 | GET | `/api/config/models` | 역할/모델과 키 등록 여부 조회 |
 | PUT | `/api/config/models` | 역할/모델과 새 키 저장 |
 | POST | `/api/jobs` | Feature 분석 작업 시작 |

@@ -2,9 +2,12 @@ name: main-flow-chart-local-web
 
 services:
   local-web:
+    init: true
     build:
       context: ../../..
       dockerfile: CI/CD/LocalWeb/Dockerfile
+      args:
+        CODEX_CLI_VERSION: ${CODEX_CLI_VERSION:-0.167.2}
     image: main-flow-chart-local-web:local
     environment:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -18,6 +21,9 @@ services:
       MAINFLOW_GEMINI_THINKING_LEVEL: ${MAINFLOW_GEMINI_THINKING_LEVEL:-low}
       MAINFLOW_GEMINI_MAX_OUTPUT_TOKENS: ${MAINFLOW_GEMINI_MAX_OUTPUT_TOKENS:-8192}
       MAINFLOW_WORKSPACE: /app/workspace
+      MAINFLOW_CODEX_CLI_PATH: /usr/local/bin/codex
+      CODEX_HOME: /home/mainflow/.codex
+      HOME: /home/mainflow
       PYTHONUNBUFFERED: "1"
     ports:
       - "127.0.0.1:8000:8000"
@@ -25,3 +31,10 @@ services:
       - type: bind
         source: ../../../workspace
         target: /app/workspace
+      - type: volume
+        source: codex-auth
+        target: /home/mainflow/.codex
+
+volumes:
+  codex-auth:
+    name: main-flow-chart-codex-auth

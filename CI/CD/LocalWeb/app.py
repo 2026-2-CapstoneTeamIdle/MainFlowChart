@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from codex_auth import CodexAuthManager
 from service import (
     GenerationRequest,
     LocalWebSettingsStore,
@@ -19,11 +20,12 @@ LOCAL_WEB_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = LOCAL_WEB_ROOT / "static"
 settings_store = LocalWebSettingsStore()
 job_manager = WorkflowJobManager(settings_store)
+codex_auth_manager = CodexAuthManager()
 
 app = FastAPI(
     title="MainFlowChart Local Web",
     description="Local-only web shell for the MainFlowChart workflow.",
-    version="1.2.0",
+    version="1.3.1",
 )
 app.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
 
@@ -46,6 +48,37 @@ def health() -> dict[str, str]:
         "workflow": "connected",
         "contract_version": "3.4.0",
     }
+
+
+@app.get("/api/codex/auth")
+def codex_auth_status() -> dict[str, object]:
+    """Return Docker-local Codex CLI installation and login state."""
+
+    return codex_auth_manager.snapshot()
+
+
+@app.post("/api/codex/auth/device", status_code=202)
+def start_codex_device_login() -> dict[str, object]:
+    """Start one official Codex device-code login process in memory."""
+
+    try:
+        return codex_auth_manager.start_device_login()
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+@app.post("/api/codex/auth/logout")
+def logout_codex() -> dict[str, object]:
+    """Remove Docker-local Codex credentials without deleting the auth volume."""
+
+    try:
+        return codex_auth_manager.logout()
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @app.get("/api/config/models")

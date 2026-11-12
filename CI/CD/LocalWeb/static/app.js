@@ -31,6 +31,15 @@ const agentReasoningEffort = document.querySelector("#agent-reasoning-effort");
 const agentFastMode = document.querySelector("#agent-fast-mode");
 const agentFastModeField = document.querySelector("#agent-fast-mode-field");
 const agentSettingsHelp = document.querySelector("#agent-settings-help");
+const codexAuthPanel = document.querySelector("#codex-auth-panel");
+const codexAuthState = document.querySelector("#codex-auth-state");
+const codexAuthMessage = document.querySelector("#codex-auth-message");
+const codexLoginButton = document.querySelector("#codex-login-button");
+const codexLogoutButton = document.querySelector("#codex-logout-button");
+const codexAuthLink = document.querySelector("#codex-auth-link");
+const codexDeviceDetails = document.querySelector("#codex-device-details");
+const codexDeviceCode = document.querySelector("#codex-device-code");
+const codexAuthOutput = document.querySelector("#codex-auth-output");
 
 const providerLabels = { local: "LocalAI", openai: "OpenAI API", gemini: "Gemini API", vastai: "Vast.ai", placeholder: "Placeholder", procedural: "Procedural", elevenlabs: "ElevenLabs API" };
 const notificationSettingKey = "mainflow.completionNotifications";
@@ -72,6 +81,8 @@ let pollTimer = null;
 let notificationAudioContext = null;
 let notifiedMilestones = new Set();
 let toastTimer = null;
+let codexAuthPollTimer = null;
+let codexAuthenticated = false;
 
 function showToast(message, error = false) {
   window.clearTimeout(toastTimer);
@@ -308,6 +319,82 @@ async function api(path, options = {}) {
   return payload;
 }
 
+function renderCodexAuth(payload) {
+  codexAuthenticated = Boolean(payload.authenticated);
+  const labels = {
+    authenticated: "로그인 완료",
+    pending: "로그인 대기",
+    signed_out: "로그인 필요",
+    failed: "로그인 실패",
+    unavailable: "CLI 없음",
+  };
+  codexAuthState.textContent = labels[payload.phase] || "확인 필요";
+  codexAuthState.className = `phase-badge${payload.authenticated ? " phase-badge--ready" : (["failed", "unavailable"].includes(payload.phase) ? " phase-badge--error" : "")}`;
+  codexAuthMessage.textContent = payload.version
+    ? `${payload.message} · ${payload.version}`
+    : payload.message;
+
+  const pending = payload.phase === "pending";
+  codexLoginButton.disabled = !payload.installed || pending || payload.authenticated;
+  codexLoginButton.textContent = payload.authenticated
+    ? "Codex 로그인 완료"
+    : (pending ? "로그인 완료 대기 중…" : "Device Code로 로그인");
+  codexLogoutButton.hidden = !payload.authenticated;
+  codexLogoutButton.disabled = !payload.authenticated;
+  codexAuthLink.classList.toggle("is-hidden", !payload.auth_url);
+  if (payload.auth_url) codexAuthLink.href = payload.auth_url;
+  else codexAuthLink.removeAttribute("href");
+  codexDeviceDetails.hidden = !pending;
+  codexDeviceCode.textContent = payload.device_code || "코드 대기 중";
+  codexAuthOutput.textContent = payload.output || "Codex CLI가 로그인 주소와 코드를 준비하고 있습니다.";
+
+  if (!pending) window.clearInterval(codexAuthPollTimer);
+}
+
+async function refreshCodexAuth() {
+  try {
+    const payload = await api("/api/codex/auth");
+    renderCodexAuth(payload);
+  } catch (error) {
+    codexAuthenticated = false;
+    codexAuthState.textContent = "확인 실패";
+    codexAuthState.className = "phase-badge phase-badge--error";
+    codexAuthMessage.textContent = error.message;
+    codexLoginButton.disabled = true;
+  }
+}
+
+function startCodexAuthPolling() {
+  window.clearInterval(codexAuthPollTimer);
+  codexAuthPollTimer = window.setInterval(refreshCodexAuth, 1500);
+  refreshCodexAuth();
+}
+
+async function startCodexDeviceLogin() {
+  codexLoginButton.disabled = true;
+  try {
+    const payload = await api("/api/codex/auth/device", { method: "POST", body: "{}" });
+    renderCodexAuth(payload);
+    startCodexAuthPolling();
+  } catch (error) {
+    showToast(error.message, true);
+    await refreshCodexAuth();
+  }
+}
+
+async function logoutCodex() {
+  if (!window.confirm("Docker에 저장된 Codex 로그인 정보를 삭제할까요?")) return;
+  codexLogoutButton.disabled = true;
+  try {
+    const payload = await api("/api/codex/auth/logout", { method: "POST", body: "{}" });
+    renderCodexAuth(payload);
+    showToast("Codex에서 로그아웃했습니다.");
+  } catch (error) {
+    showToast(error.message, true);
+    await refreshCodexAuth();
+  }
+}
+
 function renderCatalog(payload) {
   modelGrid.replaceChildren();
   payload.roles.forEach((role) => {
@@ -400,10 +487,15 @@ async function fileToPayload(file) {
 async function startJob(mode) {
   if (!requestForm.reportValidity()) return;
   if (notificationSettingEnabled()) void prepareCompletionNotifications({ requestPermission: true });
+  const form = new FormData(requestForm);
+  if (form.get("game_builder") === "codex_cli" && !codexAuthenticated) {
+    codexAuthPanel.scrollIntoView({ behavior: "smooth", block: "center" });
+    showToast("Codex CLI를 선택하려면 먼저 Docker 내부 Codex에 로그인하세요.", true);
+    return;
+  }
   setRunButtons(true);
   try {
     await saveModels({ quiet: true });
-    const form = new FormData(requestForm);
     const payload = {
       mode,
       game_builder: form.get("game_builder"),
@@ -631,6 +723,7 @@ async function initialize() {
     statusText.textContent = "로컬 서버 상태를 확인할 수 없습니다.";
     showToast(error.message, true);
   }
+  await refreshCodexAuth();
 }
 
 imageStyle.addEventListener("change", updateCustomImageState);
@@ -645,6 +738,8 @@ modelSettingsToggle.addEventListener("click", () => {
   setModelSettingsExpanded(modelSettingsToggle.getAttribute("aria-expanded") !== "true");
 });
 copyLogButton.addEventListener("click", copyWorkflowLog);
+codexLoginButton.addEventListener("click", startCodexDeviceLogin);
+codexLogoutButton.addEventListener("click", logoutCodex);
 workflowLog.addEventListener("keydown", (event) => {
   const selection = window.getSelection()?.toString() || "";
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c" && !selection) {
