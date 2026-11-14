@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -510,13 +511,21 @@ Return the required structured report.
         started = time.monotonic()
         attempts: list[dict[str, Any]] = []
         repairs: list[CodexCliResult] = []
-        signatures: dict[str, int] = {}
+        signatures: dict[str, tuple[str, int]] = {}
         pending_snapshot: _ProjectSourceSnapshot | None = None
         pending_baseline_outcome: UnityValidationOutcome | None = None
         pending_baseline_evidence: dict[str, Any] | None = None
         pending_baseline_severity: int | None = None
         repair_limit = self.settings.max_repairs if max_repairs is None else max_repairs
-        for attempt in range(repair_limit + 1):
+        adaptive_repairs = repair_limit > 0 and phase in {
+            "design_game_logic",
+            "validate_game",
+            "final_validation",
+        }
+        hard_repair_limit, repair_extension = _adaptive_repair_limits(repair_limit)
+        active_repair_limit = repair_limit
+        attempt = 0
+        while attempt <= active_repair_limit:
             outcome = (
                 initial_outcome
                 if attempt == 0 and initial_outcome is not None
@@ -577,19 +586,47 @@ Return the required structured report.
             if outcome.status == "passed":
                 return outcome, tuple(repairs), tuple(attempts)
             signature = _failure_signature(outcome)
-            signatures[signature] = signatures.get(signature, 0) + 1
-            if attempt >= repair_limit:
-                raise RuntimeError(
-                    f"{self.agent_label} Unity validation failed after {attempt} repairs: "
-                    f"{outcome.issues}; "
-                    f"diagnostics={_signature_diagnostics(outcome.unity_log)}"
-                )
-            if signatures[signature] >= 3:
+            source_digest = _project_source_digest(project_root)
+            previous_digest, previous_count = signatures.get(signature, ("", 0))
+            signature_count = previous_count + 1 if previous_digest == source_digest else 1
+            signatures[signature] = (source_digest, signature_count)
+            if signature_count >= 3:
                 raise RuntimeError(
                     f"{self.agent_label} repair stopped because the same Unity failure repeated "
                     "three times: "
                     f"{outcome.issues}; diagnostics={_signature_diagnostics(outcome.unity_log)}"
                 )
+            if attempt >= active_repair_limit:
+                if adaptive_repairs and attempt < hard_repair_limit:
+                    previous_limit = active_repair_limit
+                    active_repair_limit = min(
+                        hard_repair_limit,
+                        active_repair_limit + repair_extension,
+                    )
+                    extension_evidence = {
+                        "reason": "validation is still exposing a repairable failure",
+                        "previous_limit": previous_limit,
+                        "extended_limit": active_repair_limit,
+                        "hard_limit": hard_repair_limit,
+                        "failure_signature_count": signature_count,
+                        "diagnostics": _signature_diagnostics(outcome.unity_log),
+                    }
+                    self._record(
+                        f"{self.provider}_{phase}_repair_budget_extended_{attempt}",
+                        extension_evidence,
+                    )
+                    print(
+                        "[AGENT][repair] 서로 다른 검증 오류가 계속 발견되어 "
+                        f"수리 한도를 {previous_limit}회에서 "
+                        f"{active_repair_limit}회로 자동 연장합니다.",
+                        flush=True,
+                    )
+                else:
+                    raise RuntimeError(
+                        f"{self.agent_label} Unity validation failed after {attempt} repairs: "
+                        f"{outcome.issues}; "
+                        f"diagnostics={_signature_diagnostics(outcome.unity_log)}"
+                    )
             if time.monotonic() - started >= self.settings.total_timeout_seconds:
                 raise TimeoutError(f"{self.total_timeout_environment} was exhausted")
             feedback = _bounded_feedback(evidence)
@@ -613,7 +650,7 @@ Return the required structured report.
                 else "unknown Unity validation failure"
             )
             print(
-                f"[AGENT][repair] Unity 검증 오류 수정 {attempt + 1}/{repair_limit}: "
+                f"[AGENT][repair] Unity 검증 오류 수정 {attempt + 1}/{active_repair_limit}: "
                 f"{failure_summary}",
                 flush=True,
             )
@@ -654,6 +691,7 @@ Return the required structured report.
             _require_normalized_permissions(
                 permission_report, f"after {self.agent_label} repair {attempt + 1}"
             )
+            attempt += 1
         raise AssertionError("unreachable")
 
     def _record(self, name: str, value: Any) -> None:
@@ -704,6 +742,41 @@ def prepare_design_for_codex(design: GameLogicDesign) -> GameLogicDesign:
 
 
 prepare_design_for_agent_harness = prepare_design_for_codex
+
+
+def _adaptive_repair_limits(initial_limit: int) -> tuple[int, int]:
+    """Return a bounded hard limit and extension size for progressive validation failures."""
+
+    hard_limit_name = "MAINFLOW_AGENT_HARD_MAX_REPAIRS"
+    extension_name = "MAINFLOW_AGENT_REPAIR_EXTENSION"
+    try:
+        configured_hard_limit = int(os.environ.get(hard_limit_name, "12"))
+        extension = int(os.environ.get(extension_name, "3"))
+    except ValueError as error:
+        raise ValueError(f"{hard_limit_name} and {extension_name} must be integers") from error
+    if not 1 <= configured_hard_limit <= 24:
+        raise ValueError(f"{hard_limit_name} must be between 1 and 24")
+    if not 1 <= extension <= 6:
+        raise ValueError(f"{extension_name} must be between 1 and 6")
+    return max(initial_limit, configured_hard_limit), extension
+
+
+def _project_source_digest(project_root: Path) -> str:
+    """Hash host-owned project sources so real edits reset repeated-failure detection."""
+
+    snapshot = _ProjectSourceSnapshot.capture(project_root)
+    digest = hashlib.sha256()
+    source_paths = [
+        relative_path
+        for relative_path in snapshot.files
+        if Path(relative_path).suffix.lower() in {".cs", ".asmdef", ".asmref"}
+    ]
+    for relative_path in sorted(source_paths):
+        digest.update(relative_path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(snapshot.files[relative_path])
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def run_codex_quality_review(
@@ -954,16 +1027,25 @@ hand-edit `Bootstrap.unity`; let the host assembler regenerate bindings. Do not 
 MonoBehaviour per filename-matched `.cs` file and preserve every existing generated module ID.
 Every generated module class must be public and individually serializable; split any file that
 contains multiple `[GeneratedGameModule]` classes instead of keeping an internal class bundle.
-When the phase is `validate_game` or `final_validation`, preserve generated and applied image/audio
+When the phase is `validate_game`, starts with `feature_checklist`, or is `final_validation`,
+preserve generated and applied image/audio
 files, their binding IDs, and asset manifests. Fix gameplay source, scene assembly, UI bindings,
 initialization, and state transitions without replacing validated assets or reverting the game to
 the copied genre prototype.
+When the phase starts with `feature_checklist`, treat every failed checklist assertion as an
+acceptance criterion. Read the referenced production type and the checklist source, then implement
+the missing observable runtime behavior or compatible public contract in production code.
+Never edit, delete, disable, or weaken the checklist test itself.
 If a runtime exception reports a null route, spawn point, module, or HUD object, repair the source
 by reacquiring that object at runtime and by adding an explicit null/empty guard; do not hide the
 exception by disabling the wave, combat, or UI system.
 If a runtime exception reports a missing component, replace null-coalescing component lookup with
 an explicit Unity-aware null check and ensure the component is present on every object path that
 can invoke the method.
+If validation reports that a selected action or upgrade changed no observable state, inspect module
+initialization order and reacquire late-bound dependencies when the action executes. Ensure every
+selectable option ID maps to a real state mutation, and keep one authoritative owner for the state
+instead of updating a parallel controller that the UI or validator does not observe.
 If the tower-defense smoke test reports `runtime.tower_build_visibility`, position every build
 point inside the camera view and set its SpriteRenderer sorting order above the background.
 If it reports `runtime.tower_build_clickability` or `runtime.tower_build_input`, check the

@@ -215,6 +215,7 @@ def final_validation_node(
                 else None,
             )
             outcome = validator.validate(root, draft, payloads["parsed_request"])
+            final_repair_applied = False
             if outcome.status == "failed":
                 log("에셋 적용 후 Unity 검증 실패를 CLI Agent Harness에 전달해 다시 수정합니다.")
                 try:
@@ -235,6 +236,7 @@ def final_validation_node(
                     )
                     if repair_result is not None:
                         outcome = repair_result.outcome
+                        final_repair_applied = bool(repair_result.repair_results)
                         manager.write_json(
                             state["project_id"],
                             "validation",
@@ -261,6 +263,32 @@ def final_validation_node(
                             "message": f"{type(repair_error).__name__}: {repair_error}",
                         }
                     )
+            reconciled_game_validation = outcome.status == "passed" and (
+                _reconcile_upstream_game_validation(
+                    checks,
+                    issues,
+                    payloads["game_validation_result"],
+                )
+            )
+            if reconciled_game_validation:
+                evidence.append(
+                    manager.write_json(
+                        state["project_id"],
+                        "validation",
+                        f"game_validation_reconciled{artifact_suffix}.json",
+                        {
+                            "reason": (
+                                "Authoritative post-asset Unity validation passed after an "
+                                "earlier runtime-only game validation failure."
+                            ),
+                            "final_repair_applied": final_repair_applied,
+                            "upstream_status": payloads["game_validation_result"]["status"],
+                            "post_repair_unity_status": outcome.status,
+                            "post_repair_checks": outcome.checks,
+                        },
+                        producer="final_validation",
+                    )
+                )
             check(
                 "final.unity_validation",
                 outcome.status == "passed",
@@ -370,17 +398,26 @@ def final_validation_node(
                         None,
                     )
                     if feature is not None:
-                        mechanics = set(plan_feature_mechanics([feature], logic["genre"]).mechanics)
-                        if mechanics:
-                            satisfied = (
-                                runtime_plan_passed
-                                and mechanics <= set(plan["required_feature_bindings"])
-                                and not mechanics.intersection(
-                                    telemetry["unused_requested_features"]
-                                )
+                        runtime_transition = _runtime_transition_for_feature(
+                            feature,
+                            genre_profile,
+                        )
+                        if runtime_transition is not None:
+                            satisfied = runtime_transition in passed_transitions
+                        else:
+                            mechanics = set(
+                                plan_feature_mechanics([feature], logic["genre"]).mechanics
                             )
-                        elif feature.get("origin") == "genre_inferred":
-                            satisfied = runtime_plan_passed
+                            if mechanics:
+                                satisfied = (
+                                    runtime_plan_passed
+                                    and mechanics <= set(plan["required_feature_bindings"])
+                                    and not mechanics.intersection(
+                                        telemetry["unused_requested_features"]
+                                    )
+                                )
+                            elif feature.get("origin") == "genre_inferred":
+                                satisfied = runtime_plan_passed
                 check(
                     criterion["criterion_id"],
                     satisfied,
@@ -422,3 +459,59 @@ def final_validation_node(
             producer="final_validation",
         )
     }
+
+
+_RECONCILABLE_GAME_VALIDATION_CODES = frozenset(
+    {
+        "UNITY_RUNTIME_TEST_FAILED",
+        "AGENT_POST_VALIDATION_REPAIR_FAILED",
+    }
+)
+
+
+def _reconcile_upstream_game_validation(
+    checks: list[ValidationCheckResult],
+    issues: list[ValidationIssue],
+    upstream: dict[str, Any],
+) -> bool:
+    """Replace a stale runtime-only failure after authoritative final Unity validation passes."""
+
+    upstream_errors = [issue for issue in upstream["issues"] if issue["severity"] == "error"]
+    if not upstream_errors or any(
+        issue["code"] not in _RECONCILABLE_GAME_VALIDATION_CODES for issue in upstream_errors
+    ):
+        return False
+    for item in checks:
+        if item["criterion_id"] == "final.game_validation":
+            item["passed"] = True
+            item["message"] = (
+                "Upstream runtime failure was repaired and authoritative final Unity validation "
+                "passed"
+            )
+            break
+    issues[:] = [item for item in issues if item.get("target_id") != "final.game_validation"]
+    return True
+
+
+def _runtime_transition_for_feature(
+    feature: dict[str, Any],
+    genre_profile: str | None,
+) -> str | None:
+    """Map semantic combat requirements to authoritative causal Play Mode evidence."""
+
+    if genre_profile != "SurvivorLike":
+        return None
+    name = str(feature.get("name", "")).replace(" ", "")
+    description = str(feature.get("description", "")).replace(" ", "")
+    explicit_attack_names = {"공격", "자동공격", "8방향공격"}
+    player_attack_phrases = (
+        "플레이어가적을공격",
+        "플레이어주변을회전하는검",
+        "검이적에게피해",
+        "무기가적에게피해",
+    )
+    if name in explicit_attack_names or any(
+        phrase in description for phrase in player_attack_phrases
+    ):
+        return "survivor.attack_to_damage"
+    return None

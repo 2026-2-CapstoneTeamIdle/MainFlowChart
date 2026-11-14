@@ -43,12 +43,22 @@ MAINFLOW_CLAUDE_MAX_TURNS=80
 MAINFLOW_CLAUDE_TIMEOUT_SECONDS=1800
 MAINFLOW_CLAUDE_TOTAL_TIMEOUT_SECONDS=7200
 MAINFLOW_CLAUDE_MAX_REPAIRS=6
+MAINFLOW_AGENT_HARD_MAX_REPAIRS=12
+MAINFLOW_AGENT_REPAIR_EXTENSION=3
 MAINFLOW_AGENT_POST_VALIDATION_REPAIRS=3
+MAINFLOW_FEATURE_CHECKLIST_AGENT_REPAIRS=1
 ```
 
 최초 구현 이후 `validate_game`과 에셋 적용 후 최종 Unity 검증에서 실패해도 Claude Code에
 실패 로그가 다시 전달된다. 단계별 후속 수정은 기본 3회이며, 적용된 이미지·사운드와 바인딩
 계약을 보존하고 더 심한 회귀가 발생하면 해당 수정을 롤백한다.
+Feature 체크리스트 실패도 동일하게 Claude Code에 다시 전달하고 수정 후 체크리스트를
+재실행한다. 기본 재시도는 1회이며 `MAINFLOW_FEATURE_CHECKLIST_AGENT_REPAIRS`로 0~3회까지
+조정할 수 있다.
+최초 구현, `validate_game`, 최종 Unity 검증 중 복구 가능한 오류가 순차적으로 나타나면
+기본 횟수에서 바로 중단하지 않고 3회씩 자동 연장해 안전 상한 12회까지 계속한다. 같은
+오류여도 실제 C# 소스가 바뀌면 계속 수정하고, 소스 변경 없이 동일 오류가 3회 반복되거나
+전체 시간 제한에 도달하면 루프를 중단한다.
 
 실행 증거는 각 프로젝트의 `validation/claude_code/`에 저장된다. CLI 경로 자동 탐색이
 실패하면 `MAINFLOW_CLAUDE_CLI_PATH`에 `claude.cmd`의 절대 경로를 지정한다.

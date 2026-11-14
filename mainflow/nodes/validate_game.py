@@ -8,7 +8,11 @@ from typing import cast
 
 from game_pipeline import UnityProjectValidator
 from game_pipeline.agent_harness_repair import repair_with_configured_agent_harness
-from game_pipeline.feature_checklist_validation import FeatureChecklistWorkflow
+from game_pipeline.feature_checklist_validation import (
+    FeatureChecklistOutcome,
+    FeatureChecklistWorkflow,
+)
+from game_pipeline.unity_project_validator import UnityValidationOutcome
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -282,25 +286,83 @@ def validate_game_node(
                 ),
             )
             try:
-                checklist_outcome = checklist_workflow.run(
-                    project_root=project_root,
-                    workspace_root=manager.ensure_project(state["project_id"]),
-                    source_root=checklist_source,
-                    compile_validation=lambda changed_root: validator.validate(
-                        changed_root,
-                        draft,
-                        request,
-                        allow_failed_diagnostic=False,
-                    ),
-                    project_id=state["project_id"],
-                    logic_analysis=(
-                        None
-                        if os.environ.get("MAINFLOW_CODEX_STATIC_CHECKLISTS") == "1"
-                        else logic_analysis
-                    ),
-                    feature_requirements=logic_analysis["features"],
-                )
-                outcome.unity_log += checklist_outcome.log
+
+                def run_feature_checklists() -> FeatureChecklistOutcome:
+                    return checklist_workflow.run(
+                        project_root=project_root,
+                        workspace_root=manager.ensure_project(state["project_id"]),
+                        source_root=checklist_source,
+                        compile_validation=lambda changed_root: validator.validate(
+                            changed_root,
+                            draft,
+                            request,
+                            allow_failed_diagnostic=False,
+                        ),
+                        project_id=state["project_id"],
+                        logic_analysis=(
+                            None
+                            if os.environ.get("MAINFLOW_CODEX_STATIC_CHECKLISTS") == "1"
+                            else logic_analysis
+                        ),
+                        feature_requirements=logic_analysis["features"],
+                    )
+
+                checklist_outcome = run_feature_checklists()
+                checklist_log = checklist_outcome.log
+                agent_repair_issues: list[dict[str, str]] = []
+                agent_repair_limit = _feature_checklist_agent_repairs()
+                for repair_attempt in range(1, agent_repair_limit + 1):
+                    if checklist_outcome.status == "passed":
+                        break
+                    checklist_failure = _checklist_failure_outcome(checklist_outcome)
+                    log(
+                        "Feature 체크리스트 실패를 CLI Agent Harness에 전달해 "
+                        f"다시 수정합니다 ({repair_attempt}/{agent_repair_limit})."
+                    )
+                    try:
+                        repair_result = repair_with_configured_agent_harness(
+                            project_root=project_root,
+                            workspace_root=manager.ensure_project(state["project_id"]),
+                            draft=draft,
+                            request=request,
+                            initial_outcome=checklist_failure,
+                            phase=f"feature_checklist_{repair_attempt}",
+                            record=lambda name, data, current_attempt=repair_attempt: (
+                                manager.write_json(
+                                    state["project_id"],
+                                    "validation",
+                                    "agent_repair/feature_checklist/"
+                                    f"attempt_{current_attempt}/{name}.json",
+                                    data,
+                                    producer="validate_game",
+                                )
+                            ),
+                        )
+                        if repair_result is None:
+                            break
+                        manager.write_json(
+                            state["project_id"],
+                            "validation",
+                            f"agent_repair/feature_checklist/attempt_{repair_attempt}/result.json",
+                            repair_result.to_dict(),
+                            producer="validate_game",
+                        )
+                        checklist_outcome = run_feature_checklists()
+                        checklist_log += (
+                            "\n--- AGENT FEATURE CHECKLIST REPAIR "
+                            f"{repair_attempt} ---\n{checklist_outcome.log}"
+                        )
+                    except Exception as repair_error:  # noqa: BLE001 - preserve evidence
+                        agent_repair_issues.append(
+                            {
+                                "code": "FEATURE_CHECKLIST_AGENT_REPAIR_FAILED",
+                                "severity": "error",
+                                "message": f"{type(repair_error).__name__}: {repair_error}",
+                            }
+                        )
+                        break
+
+                outcome.unity_log += checklist_log
                 for result_item in checklist_outcome.results:
                     outcome.checks.append(
                         {
@@ -313,6 +375,7 @@ def validate_game_node(
                         }
                     )
                 outcome.issues.extend(checklist_outcome.issues)
+                outcome.issues.extend(agent_repair_issues)
             except Exception as error:  # noqa: BLE001 - independent validation boundary
                 outcome.checks.append(
                     {
@@ -350,6 +413,47 @@ def validate_game_node(
         "issues": outcome.issues,
     }
     return _write_result(manager, state["project_id"], result)
+
+
+def _feature_checklist_agent_repairs() -> int:
+    name = "MAINFLOW_FEATURE_CHECKLIST_AGENT_REPAIRS"
+    try:
+        value = int(os.environ.get(name, "1"))
+    except ValueError as error:
+        raise ValueError(f"{name} must be an integer") from error
+    if not 0 <= value <= 3:
+        raise ValueError(f"{name} must be between 0 and 3")
+    return value
+
+
+def _checklist_failure_outcome(checklist: FeatureChecklistOutcome) -> UnityValidationOutcome:
+    checks = [
+        {
+            "criterion_id": f"feature_checklist.{item.feature_id.lower()}",
+            "passed": item.status in {"passed", "skipped"},
+            "message": f"{item.feature_name}: {item.status} — {item.message}",
+        }
+        for item in checklist.results
+    ]
+    issues = [
+        {
+            "code": item["code"],
+            "severity": "error",
+            "message": item["message"],
+        }
+        for item in checklist.issues
+    ]
+    if not issues:
+        issues = [
+            {
+                "code": "FEATURE_CHECKLIST_FAILED",
+                "severity": "error",
+                "message": check["message"],
+            }
+            for check in checks
+            if not check["passed"]
+        ]
+    return UnityValidationOutcome(checks=checks, issues=issues, unity_log=checklist.log)
 
 
 def _write_result(

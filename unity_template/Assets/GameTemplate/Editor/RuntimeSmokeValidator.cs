@@ -1118,7 +1118,16 @@ namespace TeamIdle.GameTemplate.Editor
 
             if (!genreProgressionTriggered)
             {
-                experience.Add(experience.RequiredExperience);
+                var previousRandomState = UnityEngine.Random.state;
+                try
+                {
+                    UnityEngine.Random.InitState(0x51A7);
+                    experience.Add(experience.RequiredExperience);
+                }
+                finally
+                {
+                    UnityEngine.Random.state = previousRandomState;
+                }
                 genreProgressionTriggered = true;
             }
 
@@ -1131,10 +1140,13 @@ namespace TeamIdle.GameTemplate.Editor
 
             var movement = UnityEngine.Object.FindFirstObjectByType<TopDownMovementModule>();
             var autoTarget = UnityEngine.Object.FindFirstObjectByType<AutoTargetSystemModule>();
+            var playerHealth = GameObject.Find("Player")?.GetComponent<HealthComponent>();
             var moveSpeedBefore = movement?.MoveSpeed ?? -1f;
             var damageBefore = autoTarget?.Damage ?? -1f;
             var attackSpeedBefore = autoTarget?.AttacksPerSecond ?? -1f;
             var projectileCountBefore = autoTarget?.ProjectileCount ?? -1;
+            var maximumHealthBefore = playerHealth?.Maximum ?? -1f;
+            var currentHealthBefore = playerHealth?.Current ?? -1f;
             if (!upgrades.Select(0))
             {
                 Finish(
@@ -1151,6 +1163,13 @@ namespace TeamIdle.GameTemplate.Editor
                         !Mathf.Approximately(autoTarget.Damage, damageBefore)
                         || !Mathf.Approximately(autoTarget.AttacksPerSecond, attackSpeedBefore)
                         || autoTarget.ProjectileCount != projectileCountBefore
+                    )
+                )
+                || (
+                    playerHealth != null
+                    && (
+                        !Mathf.Approximately(playerHealth.Maximum, maximumHealthBefore)
+                        || !Mathf.Approximately(playerHealth.Current, currentHealthBefore)
                     )
                 );
             if (!upgradeChangedState)

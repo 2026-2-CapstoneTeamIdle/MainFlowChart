@@ -39,9 +39,12 @@ $env:MAINFLOW_CODEX_REASONING_EFFORT="medium"
 $env:MAINFLOW_CODEX_TIMEOUT_SECONDS="1800"
 $env:MAINFLOW_CODEX_TOTAL_TIMEOUT_SECONDS="7200"
 $env:MAINFLOW_CODEX_MAX_REPAIRS="6"
+$env:MAINFLOW_AGENT_HARD_MAX_REPAIRS="12"
+$env:MAINFLOW_AGENT_REPAIR_EXTENSION="3"
 $env:MAINFLOW_AGENT_POST_VALIDATION_REPAIRS="3"
 $env:MAINFLOW_GAME_QUALITY_REPAIRS="2"
 $env:MAINFLOW_GAME_QUALITY_UNITY_REPAIRS="2"
+$env:MAINFLOW_FEATURE_CHECKLIST_AGENT_REPAIRS="1"
 ```
 
 ## 실행 경계
@@ -57,6 +60,14 @@ $env:MAINFLOW_GAME_QUALITY_UNITY_REPAIRS="2"
 - 최초 구현 검증을 통과한 뒤에도 `validate_game` 또는 에셋 적용 후 최종 Unity 검증이
   실패하면 해당 로그를 Codex에 다시 전달한다. 기본 후속 수정 횟수는 단계별 3회이며
   `MAINFLOW_AGENT_POST_VALIDATION_REPAIRS`로 1~6회 사이에서 조정한다.
+- Feature 체크리스트가 마지막에 실패하면 실패한 Feature, assertion과 Unity 로그를 Codex에
+  다시 전달하고, 수정 후 컴파일 및 체크리스트를 다시 실행한다. 기본 1회이며
+  `MAINFLOW_FEATURE_CHECKLIST_AGENT_REPAIRS`로 0~3회까지 조정한다.
+- 최초 구현뿐 아니라 `validate_game`과 최종 Unity 검증에서도 기본 수리 예산 이후
+  복구 가능한 오류가 계속 드러나면 3회씩 자동 연장한다. 기본 안전 상한은 12회다.
+  같은 오류여도 Agent가 실제 C# 소스를 변경했다면 다음 수정 기회를 주며, 소스 변경 없이
+  동일 오류가 3번 반복되거나 전체 제한 시간이 끝나면 조기 종료한다. 상한과 연장 단위는 각각
+  `MAINFLOW_AGENT_HARD_MAX_REPAIRS`, `MAINFLOW_AGENT_REPAIR_EXTENSION`으로 조정한다.
 - 후속 수정은 적용된 이미지·사운드 파일과 바인딩 ID를 보존하며, 더 심각한 컴파일·바인딩
   오류를 만들면 변경을 롤백한다.
 - 독립 품질 검수가 실제 기능 누락을 찾으면 근거 파일과 권고를 Codex에 전달한다. 수정 후
