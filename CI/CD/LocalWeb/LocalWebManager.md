@@ -174,15 +174,38 @@ main-flow-chart-unity-license
 
 Unity Personal을 사용하는 개인 개발 환경에서는 컨테이너를 시작한 다음 로그인과 라이선스
 활성화를 한 번 수행한다. `unity auth login`이 출력한 주소를 호스트 브라우저에서 열어
-로그인을 완료한다.
+로그인을 완료한다. 컨테이너에는 OS Secret Service가 없으므로 파일 기반 저장 옵션이
+필요하다. 인증 파일은 `unity-config` 전용 Volume에만 보존된다.
 
 ```powershell
-docker compose -f "CI/CD/LocalWeb/compose.yaml" exec local-web unity auth login
+docker compose -f "CI/CD/LocalWeb/compose.yaml" exec local-web `
+  unity auth login --insecure-storage
 docker compose -f "CI/CD/LocalWeb/compose.yaml" exec local-web `
   unity license activate --personal --accept-eula
 docker compose -f "CI/CD/LocalWeb/compose.yaml" exec local-web `
   unity license status --format json
 ```
+
+### Docker에서 Unity Editor 열기
+
+Docker LocalWeb의 Unity는 컴파일·Play Mode·WebGL 검증을 위한 Linux Editor이며 Xvfb 가상
+화면에서 실행된다. Windows 데스크톱 창으로 직접 표시할 수 없으므로, 완료 화면의
+`Unity Editor 열기` 버튼은 호스트 프로젝트 경로가 포함된 `.cmd` 런처를 다운로드한다.
+다운로드된 파일을 실행하면 프로젝트의 `ProjectVersion.txt`와 같은 버전의 Windows Unity
+Editor를 찾아 프로젝트를 연다. 해당 버전이 설치되지 않았다면 Unity Hub에서 먼저 설치한다.
+
+Docker Desktop bind mount의 호스트 경로를 자동 판별할 수 없는 환경에서는 Compose 실행 전
+다음 값을 Windows Workspace 절대 경로로 설정한다.
+
+```powershell
+$env:MAINFLOW_HOST_WORKSPACE = "C:\path\to\MainFlowChart\workspace"
+docker compose -f "CI/CD/LocalWeb/compose.yaml" up --build -d
+```
+
+Docker Compose는 외부 격리 경계이므로 컨테이너 안의 Codex CLI는 중첩 `bubblewrap`
+샌드박스를 사용하지 않는다. 이 우회는 Compose의
+`MAINFLOW_CODEX_DOCKER_BYPASS_SANDBOX=1`에만 적용되며, Windows에서 직접 실행하는 Codex
+Harness는 계속 `workspace-write` 샌드박스를 사용한다.
 
 조직에서 발급받은 `.ulf` 파일이 있다면 값이나 파일 내용을 로그에 출력하지 말고 제공된
 스크립트로 가져온다.

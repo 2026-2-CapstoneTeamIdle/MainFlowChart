@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
 from codex_auth import CodexAuthManager
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 from service import (
     GenerationRequest,
     LocalWebSettingsStore,
@@ -160,7 +160,7 @@ def open_job_unity_project(job_id: str) -> dict[str, str]:
     """Open a completed or failed job's generated project in Unity Editor."""
 
     try:
-        project_root = job_manager.open_unity_editor(job_id)
+        result = job_manager.open_unity_editor(job_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except FileNotFoundError as error:
@@ -169,7 +169,30 @@ def open_job_unity_project(job_id: str) -> dict[str, str]:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except RuntimeError as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
-    return {"status": "opened", "project_root": str(project_root)}
+    if result["status"] == "launcher_required":
+        result["launcher_url"] = f"/api/jobs/{job_id}/unity-launcher"
+    return result
+
+
+@app.get("/api/jobs/{job_id}/unity-launcher")
+def download_job_unity_launcher(job_id: str) -> Response:
+    """Download a Windows launcher when LocalWeb itself runs inside Linux Docker."""
+
+    try:
+        filename, content = job_manager.unity_editor_launcher(job_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+    return Response(
+        content=content.encode("utf-8"),
+        media_type="application/x-msdos-program",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.post("/api/jobs/{job_id}/build-webgl", status_code=202)

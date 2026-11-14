@@ -23,6 +23,11 @@ services:
       MAINFLOW_GEMINI_MAX_OUTPUT_TOKENS: ${MAINFLOW_GEMINI_MAX_OUTPUT_TOKENS:-8192}
       MAINFLOW_WORKSPACE: /app/workspace
       MAINFLOW_CODEX_CLI_PATH: /usr/local/bin/codex
+      # Docker is already the external sandbox. Codex's nested bubblewrap cannot create a
+      # namespace under Docker Desktop's default security profile.
+      MAINFLOW_CODEX_DOCKER_BYPASS_SANDBOX: "1"
+      MAINFLOW_DOCKER_LOCALWEB: "1"
+      MAINFLOW_HOST_WORKSPACE: ${MAINFLOW_HOST_WORKSPACE:-}
       CODEX_HOME: /home/mainflow/.codex
       UNITY_EDITOR_PATH: /opt/unity/Editor/Unity
       UNITY_CLI_HOME: /opt/unity-cli

@@ -16,6 +16,7 @@ from queue import Empty, Queue
 from game_pipeline.unity_project_validator import UnityProjectValidator
 
 WEBGL_SUCCESS_MARKER = "UNITY_WEBGL_PREVIEW_OK:"
+_POST_EXIT_OUTPUT_GRACE_SECONDS = 1.0
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _PREVIEW_BUILDER_RELATIVE_PATH = Path("Assets/GameTemplate/Editor/WebGLPreviewBuilder.cs")
 _PREVIEW_TEMPLATE_RELATIVE_PATH = Path("Assets/WebGLTemplates/TeamIdlePreview")
@@ -115,6 +116,8 @@ def build_webgl_preview(
 
         reader = threading.Thread(target=read_output, daemon=True)
         reader.start()
+        process_exited_at: float | None = None
+        last_output_at = time.monotonic()
         while True:
             if is_cancelled is not None and is_cancelled():
                 _terminate_process(process)
@@ -128,12 +131,27 @@ def build_webgl_preview(
             try:
                 line = output_queue.get(timeout=min(1.0, remaining))
             except Empty:
+                # Unity may leave Package Manager or Licensing descendants holding
+                # the inherited stdout descriptor open.  In that case the Unity
+                # process is already a zombie, but the reader never observes EOF
+                # and LocalWeb remains in ``preview_status=building`` forever.
+                # Polling reaps Unity itself; after a short quiet period the output
+                # collected so far is complete enough to validate the explicit
+                # success marker and generated index.html.
+                if process.poll() is not None:
+                    now = time.monotonic()
+                    if process_exited_at is None:
+                        process_exited_at = now
+                    quiet_since = max(process_exited_at, last_output_at)
+                    if now - quiet_since >= _POST_EXIT_OUTPUT_GRACE_SECONDS:
+                        break
                 continue
             if line is None:
                 break
             normalized = line.rstrip("\r\n")
             lines.append(normalized)
             emit(normalized)
+            last_output_at = time.monotonic()
         return_code = process.wait(timeout=max(1.0, deadline - time.monotonic()))
         combined_log = "\n".join(lines)
         index_path = staging / "index.html"

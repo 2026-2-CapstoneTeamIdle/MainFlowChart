@@ -593,15 +593,22 @@ function formatDuration(totalSeconds) {
 }
 
 function renderProgress(job) {
-  const percent = Math.min(100, Math.max(0, Number(job.progress_percent) || 0));
-  progressLabel.textContent = job.progress_label || "처리 중";
+  const previewBuilding = job.preview_status === "building";
+  const percentValue = previewBuilding ? job.preview_progress_percent : job.progress_percent;
+  const label = previewBuilding ? job.preview_progress_label : job.progress_label;
+  const elapsedValue = previewBuilding ? job.preview_elapsed_seconds : job.elapsed_seconds;
+  const estimateValue = previewBuilding
+    ? job.preview_estimated_total_seconds
+    : job.estimated_total_seconds;
+  const percent = Math.min(100, Math.max(0, Number(percentValue) || 0));
+  progressLabel.textContent = label || "처리 중";
   progressPercent.textContent = `${percent}%`;
   progressFill.style.width = `${percent}%`;
   progressTrack.setAttribute("aria-valuenow", String(percent));
-  const elapsed = formatDuration(Number(job.elapsed_seconds));
-  const estimate = job.estimated_total_seconds == null
+  const elapsed = formatDuration(Number(elapsedValue));
+  const estimate = estimateValue == null
     ? "사용자 승인 대기"
-    : `예상 ${formatDuration(Number(job.estimated_total_seconds))}`;
+    : `예상 ${formatDuration(Number(estimateValue))}`;
   progressTime.textContent = `처리 시간 ${elapsed} / ${estimate}`;
 }
 
@@ -641,8 +648,18 @@ async function openUnityEditor() {
   if (!currentJobId) return;
   openUnityButton.disabled = true;
   try {
-    await api(`/api/jobs/${currentJobId}/open-unity`, { method: "POST", body: "{}" });
-    showToast("Unity Editor를 열었습니다.");
+    const result = await api(`/api/jobs/${currentJobId}/open-unity`, { method: "POST", body: "{}" });
+    if (result.status === "launcher_required" && result.launcher_url) {
+      const link = document.createElement("a");
+      link.href = result.launcher_url;
+      link.download = "";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      showToast("Windows용 Unity 실행 파일을 받았습니다. 다운로드된 .cmd 파일을 실행하세요.");
+    } else {
+      showToast("Unity Editor를 열었습니다.");
+    }
   } catch (error) {
     showToast(error.message, true);
   } finally {

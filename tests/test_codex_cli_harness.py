@@ -26,6 +26,7 @@ from game_pipeline.codex_cli.harness import (
     _ProjectSourceSnapshot,
     _repair_is_regression,
     _repair_prompt,
+    _require_agent_completion,
     _restore_protected_asset_files,
     _validation_progress,
     _write_project_instructions,
@@ -178,6 +179,57 @@ def test_runner_uses_scoped_workspace_and_does_not_forward_api_keys(
     assert "GEMINI_API_KEY" not in environment
     assert result.final_response == _completion()
     assert result.events[0]["type"] == "turn.completed"
+
+
+def test_runner_bypasses_nested_sandbox_only_when_docker_flag_is_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "unity"
+    project.mkdir()
+    executable = tmp_path / "codex"
+    executable.write_bytes(b"")
+    captured: dict[str, object] = {}
+
+    def fake_run(**kwargs):
+        command = kwargs["command"]
+        captured["command"] = command
+        answer = Path(command[command.index("--output-last-message") + 1])
+        answer.write_text(json.dumps(_completion()), encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout='{"type":"turn.completed"}\n')
+
+    monkeypatch.setenv("MAINFLOW_CODEX_DOCKER_BYPASS_SANDBOX", "1")
+    with patch("game_pipeline.codex_cli.runner._stream_codex_process", side_effect=fake_run):
+        CodexCliRunner(_settings(executable)).run(
+            project_root=project,
+            prompt="implement",
+            schema=COMPLETION_SCHEMA,
+            audit_directory=tmp_path / "audit",
+        )
+
+    command = captured["command"]
+    assert "--dangerously-bypass-approvals-and-sandbox" in command
+    assert "--sandbox" not in command
+
+
+def test_needs_attention_agent_result_is_not_accepted_as_implementation(tmp_path: Path) -> None:
+    result = CodexCliResult(
+        exit_code=0,
+        elapsed_seconds=1.0,
+        final_response={
+            "status": "needs_attention",
+            "summary": "bwrap could not create a namespace",
+            "changed_files": [],
+            "implemented_features": [],
+            "tests_run": [],
+            "unresolved_requirements": ["project files could not be inspected"],
+            "recommended_validation": [],
+        },
+        events=(),
+        audit_directory=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="AGENT_IMPLEMENTATION_INCOMPLETE.*bwrap"):
+        _require_agent_completion(result, "initial implementation")
 
 
 def test_runner_rejects_non_jsonl_output(tmp_path: Path) -> None:

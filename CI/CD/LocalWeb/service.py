@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal, cast, get_args
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -299,6 +299,9 @@ class WorkflowJob:
     preview_url: str | None = None
     preview_error: str | None = None
     preview_cancel_requested: bool = False
+    preview_progress_percent: int = 0
+    preview_progress_label: str = "Preview 대기"
+    preview_started_at: float | None = field(default=None, repr=False)
     process: subprocess.Popen[str] | None = None
     progress_percent: int = 2
     progress_label: str = "Feature 분석 준비"
@@ -312,6 +315,7 @@ class WorkflowJob:
         with self.lock:
             self.logs.append(line)
             self._update_progress(line)
+            self._update_preview_progress(line)
             if len(self.logs) > MAX_LOG_LINES:
                 del self.logs[: len(self.logs) - MAX_LOG_LINES]
             with (self.job_root / "workflow.log").open("a", encoding="utf-8") as file:
@@ -356,6 +360,29 @@ class WorkflowJob:
                     self.progress_label = label
                 return
 
+    def _update_preview_progress(self, line: str) -> None:
+        if self.preview_status != "building":
+            return
+        milestones = (
+            ("Preview 플레이 준비가 끝났", 100, "Preview 준비 완료"),
+            ("Preview 빌드가 완료", 98, "WebGL 게시"),
+            ("UNITY_WEBGL_PREVIEW_OK", 96, "WebGL 게시"),
+            ("Postprocess built player", 92, "WebGL 게시"),
+            ("Build Finished, Result", 90, "WebGL 게시"),
+            ("emcc", 78, "WebAssembly 링크"),
+            ("Link_WebGL_wasm", 78, "WebAssembly 링크"),
+            ("C_WebGL_wasm", 52, "WebAssembly 컴파일"),
+            ("il2cppOutput", 45, "WebAssembly 컴파일"),
+            ("UnityLinker", 32, "스크립트 변환"),
+            ("WEBGL_PREVIEW_STAGE:script_conversion", 20, "스크립트 변환"),
+            ("Unity ", 8, "Unity WebGL 빌드 준비"),
+        )
+        for marker, percent, label in milestones:
+            if marker in line and percent >= self.preview_progress_percent:
+                self.preview_progress_percent = percent
+                self.preview_progress_label = label
+                return
+
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
             elapsed = max(0, int(time.monotonic() - self.progress_started_at))
@@ -385,6 +412,24 @@ class WorkflowJob:
                 "preview_status": self.preview_status,
                 "preview_url": self.preview_url,
                 "preview_error": self.preview_error,
+                "preview_progress_percent": self.preview_progress_percent,
+                "preview_progress_label": self.preview_progress_label,
+                "preview_elapsed_seconds": (
+                    max(0, int(time.monotonic() - self.preview_started_at))
+                    if self.preview_started_at is not None
+                    else 0
+                ),
+                "preview_estimated_total_seconds": (
+                    max(
+                        360,
+                        int(
+                            max(0, time.monotonic() - self.preview_started_at)
+                            / max(self.preview_progress_percent / 100, 0.05)
+                        ),
+                    )
+                    if self.preview_started_at is not None and self.preview_status == "building"
+                    else None
+                ),
                 "logs": list(self.logs),
                 "progress_percent": self.progress_percent,
                 "progress_label": self.progress_label,
@@ -658,6 +703,9 @@ class WorkflowJobManager:
             job.preview_url = None
             job.preview_error = None
             job.preview_cancel_requested = False
+            job.preview_progress_percent = 3
+            job.preview_progress_label = "Preview 빌드 준비"
+            job.preview_started_at = time.monotonic()
         if job.status == "failed":
             job.append_log("[WEBGL] 검증에 실패한 진단용 프로젝트의 Preview 빌드를 시작합니다.")
         else:
@@ -699,6 +747,8 @@ class WorkflowJobManager:
                 job.preview_status = "ready"
                 job.preview_url = f"/preview/{project_id}/"
                 job.preview_error = None
+                job.preview_progress_percent = 100
+                job.preview_progress_label = "Preview 준비 완료"
             _atomic_write_json(
                 validation_path,
                 {
@@ -716,6 +766,7 @@ class WorkflowJobManager:
                     return
                 job.preview_status = "failed"
                 job.preview_error = str(error)
+                job.preview_progress_label = "Preview 빌드 실패"
             _atomic_write_json(
                 validation_path,
                 {
@@ -726,7 +777,30 @@ class WorkflowJobManager:
             )
             job.append_log(f"[WEBGL][ERROR] {error}")
 
-    def open_unity_editor(self, job_id: str) -> Path:
+    def open_unity_editor(self, job_id: str) -> dict[str, str]:
+        project_root = self._unity_project_root(job_id)
+        if _docker_localweb_enabled():
+            host_project = _docker_host_project_path(project_root)
+            return {
+                "status": "launcher_required",
+                "project_root": str(host_project),
+            }
+        opened = open_unity_project(project_root)
+        if opened is None:
+            raise RuntimeError("Unity Editor 경로를 찾지 못했거나 실행에 실패했습니다.")
+        self.get(job_id).append_log(f"[WEB] Unity Editor로 프로젝트를 엽니다: {opened}")
+        return {"status": "opened", "project_root": str(opened)}
+
+    def unity_editor_launcher(self, job_id: str) -> tuple[str, str]:
+        """Return a Windows launcher for a project generated by Docker LocalWeb."""
+
+        project_root = self._unity_project_root(job_id)
+        host_project = _docker_host_project_path(project_root)
+        version = _unity_project_version(project_root)
+        filename = f"MainFlow-Open-Unity-{self.get(job_id).project_id}.cmd"
+        return filename, _windows_unity_launcher(host_project, version)
+
+    def _unity_project_root(self, job_id: str) -> Path:
         job = self.get(job_id)
         with job.lock:
             if job.status not in {"completed", "failed"}:
@@ -741,11 +815,7 @@ class WorkflowJobManager:
             raise ValueError("Unity 프로젝트 경로가 Workspace 밖을 가리킵니다.") from error
         if not (project_root / "ProjectSettings/ProjectVersion.txt").is_file():
             raise FileNotFoundError("생성된 Unity 프로젝트를 찾을 수 없습니다.")
-        opened = open_unity_project(project_root)
-        if opened is None:
-            raise RuntimeError("Unity Editor 경로를 찾지 못했거나 실행에 실패했습니다.")
-        job.append_log(f"[WEB] Unity Editor로 프로젝트를 엽니다: {opened}")
-        return opened
+        return project_root
 
     def _start_preview(self, job: WorkflowJob) -> None:
         thread = threading.Thread(target=self._run_preview, args=(job,), daemon=True)
@@ -1168,6 +1238,110 @@ def _project_id_from_unity_report(report_path: Path) -> str | None:
     if not (project_root / "ProjectSettings/ProjectVersion.txt").is_file():
         return None
     return project_id
+
+
+def _docker_localweb_enabled() -> bool:
+    return os.environ.get("MAINFLOW_DOCKER_LOCALWEB", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _docker_host_project_path(project_root: Path) -> PureWindowsPath:
+    relative = project_root.resolve().relative_to(WORKSPACE_ROOT.resolve())
+    configured = os.environ.get("MAINFLOW_HOST_WORKSPACE", "").strip()
+    if configured:
+        host_workspace = PureWindowsPath(configured)
+    elif os.name == "nt":
+        host_workspace = PureWindowsPath(str(WORKSPACE_ROOT))
+    else:
+        try:
+            mountinfo = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+        except OSError as error:
+            raise RuntimeError(
+                "Docker 호스트 Workspace 경로를 확인하지 못했습니다. "
+                "MAINFLOW_HOST_WORKSPACE를 Windows 경로로 설정하세요."
+            ) from error
+        host_workspace = _host_workspace_from_mountinfo(mountinfo, WORKSPACE_ROOT)
+        if host_workspace is None:
+            raise RuntimeError(
+                "Docker bind mount의 Windows 경로를 확인하지 못했습니다. "
+                "MAINFLOW_HOST_WORKSPACE를 Windows 경로로 설정하세요."
+            )
+    return host_workspace.joinpath(*relative.parts)
+
+
+def _host_workspace_from_mountinfo(
+    mountinfo: str,
+    mount_point: Path,
+) -> PureWindowsPath | None:
+    expected_mount = mount_point.as_posix()
+    for line in mountinfo.splitlines():
+        try:
+            mount_fields, filesystem_fields = line.split(" - ", 1)
+        except ValueError:
+            continue
+        fields = mount_fields.split()
+        if len(fields) < 5 or _unescape_mountinfo(fields[4]) != expected_mount:
+            continue
+        root = PurePosixPath(_unescape_mountinfo(fields[3]))
+        match = re.search(r"(?:^|[,;])path=([^,;]+)", filesystem_fields)
+        if match is None:
+            continue
+        windows_root = PureWindowsPath(match.group(1))
+        relative_parts = root.parts[1:] if root.is_absolute() else root.parts
+        return windows_root.joinpath(*relative_parts)
+    return None
+
+
+def _unescape_mountinfo(value: str) -> str:
+    return (
+        value.replace(r"\040", " ")
+        .replace(r"\011", "\t")
+        .replace(r"\012", "\n")
+        .replace(r"\134", "\\")
+    )
+
+
+def _unity_project_version(project_root: Path) -> str:
+    version_file = project_root / "ProjectSettings" / "ProjectVersion.txt"
+    for line in version_file.read_text(encoding="utf-8").splitlines():
+        if line.startswith("m_EditorVersion:"):
+            version = line.split(":", 1)[1].strip()
+            if re.fullmatch(r"[0-9A-Za-z.f]+", version):
+                return version
+    raise ValueError("Unity 프로젝트 버전을 확인할 수 없습니다.")
+
+
+def _windows_unity_launcher(project_root: PureWindowsPath, version: str) -> str:
+    project = str(project_root).replace("%", "%%")
+    unity = PureWindowsPath("C:/Program Files/Unity/Hub/Editor") / version / "Editor" / "Unity.exe"
+    return "\r\n".join(
+        [
+            "@echo off",
+            "setlocal",
+            f'set "MAINFLOW_PROJECT={project}"',
+            f'set "MAINFLOW_UNITY={unity}"',
+            'if not exist "%MAINFLOW_PROJECT%\\ProjectSettings\\ProjectVersion.txt" (',
+            "  echo Unity project was not found:",
+            "  echo %MAINFLOW_PROJECT%",
+            "  pause",
+            "  exit /b 1",
+            ")",
+            'if not exist "%MAINFLOW_UNITY%" (',
+            f"  echo Unity {version} is not installed at:",
+            "  echo %MAINFLOW_UNITY%",
+            "  echo Install the matching Editor in Unity Hub and run this file again.",
+            "  pause",
+            "  exit /b 1",
+            ")",
+            'start "" "%MAINFLOW_UNITY%" -projectPath "%MAINFLOW_PROJECT%"',
+            "endlocal",
+            "",
+        ]
+    )
 
 
 def _error_messages(validation: dict[str, Any]) -> list[str]:

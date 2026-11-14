@@ -31,5 +31,8 @@ def test_local_web_compose_persists_unity_license_and_sets_editor() -> None:
 
     assert "UNITY_EDITOR_PATH: /opt/unity/Editor/Unity" in compose
     assert "DISPLAY: :99" in compose
+    assert 'MAINFLOW_CODEX_DOCKER_BYPASS_SANDBOX: "1"' in compose
+    assert 'MAINFLOW_DOCKER_LOCALWEB: "1"' in compose
+    assert "MAINFLOW_HOST_WORKSPACE: ${MAINFLOW_HOST_WORKSPACE:-}" in compose
     assert "target: /home/mainflow/.local/share/unity3d" in compose
     assert "target: /home/mainflow/.config" in compose

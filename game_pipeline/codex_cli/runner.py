@@ -64,16 +64,22 @@ class CodexCliRunner:
             "exec",
             "--cd",
             str(root),
-            "--sandbox",
-            sandbox,
-            "--skip-git-repo-check",
-            "--json",
-            "--ignore-rules",
-            "--output-schema",
-            str(schema_path),
-            "--output-last-message",
-            str(answer_path),
         ]
+        if _docker_sandbox_bypass_enabled():
+            command.append("--dangerously-bypass-approvals-and-sandbox")
+        else:
+            command.extend(["--sandbox", sandbox])
+        command.extend(
+            [
+                "--skip-git-repo-check",
+                "--json",
+                "--ignore-rules",
+                "--output-schema",
+                str(schema_path),
+                "--output-last-message",
+                str(answer_path),
+            ]
+        )
         if self.settings.model:
             command.extend(["--model", self.settings.model])
         if self.settings.reasoning_effort:
@@ -111,6 +117,17 @@ class CodexCliRunner:
             tuple(events),
             audit_directory,
         )
+
+
+def _docker_sandbox_bypass_enabled() -> bool:
+    """Disable Codex's nested bubblewrap only inside the externally isolated container."""
+
+    return os.environ.get("MAINFLOW_CODEX_DOCKER_BYPASS_SANDBOX", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 @dataclass(frozen=True)

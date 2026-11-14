@@ -283,6 +283,7 @@ class CodexGameHarness:
             schema=COMPLETION_SCHEMA,
             audit_directory=self.audit_root / "implementation",
         )
+        _require_agent_completion(self.implementation, "initial implementation")
         permission_report = _normalize_windows_project_permissions(project_root)
         self._record(f"{self.provider}_project_permissions_after_implementation", permission_report)
         _require_normalized_permissions(
@@ -404,6 +405,7 @@ Return the required structured report.
                 schema=COMPLETION_SCHEMA,
                 audit_directory=self.audit_root / "quality_repair" / f"attempt_{iteration:02d}",
             )
+            _require_agent_completion(result, f"quality repair {iteration}")
             self._record(f"{self.provider}_quality_repair_{iteration}", result.final_response)
             restored = _restore_protected_asset_files(snapshot, project_root)
             self._record(f"{self.provider}_quality_protected_assets_{iteration}", restored)
@@ -622,6 +624,7 @@ Return the required structured report.
                     schema=COMPLETION_SCHEMA,
                     audit_directory=self.audit_root / phase / f"repair_{attempt + 1:02d}",
                 )
+                _require_agent_completion(repair, f"{phase} repair {attempt + 1}")
             except Exception:
                 pending_snapshot.restore(project_root)
                 _normalize_windows_project_permissions(project_root)
@@ -656,6 +659,19 @@ Return the required structured report.
     def _record(self, name: str, value: Any) -> None:
         if self.record is not None:
             self.record(name, value)
+
+
+def _require_agent_completion(result: CodexCliResult, phase: str) -> None:
+    """Stop immediately when the CLI reports that it could not inspect or edit the project."""
+
+    response = result.final_response
+    if response.get("status") == "completed":
+        return
+    summary = str(response.get("summary", "Agent could not complete the requested work"))
+    unresolved = response.get("unresolved_requirements", [])
+    detail = "; ".join(str(item) for item in unresolved[:5]) if isinstance(unresolved, list) else ""
+    suffix = f" Unresolved: {detail}" if detail else ""
+    raise RuntimeError(f"AGENT_IMPLEMENTATION_INCOMPLETE ({phase}): {summary}.{suffix}")
 
 
 def prepare_design_for_codex(design: GameLogicDesign) -> GameLogicDesign:
