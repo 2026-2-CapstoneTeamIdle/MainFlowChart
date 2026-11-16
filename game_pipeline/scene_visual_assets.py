@@ -32,38 +32,44 @@ _PLATFORMER_OBJECT_VISUALS: tuple[tuple[str, str, str, str], ...] = (
         "platformer_enemy",
         "enemies",
         "적",
-        "발판 위를 좌우로 순찰하며 플레이어와 부딪히면 피해를 주는 적 캐릭터 스프라이트",
+        "발판 위를 좌우로 순찰하며 플레이어와 부딪히면 피해를 주는 적 캐릭터 한 마리만 그린 스프라이트",
     ),
     (
         "platformer_hazard",
         "hazards",
         "함정",
-        "닿으면 피해를 주는 낮고 넓은 가시 함정 오브젝트",
+        "닿으면 피해를 주는 낮고 넓은 가시 함정 오브젝트 하나",
     ),
     (
         "platformer_collectible",
         "collectibles",
         "수집물",
-        "획득하면 점수가 오르는 작고 반짝이는 보석 아이템",
+        "획득하면 점수가 오르는 작고 반짝이는 보석 아이템 하나",
     ),
     (
         "platformer_checkpoint",
         "checkpoint",
         "체크포인트",
-        "진행 상황을 저장하는 세로로 긴 깃발 기둥",
+        "진행 상황을 저장하는 세로로 긴 깃발 기둥 하나",
     ),
 )
 
 _PLATFORMER_GOAL = (
     "platformer_goal",
     "골",
-    "도달하면 클리어되는 세로로 긴 빛나는 출구 문",
+    "도달하면 클리어되는 세로로 긴 빛나는 출구 문 하나",
 )
 
 _BACKGROUND_DESCRIPTIONS: dict[str, str] = {
-    "Platformer": "사이드뷰 플랫포머 뒤에 깔리는 원경 배경 그림, 캐릭터와 발판 없이 풍경만",
-    "SurvivorLike": "탑다운 전투 아레나 바닥 배경 그림, 캐릭터 없이 지형만",
-    "TowerDefense": "적이 이동하는 전장 바닥 배경 그림, 유닛 없이 지형만",
+    "Platformer": (
+        "사이드뷰 플랫포머 뒤에 깔리는 원경 배경 그림, 캐릭터와 발판 없이 풍경만, "
+        "좌우 끝이 자연스럽게 이어져 가로로 반복해도 이음매가 보이지 않게"
+    ),
+    "SurvivorLike": (
+        "탑다운 전투 아레나 바닥 배경 그림, 캐릭터 없이 지형만, "
+        "상하좌우로 반복해도 이음매가 보이지 않게"
+    ),
+    "TowerDefense": "전장 바닥 배경 그림, 유닛 없이 지형만, 상하좌우로 반복해도 이음매가 보이지 않게",
     "CardGame": "카드 테이블 배경 그림, 카드와 글자 없이 질감만",
 }
 _DEFAULT_BACKGROUND_DESCRIPTION = "게임 화면 뒤에 깔리는 배경 그림, 캐릭터 없이 풍경만"
@@ -110,12 +116,12 @@ def scene_visual_requirements(
 
     if game_spec["genre"] == "Platformer":
         for asset_id, collection, purpose, description in _PLATFORMER_OBJECT_VISUALS:
-            archetypes = _archetypes(level_plan, collection)
-            if not archetypes or asset_id in existing_ids:
+            # The level plan's archetypes only decide whether the category is placed. They
+            # are not listed in the description: one image is bound to every object of the
+            # category, and naming several kinds made the model draw several subjects in it.
+            if not _archetypes(level_plan, collection) or asset_id in existing_ids:
                 continue
-            requirements.append(
-                _requirement(asset_id, purpose, f"{description} (종류: {', '.join(archetypes)})")
-            )
+            requirements.append(_requirement(asset_id, purpose, description))
         goal_id, goal_purpose, goal_description = _PLATFORMER_GOAL
         if goal_id not in existing_ids:
             requirements.append(_requirement(goal_id, goal_purpose, goal_description))

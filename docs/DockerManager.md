@@ -97,8 +97,23 @@ Unity의 기본 도형으로 대체될 뿐 실행 전체가 실패하지 않는�
 | `platformer_goal` | 플랫포머 | `StageGoal` |
 | `stage_background` | 기본 템플릿에 배경 이미지가 없는 장르 | `Background` |
 
-Unity의 `GeneratedAssetBinder`는 생성된 스프라이트를 오브젝트에 연결할 때 기존 오브젝트 크기(충돌 범위)
-안에 비율을 유지해 맞춘다. 배경은 화면을 채우도록 맞춘다. 타일셋은 기존 방식대로 연결한다.
+Unity의 `GeneratedAssetBinder`는 생성된 이미지를 다음처럼 오브젝트에 연결한다.
+
+- 오브젝트 스프라이트: 기존 오브젝트 크기(충돌 범위) 안에 비율을 유지해 맞춘다. 플랫포머 오브젝트는
+  생성 단계부터 오브젝트 비율에 맞춘 캔버스(64px/유닛, `asset_specs.OBJECT_FOOTPRINT_UNITS`)로 만들고,
+  OpenAI는 세로·가로로 긴 오브젝트에 1024×1536·1536×1024 캔버스를 쓴다.
+- 발판(`Ground`, `Platform_N`): 적용 단계에서 타일셋의 지면 타일(맨 윗줄 첫 칸, 위쪽 하늘은 투명 처리)과
+  흙 타일(둘째 줄 첫 칸)을 `_surface.png`·`_fill.png`로 따로 잘라 둔다. Unity는 발판 오브젝트와 충돌 범위를
+  그대로 두고 자식 렌더러(`SurfaceTiles`, `SurfaceFill`)로 타일을 반복한다. 지면 타일의 단단한 지면선을
+  충돌 범위 윗면에 맞추고 풀·장식은 그 위로 그려지며, 두꺼운 바닥은 아래를 흙 타일로 채운다.
+- 스테이지 배경(`stage_background`): 원본 옆에 좌우 반전본을 붙인 `_scroll.png`를 반복해 이음매가 생기지
+  않는다. 상하로도 반복하는 탑다운 장르는 상하 반전본까지 붙인 2×2 묶음을 쓴다. `PrototypeBackgroundScroller`가 카메라를 따라가며 반복하고, 사이드뷰는 시차 0.25로 천천히
+  움직이며 탑다운 장르는 상하좌우로 반복하고 월드에 고정된다.
+- 땅에 서는 오브젝트는 그림 아래 끝이 충돌 범위 아래 끝과 0.05유닛 넘게 어긋나면
+  `AssetBindingReport.json`의 `warnings`에 위치와 크기를 기록한다.
+- 그리는 순서(플랫포머): 배경 < 발판 < 골·체크포인트 < 수집물·함정 < 적 < 플레이어.
+
+실제로 Unity에 적용하려면 `MAINFLOW_APPLY_IMAGE_ASSETS=on`으로 실행한다.
 
 ```powershell
 $env:MAINFLOW_IMAGE_BACKEND = "openai"

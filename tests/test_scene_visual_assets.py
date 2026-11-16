@@ -62,7 +62,11 @@ class SceneVisualAssetsTest(unittest.TestCase):
         self.assertTrue(all(item["asset_type"] == "image" for item in additions))
         self.assertTrue(all(item["required"] is False for item in additions))
         enemy = additions[0]
-        self.assertIn("patrol_enemy", enemy["description"])
+        # One image covers every enemy kind, so it must show exactly one subject: listing
+        # the placed kinds made the model draw a lineup of three enemies.
+        self.assertNotIn("patrol_enemy", enemy["description"])
+        self.assertIn("한 마리", enemy["description"])
+        self.assertTrue(all("종류" not in item["description"] for item in additions))
 
     def test_object_images_get_the_intended_kind_and_only_enemies_animate(self) -> None:
         spec, design = _design("플랫포머")
@@ -143,7 +147,7 @@ class SceneVisualAssetsTest(unittest.TestCase):
                 rf'"{re.escape(item["asset_id"])}" =>',
                 f"GeneratedAssetBinder.SceneObjectNames is missing {item['asset_id']}",
             )
-        self.assertIn("AssignSprite(renderer, sprite, entry.kind)", binder)
+        self.assertIn("AssignSprite(renderer, sprite, entry)", binder)
 
 
 if __name__ == "__main__":

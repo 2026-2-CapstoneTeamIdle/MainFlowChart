@@ -41,10 +41,20 @@ TRANSPARENT_KINDS: frozenset[ImageKind] = frozenset({"sprite", "portrait", "ui"}
 KIND_SIZES = IMAGE_SIZES
 
 KIND_PROMPTS: dict[ImageKind, str] = {
-    "sprite": "A 2D game sprite",
+    # One sprite is bound to every object of its category, so it must show exactly one
+    # subject; a lineup of variants would be repeated on every object.
+    "sprite": (
+        "A 2D game sprite of exactly one subject (never a group, lineup or set of variants)"
+    ),
     "portrait": "A 2D character portrait for dialogue scenes",
     "ui": "A 2D game UI element",
-    "tileset": "A seamless 2D tileset texture arranged as a grid of tiles",
+    "tileset": (
+        "A 2D tileset sheet laid out as an exact 4x4 grid of equal square tiles with no gaps, "
+        "borders or labels. The top row holds walkable ground surface tiles (top edge visible) "
+        "that tile seamlessly left to right, each with a flat, clean top edge: no rocks, "
+        "plants, mushrooms or props stick up above the surface line. The lower rows hold "
+        "matching underground fill and variation tiles"
+    ),
     "illustration": "A 2D card illustration",
     "background": "A 2D game background scene",
 }

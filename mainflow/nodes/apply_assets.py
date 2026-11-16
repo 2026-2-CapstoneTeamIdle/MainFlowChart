@@ -30,6 +30,19 @@ def image_application_enabled() -> bool:
     return value in {"on", "true", "1", "yes"}
 
 
+AGENT_GAME_BUILDERS = frozenset(
+    {"codex", "codex-cli", "codex_cli", "claude", "claude-code", "claude_code"}
+)
+
+
+def placeholder_images_excluded() -> bool:
+    """Agent-built games keep clean primitives instead of placeholder images."""
+
+    return os.environ.get("MAINFLOW_GAME_BUILDER", "pipeline").strip().lower() in (
+        AGENT_GAME_BUILDERS
+    )
+
+
 # Node 계약
 # - 이전 Node: validate_image + validate_sound (join)
 # - 입력 State: project_id, game_logic_draft, image_draft, sound_draft,
@@ -71,16 +84,7 @@ def apply_assets_to_game_node(
     # 사운드 파일은 sound_draft.assets[].artifact로 찾는다. 요청서의 suggested_filename은
     # 항상 .wav지만 ELEVENLABS_OUTPUT_FORMAT=mp3_*이면 실제 파일은 .mp3다.
     game_failed = game_draft["status"] == "failed"
-    exclude_placeholder_images = os.environ.get(
-        "MAINFLOW_GAME_BUILDER", "pipeline"
-    ).strip().lower() in {
-        "codex",
-        "codex-cli",
-        "codex_cli",
-        "claude",
-        "claude-code",
-        "claude_code",
-    }
+    exclude_placeholder_images = placeholder_images_excluded()
     # MAINFLOW_APPLY_IMAGE_ASSETS=on으로 켜기 전까지 이미지는 생성만 하고 Unity에 적용하지 않는다.
     skip_image_application = not image_application_enabled()
     if skip_image_application:
