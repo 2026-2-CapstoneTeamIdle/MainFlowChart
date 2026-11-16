@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -31,7 +32,10 @@ def test_launcher_opens_project_created_after_capture(tmp_path: Path, monkeypatc
 
     assert opened == generated
     command = popen.call_args.args[0]
-    assert command == [str(unity.resolve()), "-projectPath", str(generated)]
+    expected = [str(unity.resolve()), "-projectPath", str(generated)]
+    if os.name == "nt":
+        expected.extend(["-buildTarget", "win64"])
+    assert command == expected
     assert popen.call_args.kwargs["stdin"] is subprocess.DEVNULL
 
 
@@ -77,3 +81,5 @@ def test_manual_open_ignores_auto_open_setting(tmp_path: Path, monkeypatch) -> N
         assert open_unity_project(project) == project
 
     popen.assert_called_once()
+    if os.name == "nt":
+        assert popen.call_args.args[0][-2:] == ["-buildTarget", "win64"]

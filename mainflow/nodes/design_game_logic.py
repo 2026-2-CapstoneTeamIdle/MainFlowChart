@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from copy import deepcopy
 from pathlib import Path
@@ -30,6 +31,7 @@ from game_pipeline import (
     review_feedback,
 )
 from game_pipeline.feature_contract import build_feature_contract
+from game_pipeline.gameplay_contracts import build_pacing_contract, build_ui_contract
 from game_pipeline.project_context_index import build_project_context_index
 from game_pipeline.repair_loop import validate_and_repair
 from game_pipeline.scene_visual_assets import with_scene_visual_assets
@@ -225,6 +227,11 @@ def design_game_logic_node(
         agent_harness_enabled = game_builder in {"codex_cli", "claude_code"}
         if agent_harness_enabled:
             design = prepare_design_for_codex(design)
+
+        pacing_contract = build_pacing_contract(
+            game_spec, design["design_v2"], request["condition"]
+        )
+        ui_contract = build_ui_contract(game_spec, design["design_v2"])
 
         design["implementation_tasks"] = build_implementation_tasks(
             design,
@@ -428,6 +435,19 @@ def design_game_logic_node(
             )
             for key, filename in UnityProjectGenerator.DESIGN_DOCUMENT_NAMES.items()
         ]
+        for filename, contract in (
+            ("pacing_contract.json", pacing_contract),
+            ("ui_contract.json", ui_contract),
+        ):
+            design_document_references.append(
+                manager.write_json(
+                    state["project_id"],
+                    "game",
+                    f"design/{filename}",
+                    contract,
+                    producer="design_game_logic",
+                )
+            )
         design_reference = manager.write_json(
             state["project_id"],
             "game",
@@ -456,6 +476,18 @@ def design_game_logic_node(
             ),
             evidence=lambda result: f"generated Unity project at {result.project_root}",
         )
+        generated_contract_directory = (
+            generation.project_root / UnityProjectGenerator.DESIGN_DOCUMENT_ROOT
+        )
+        generated_contract_directory.mkdir(parents=True, exist_ok=True)
+        for filename, contract in (
+            ("pacing_contract.json", pacing_contract),
+            ("ui_contract.json", ui_contract),
+        ):
+            (generated_contract_directory / filename).write_text(
+                json.dumps(contract, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
         agent_harness = None
         agent_implementation = None
         if agent_harness_enabled:

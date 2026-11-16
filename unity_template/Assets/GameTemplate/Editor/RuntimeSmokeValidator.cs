@@ -338,7 +338,7 @@ namespace TeamIdle.GameTemplate.Editor
                         return;
                     }
 
-                    BeginAutoTraversalTest();
+                    BeginValidationPlanTests();
                     return;
                 }
 
@@ -361,7 +361,7 @@ namespace TeamIdle.GameTemplate.Editor
                         return;
                     }
 
-                    BeginAutoTraversalTest();
+                    BeginValidationPlanTests();
                     return;
                 }
 
@@ -373,7 +373,7 @@ namespace TeamIdle.GameTemplate.Editor
                         return;
                     }
 
-                    BeginAutoTraversalTest();
+                    BeginValidationPlanTests();
                     return;
                 }
 
@@ -1297,7 +1297,7 @@ namespace TeamIdle.GameTemplate.Editor
             {
                 Metrics.last_reached_zone = "mastery";
                 InputAdapterModule.TestConfirmPressed = false;
-                BeginValidationPlanTests();
+                BeginCollectibleTest();
                 return;
             }
             if (PhaseElapsed > routeTimeoutSeconds)
@@ -1348,8 +1348,49 @@ namespace TeamIdle.GameTemplate.Editor
             stageController =
                 UnityEngine.Object.FindFirstObjectByType<PrototypePlatformerStageController>();
             playerHealth = player.GetComponent<HealthComponent>();
-            checkpoint = UnityEngine.Object.FindFirstObjectByType<PrototypeCheckpoint>();
-            hazard = UnityEngine.Object.FindFirstObjectByType<PrototypeHazard>();
+            checkpoint = null;
+            foreach (
+                var candidate in UnityEngine.Object.FindObjectsByType<PrototypeCheckpoint>(
+                    FindObjectsSortMode.None
+                )
+            )
+            {
+                if (
+                    candidate != null
+                    && candidate.isActiveAndEnabled
+                    && (
+                        checkpoint == null || candidate.CheckpointIndex < checkpoint.CheckpointIndex
+                    )
+                )
+                {
+                    checkpoint = candidate;
+                }
+            }
+
+            hazard = null;
+            var nearestHazardDistance = float.PositiveInfinity;
+            foreach (
+                var candidate in UnityEngine.Object.FindObjectsByType<PrototypeHazard>(
+                    FindObjectsSortMode.None
+                )
+            )
+            {
+                if (candidate == null || !candidate.isActiveAndEnabled || candidate.Damage <= 0f)
+                {
+                    continue;
+                }
+                var distance =
+                    checkpoint == null
+                        ? candidate.transform.position.sqrMagnitude
+                        : (
+                            candidate.transform.position - checkpoint.transform.position
+                        ).sqrMagnitude;
+                if (distance < nearestHazardDistance)
+                {
+                    hazard = candidate;
+                    nearestHazardDistance = distance;
+                }
+            }
             goalActor = UnityEngine.Object.FindFirstObjectByType<PrototypeGoal>();
             collectibles = UnityEngine.Object.FindObjectsByType<PrototypeCollectible>(
                 FindObjectsSortMode.None
@@ -1375,7 +1416,7 @@ namespace TeamIdle.GameTemplate.Editor
             InputAdapterModule.TestDashPressed = false;
             InputAdapterModule.TestConfirmPressed = false;
             collectibleIndex = 0;
-            BeginCollectibleTest();
+            BeginCheckpointTest();
         }
 
         private static bool ValidateRequiredSceneObjects()
@@ -1443,7 +1484,7 @@ namespace TeamIdle.GameTemplate.Editor
                     );
                     return;
                 }
-                BeginCheckpointTest();
+                BeginGoalTest();
                 return;
             }
             collectedBefore = collectibleSystem.CollectedCount;
@@ -1593,7 +1634,7 @@ namespace TeamIdle.GameTemplate.Editor
                 }
                 MarkScenarioPassed("checkpoint_recovery");
                 MarkCausalTransition("platformer.death_to_checkpoint");
-                BeginGoalTest();
+                BeginAutoTraversalTest();
                 return;
             }
 

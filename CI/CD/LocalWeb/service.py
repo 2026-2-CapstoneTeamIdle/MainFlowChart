@@ -1337,7 +1337,7 @@ def _windows_unity_launcher(project_root: PureWindowsPath, version: str) -> str:
             "  pause",
             "  exit /b 1",
             ")",
-            'start "" "%MAINFLOW_UNITY%" -projectPath "%MAINFLOW_PROJECT%"',
+            'start "" "%MAINFLOW_UNITY%" -projectPath "%MAINFLOW_PROJECT%" -buildTarget win64',
             "endlocal",
             "",
         ]

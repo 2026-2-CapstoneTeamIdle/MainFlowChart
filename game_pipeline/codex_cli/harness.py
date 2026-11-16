@@ -397,6 +397,18 @@ either import that namespace or use the fully-qualified type name. Put every new
 component in a filename-matched source file so Unity can serialize it. Treat authored normal
 gameplay duration separately from accelerated smoke-test time: preserve the requested runtime
 pacing while exposing deterministic state transitions that the host can test quickly.
+Read `Assets/GameTemplate/Generated/Design/pacing_contract.json` and `ui_contract.json` before
+patching. For duration gaps, add real authored challenges or decisions rather than waiting.
+For UI gaps, bind a visible control or value to the actual gameplay state and transition.
+Never repair pacing by adding a minimum-time gate at a zone boundary or the goal.
+For contact-damage findings, compare player health before and after a nonlethal hit. Preserve
+the reduced health and temporary invulnerability while play continues. Only trigger checkpoint
+respawn on zero health, falling, an explicit timeout, or a lethal stage hazard. If a copied
+`PrototypeHazard` calls `Respawn()` after every `Damage()`, correct that behavior and verify the
+health-zero transition still reaches the checkpoint. Keep the existing Unity smoke checks intact.
+If the only unfinished step is host-owned Unity validation, put it in
+`recommended_validation` and report `status=completed` after making the source edits.
+Use `needs_attention` only for implementation work you could not finish.
 Return the required structured report.
 """
         try:
@@ -406,7 +418,9 @@ Return the required structured report.
                 schema=COMPLETION_SCHEMA,
                 audit_directory=self.audit_root / "quality_repair" / f"attempt_{iteration:02d}",
             )
-            _require_agent_completion(result, f"quality repair {iteration}")
+            _require_agent_completion(
+                result, f"quality repair {iteration}", allow_host_validation_pending=True
+            )
             self._record(f"{self.provider}_quality_repair_{iteration}", result.final_response)
             restored = _restore_protected_asset_files(snapshot, project_root)
             self._record(f"{self.provider}_quality_protected_assets_{iteration}", restored)
@@ -661,7 +675,11 @@ Return the required structured report.
                     schema=COMPLETION_SCHEMA,
                     audit_directory=self.audit_root / phase / f"repair_{attempt + 1:02d}",
                 )
-                _require_agent_completion(repair, f"{phase} repair {attempt + 1}")
+                _require_agent_completion(
+                    repair,
+                    f"{phase} repair {attempt + 1}",
+                    allow_host_validation_pending=True,
+                )
             except Exception:
                 pending_snapshot.restore(project_root)
                 _normalize_windows_project_permissions(project_root)
@@ -699,17 +717,50 @@ Return the required structured report.
             self.record(name, value)
 
 
-def _require_agent_completion(result: CodexCliResult, phase: str) -> None:
+def _require_agent_completion(
+    result: CodexCliResult, phase: str, *, allow_host_validation_pending: bool = False
+) -> None:
     """Stop immediately when the CLI reports that it could not inspect or edit the project."""
 
     response = result.final_response
     if response.get("status") == "completed":
+        return
+    if allow_host_validation_pending and _only_host_validation_pending(response):
         return
     summary = str(response.get("summary", "Agent could not complete the requested work"))
     unresolved = response.get("unresolved_requirements", [])
     detail = "; ".join(str(item) for item in unresolved[:5]) if isinstance(unresolved, list) else ""
     suffix = f" Unresolved: {detail}" if detail else ""
     raise RuntimeError(f"AGENT_IMPLEMENTATION_INCOMPLETE ({phase}): {summary}.{suffix}")
+
+
+def _only_host_validation_pending(response: dict[str, Any]) -> bool:
+    """Allow an edited repair to reach the host-owned Unity validation gate."""
+
+    changed = response.get("changed_files")
+    unresolved = response.get("unresolved_requirements")
+    if response.get("status") != "needs_attention" or not isinstance(changed, list) or not changed:
+        return False
+    if not isinstance(unresolved, list) or not unresolved:
+        return False
+    for item in unresolved:
+        if not isinstance(item, str):
+            return False
+        normalized = " ".join(item.lower().split())
+        if (
+            "host" not in normalized
+            or "unity" not in normalized
+            or not any(word in normalized for word in ("validat", "test", "compil"))
+            or not any(word in normalized for word in ("pending", "remain", "required", "needed"))
+            or any(
+                word in normalized
+                for word in ("failed", "broken", "missing", "incomplete", "cannot", "unable")
+            )
+            or ";" in normalized
+            or "\n" in item
+        ):
+            return False
+    return True
 
 
 def prepare_design_for_codex(design: GameLogicDesign) -> GameLogicDesign:
@@ -797,6 +848,13 @@ This is a read-only quality review. Do not edit any file. Read
 and validation records. Check requirement coverage, connected gameplay, progression, content,
 balance, presentation, and asset integration. Hard validator failures cannot be overruled. Cite
 project-relative paths or hard check IDs for every nontrivial conclusion.
+Read `game/design/pacing_contract.json` and `game/design/ui_contract.json`. Verify required
+collectibles, checkpoints, and the goal are reachable in the authored scene. Check normal human
+play duration from authored encounters and traversal, not accelerated smoke-test time or an idle
+countdown. Report estimated total playtime gaps as info-level findings, never as a sole release
+failure; a real-control timing trace is needed for a reliable duration judgment. Never recommend
+delaying progression at zone boundaries to meet a timer. Check every HUD region, state
+screen, live value binding, and primary action against runtime source and scene wiring.
 If the image backend deliberately produced placeholders and visual validation is marked skipped,
 record that only as an info-level limitation; do not emit a warning/error or fail the game solely
 because no real image asset was applied. Judge primitive fallback readability separately.
@@ -865,9 +923,19 @@ Implement a playable Unity 2D vertical slice for this exact request:
 - Inspect every feature requirement and either substantially adapt the relevant copied gameplay
   implementation or replace it with request-specific code. Do not report completion merely because
   a selected module already compiles.
+- Map each explicit request clause to a concrete scene instance, runtime transition, HUD/control
+  binding, or audio cue before coding. A script class alone does not satisfy a requested enemy,
+  hazard, collectible, checkpoint, or tutorial object.
 - Derive the connected core loop, world layout, content placement, progression, camera behavior,
   HUD, win/loss flow, and feedback from the exact user request. Avoid fixed sample coordinates and
   fixed genre-demo sequences when they are not justified by that request.
+- Scope moving hazards, collapse zones, countdown failures, and automatic respawns to their
+  authored area. Entering a final challenge must not make its hazard damage or reset the player
+  in an earlier zone; checkpoint recovery must restore the relevant zone and timer state. Test
+  ordinary contact damage again after leaving or respawning from a timed challenge.
+- A nonlethal enemy or hazard hit must reduce the player's remaining health and allow play to
+  continue with the requested invulnerability. Checkpoint recovery occurs when health reaches
+  zero, the player falls, a timer expires, or an explicitly lethal stage hazard is touched.
 - Design JSON contains validated requirements and minimum acceptance evidence. Treat generic preset
   content as a lower-bound scaffold, not as an instruction to reproduce the stock prototype.
 
@@ -898,6 +966,17 @@ Read every file below before editing code:
   coherent Unity uGUI hierarchy for every specified HUD region and state screen, with anchored
   layout, `CanvasScaler.ScaleWithScreenSize`, readable typography, progress bars/counters, clear
   primary actions, and palette-consistent panels. UI must remain readable at 1280x720 and 1920x1080.
+- Treat `ui_contract.json` as an executable UI checklist: every HUD region has a live gameplay
+  state source, every required state screen opens on its actual transition, and each primary
+  action works. Inspect the game at both reference resolutions and keep world interaction
+  points clickable outside HUD raycast areas.
+- Treat `pacing_contract.json` as the normal human-play contract. Author traversal, enemy,
+  obstacle, wave, or decision content in each segment to reach its target duration. A long
+  idle countdown, movement-against-a-wall gate, and a fast automated smoke test are not evidence
+  of a full-length game. Never block a zone exit or goal solely until a minimum time has elapsed.
+  Check spawn-to-goal route continuity and place every required collectible and checkpoint
+  within the implemented movement envelope. The host records normal-run duration when a real
+  controls playtest is available; author content that supports the target without artificial gates.
 - Disable or remove the copied `PrototypeSceneController` IMGUI debug panel in the finished game.
   `OnGUI`, loose debug labels, and unstyled test buttons do not count as player-facing UI. If no
   generated image asset is available, use restrained solid/translucent uGUI shapes and the built-in
@@ -973,10 +1052,21 @@ Viewpoint: {request["viewpoint"]}
 Agent-owned gameplay modules and mechanics: {json.dumps(requirements, ensure_ascii=False)}
 Feature requirements: {json.dumps(features, ensure_ascii=False)}
 
+Before coding, read `Assets/GameTemplate/Generated/Design/pacing_contract.json` and
+`Assets/GameTemplate/Generated/Design/ui_contract.json`. Preserve the requested normal
+playtime, connect every required collectible and checkpoint to the real traversable route,
+and make each HUD value and result screen reflect the current runtime state.
+Keep timed or rising hazards local to their authored zone. A player teleported or respawned into
+an earlier zone must still take ordinary enemy and trap damage without the final-zone controller
+immediately overriding that contact or resetting the player.
+
 Follow {instruction_filename}. First inspect the project and all generated design contracts. Then implement the
 entire connected gameplay loop, not isolated sample scripts. Verify initialization values, scene
 bindings, camera, controls, HUD, damage, progression, win/loss conditions, content counts, and the
 user's requested mechanics. Reuse sound/image binding IDs instead of inventing incompatible IDs.
+Keep the exact number of requested objects in the design plan, authored scene, HUD, and result;
+never silently truncate generated placements. Confirm each requested object type has an active
+scene instance and a reachable interaction path.
 Do not accept a copied genre module or prototype scene as complete without tracing it against the
 exact request. Replace stock behavior, layout, content, and tuning wherever it would make different
 prompts produce substantially the same game. Keep only reusable infrastructure that genuinely
@@ -1042,6 +1132,11 @@ exception by disabling the wave, combat, or UI system.
 If a runtime exception reports a missing component, replace null-coalescing component lookup with
 an explicit Unity-aware null check and ensure the component is present on every object path that
 can invoke the method.
+If `runtime.hazard_damage` fails after a route or checkpoint transition, trace all controllers
+that can move or respawn the player before the hazard's damage callback. Scope timed or rising
+hazard checks to their own zone and restore that zone's state on respawn. Confirm the ordinary
+hazard changes the authoritative player health; do not bypass contact damage or change the host
+smoke test to hide the failure.
 If validation reports that a selected action or upgrade changed no observable state, inspect module
 initialization order and reacquire late-bound dependencies when the action executes. Ensure every
 selectable option ID maps to a real state mutation, and keep one authoritative owner for the state
@@ -1061,7 +1156,8 @@ the repaired behavior. Keep normal five-minute (or user-requested) pacing in aut
 accelerate only host test hooks and deterministic test scenarios.
 Do not launch Unity Editor or run Unity,
 Unity CLI/pipeline/MCP, or batch-mode commands; the host owns the next validation attempt. Return
-the required structured report.
+the required structured report. If source edits are complete and only host Unity validation is
+pending, report `status=completed` and list that check in `recommended_validation`.
 """
 
 
@@ -1217,6 +1313,7 @@ _VALIDATION_MILESTONES = (
     "UNITY_PRESENTATION_PLAN_OK",
     "UNITY_VALIDATION_PLAN_STATIC_OK",
     "UNITY_TEMPLATE_BUILD_OK",
+    "UNITY_UI_QUALITY_OK",
     "UNITY_RUNTIME_SMOKE_OK",
 )
 

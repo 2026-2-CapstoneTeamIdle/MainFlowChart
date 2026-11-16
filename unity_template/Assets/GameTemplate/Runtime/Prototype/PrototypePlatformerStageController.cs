@@ -1,4 +1,5 @@
 using System;
+using TeamIdle.GameTemplate.Common;
 using TeamIdle.GameTemplate.Core;
 using UnityEngine;
 
@@ -13,6 +14,7 @@ namespace TeamIdle.GameTemplate.Prototype
         private float fallLimit = -7f;
 
         private Vector3 checkpoint;
+        private HealthComponent playerHealth;
 
         public event Action<int, Vector3> CheckpointActivated;
 
@@ -22,8 +24,17 @@ namespace TeamIdle.GameTemplate.Prototype
 
         public void Bind(Transform nextPlayer)
         {
+            if (playerHealth != null)
+            {
+                playerHealth.Changed -= HandleHealthChanged;
+            }
             player = nextPlayer;
             checkpoint = player == null ? Vector3.zero : player.position;
+            playerHealth = player == null ? null : player.GetComponent<HealthComponent>();
+            if (playerHealth != null)
+            {
+                playerHealth.Changed += HandleHealthChanged;
+            }
         }
 
         public void ActivateCheckpoint(int index, Vector3 position)
@@ -50,6 +61,26 @@ namespace TeamIdle.GameTemplate.Prototype
             if (player.TryGetComponent<Rigidbody2D>(out var body))
             {
                 body.linearVelocity = Vector2.zero;
+            }
+            if (playerHealth != null && !playerHealth.IsAlive)
+            {
+                playerHealth.SetMaximum(playerHealth.Maximum);
+            }
+        }
+
+        private void HandleHealthChanged(float current, float maximum)
+        {
+            if (current <= 0f)
+            {
+                Respawn();
+            }
+        }
+
+        private void OnDestroy()
+        {
+            if (playerHealth != null)
+            {
+                playerHealth.Changed -= HandleHealthChanged;
             }
         }
 

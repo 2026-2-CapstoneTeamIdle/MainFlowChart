@@ -24,6 +24,7 @@ const progressFill = document.querySelector("#progress-fill");
 const progressTrack = document.querySelector(".workflow-progress__track");
 const progressTime = document.querySelector("#progress-time");
 const completionNotifications = document.querySelector("#completion-notifications");
+const notificationStatus = document.querySelector("#notification-status");
 const gameBuilder = document.querySelector("#game-builder");
 const agentHarnessSettings = document.querySelector("#agent-harness-settings");
 const agentModel = document.querySelector("#agent-model");
@@ -79,6 +80,7 @@ let currentJobId = null;
 let currentJob = null;
 let pollTimer = null;
 let notificationAudioContext = null;
+let notificationWorkerPromise = null;
 let notifiedMilestones = new Set();
 let toastTimer = null;
 let codexAuthPollTimer = null;
@@ -146,6 +148,38 @@ function restoreNotificationSetting() {
   } catch (_error) {
     completionNotifications.checked = false;
   }
+  updateNotificationStatus();
+}
+
+function updateNotificationStatus() {
+  if (!notificationSettingEnabled()) {
+    notificationStatus.textContent = "알림 꺼짐";
+  } else if (!("Notification" in window) || !window.isSecureContext) {
+    notificationStatus.textContent = "소리만 · Chrome 알림 사용 불가";
+  } else if (Notification.permission === "granted") {
+    notificationStatus.textContent = "소리 · Chrome 알림 허용됨";
+  } else if (Notification.permission === "denied") {
+    notificationStatus.textContent = "소리만 · Chrome 알림 차단됨";
+  } else {
+    notificationStatus.textContent = "소리 · Chrome 알림 권한 요청";
+  }
+}
+
+async function notificationWorker() {
+  if (!window.isSecureContext || !("serviceWorker" in navigator)) return null;
+  if (!notificationWorkerPromise) {
+    notificationWorkerPromise = navigator.serviceWorker.register("/notification-sw.js")
+      .then(() => Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise((_, reject) => window.setTimeout(() => reject(new Error("알림 서비스 준비 시간 초과")), 5000)),
+      ]))
+      .catch((error) => {
+        console.warn("Chrome 알림 서비스를 시작하지 못했습니다.", error);
+        notificationWorkerPromise = null;
+        return null;
+      });
+  }
+  return notificationWorkerPromise;
 }
 
 async function prepareCompletionNotifications({ requestPermission = false } = {}) {
@@ -172,6 +206,10 @@ async function prepareCompletionNotifications({ requestPermission = false } = {}
     }
   } else if (requestPermission && !("Notification" in window)) {
     showToast("이 브라우저는 시스템 알림을 지원하지 않아 소리만 사용합니다.");
+  }
+  updateNotificationStatus();
+  if ("Notification" in window && Notification.permission === "granted") {
+    void notificationWorker();
   }
   await resumeAudio;
 }
@@ -206,16 +244,26 @@ async function playNotificationTone(kind) {
   }
 }
 
-function showSystemNotification(title, body, tag) {
+async function showSystemNotification(title, body, tag) {
   if (!("Notification" in window) || Notification.permission !== "granted") return;
+  try {
+    const registration = await notificationWorker();
+    if (registration?.showNotification) {
+      await registration.showNotification(title, { body, tag, renotify: true });
+      return;
+    }
+  } catch (error) {
+    console.warn("Chrome 서비스 워커 알림을 표시하지 못했습니다.", error);
+  }
   try {
     const notification = new Notification(title, { body, tag, renotify: true });
     notification.addEventListener("click", () => {
       window.focus();
       notification.close();
     });
-  } catch (_error) {
-    // Some browser/OS combinations can revoke notification access mid-session.
+  } catch (error) {
+    console.warn("Chrome 알림을 표시하지 못했습니다.", error);
+    showToast("Chrome 알림을 표시하지 못했습니다. 사이트 및 Windows 알림 권한을 확인하세요.");
   }
 }
 
@@ -226,7 +274,7 @@ function notifyJobMilestone(job, milestone) {
   notifiedMilestones.add(key);
   if (milestone === "feature") {
     void playNotificationTone("feature");
-    showSystemNotification(
+    void showSystemNotification(
       "겜만툴 · Feature 분석 완료",
       `${job.features.length}개 Feature를 확인하고 Confirm 또는 Reject를 선택하세요.`,
       key,
@@ -236,7 +284,7 @@ function notifyJobMilestone(job, milestone) {
   const succeeded = job.status === "completed";
   const cancelled = job.status === "cancelled";
   void playNotificationTone(succeeded ? "success" : "failure");
-  showSystemNotification(
+  void showSystemNotification(
     succeeded ? "겜만툴 · 게임 생성 완료" : cancelled ? "겜만툴 · 작업 중단" : "겜만툴 · 게임 생성 실패",
     succeeded
       ? `프로젝트 ${job.project_id || ""} 생성이 완료되었습니다.`
@@ -747,6 +795,7 @@ imageStyle.addEventListener("change", updateCustomImageState);
 gameBuilder.addEventListener("change", updateAgentHarnessSettings);
 completionNotifications.addEventListener("change", () => {
   saveNotificationSetting();
+  updateNotificationStatus();
   if (notificationSettingEnabled()) {
     void prepareCompletionNotifications({ requestPermission: true });
   }

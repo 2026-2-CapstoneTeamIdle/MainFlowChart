@@ -51,6 +51,26 @@ def test_web_ui_exposes_completion_notifications() -> None:
     assert 'notifyJobMilestone(job, "feature")' in script
     assert 'notifyJobMilestone(job, "terminal")' in script
     assert "playNotificationTone" in script
+    assert 'navigator.serviceWorker.register("/notification-sw.js")' in script
+    assert "registration.showNotification(title" in script
+    assert 'id="notification-status"' in html
+
+
+def test_notification_service_worker_is_served_from_origin_root() -> None:
+    from fastapi.testclient import TestClient
+
+    sys.path.insert(0, str(LOCAL_WEB_ROOT))
+    spec = importlib.util.spec_from_file_location(
+        "mainflow_local_web_app_notifications", LOCAL_WEB_ROOT / "app.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    response = TestClient(module.app).get("/notification-sw.js")
+    assert response.status_code == 200
+    assert response.headers["service-worker-allowed"] == "/"
+    assert "notificationclick" in response.text
 
 
 def test_web_ui_downloads_host_unity_launcher_for_docker() -> None:
@@ -287,7 +307,10 @@ def test_windows_unity_launcher_targets_host_project() -> None:
 
     assert "6000.0.71f1\\Editor\\Unity.exe" in launcher
     assert "workspace\\20261114_02\\game\\unity_project" in launcher
-    assert 'start "" "%MAINFLOW_UNITY%" -projectPath "%MAINFLOW_PROJECT%"' in launcher
+    assert (
+        'start "" "%MAINFLOW_UNITY%" -projectPath "%MAINFLOW_PROJECT%" -buildTarget win64'
+        in launcher
+    )
 
 
 def test_cancel_stops_running_process_tree_and_preserves_cancelled_state(

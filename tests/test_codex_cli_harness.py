@@ -68,8 +68,9 @@ def _completion() -> dict[str, object]:
 
 
 @pytest.mark.parametrize("unity_status", ["passed", "failed"])
+@pytest.mark.parametrize("agent_status", ["completed", "needs_attention"])
 def test_quality_repair_keeps_only_unity_validated_source(
-    tmp_path: Path, unity_status: str
+    tmp_path: Path, unity_status: str, agent_status: str
 ) -> None:
     project = tmp_path / "unity"
     source = project / "Assets/Game.cs"
@@ -83,7 +84,13 @@ def test_quality_repair_keeps_only_unity_validated_source(
     def edit_project(**kwargs):
         source.write_text("repaired", encoding="utf-8")
         asset.write_bytes(b"unvalidated-replacement")
-        return MagicMock(final_response=_completion())
+        response = _completion()
+        if agent_status == "needs_attention":
+            response["status"] = "needs_attention"
+            response["unresolved_requirements"] = [
+                "Unity Play Mode validation is pending host execution."
+            ]
+        return MagicMock(final_response=response)
 
     runner.run.side_effect = edit_project
     harness = CodexGameHarness(
@@ -230,6 +237,62 @@ def test_needs_attention_agent_result_is_not_accepted_as_implementation(tmp_path
 
     with pytest.raises(RuntimeError, match="AGENT_IMPLEMENTATION_INCOMPLETE.*bwrap"):
         _require_agent_completion(result, "initial implementation")
+    with pytest.raises(RuntimeError, match="AGENT_IMPLEMENTATION_INCOMPLETE.*bwrap"):
+        _require_agent_completion(
+            result, "design_game_logic repair 1", allow_host_validation_pending=True
+        )
+
+
+def test_host_validation_pending_repair_runs_unity_before_acceptance(tmp_path: Path) -> None:
+    project = tmp_path / "unity"
+    source = project / "Assets" / "Game.cs"
+    source.parent.mkdir(parents=True)
+    source.write_text("before", encoding="utf-8")
+    pending = {
+        **_completion(),
+        "status": "needs_attention",
+        "summary": "Fixed wall-jump input handling.",
+        "unresolved_requirements": ["Unity Play Mode validation is pending host execution."],
+    }
+    runner = MagicMock()
+
+    def edit_source(**kwargs):
+        source.write_text("after", encoding="utf-8")
+        return MagicMock(final_response=pending)
+
+    runner.run.side_effect = edit_source
+    harness = CodexGameHarness(
+        _settings(tmp_path / "codex.exe"),
+        audit_root=tmp_path / "audit",
+        runner=runner,
+    )
+    failed = UnityValidationOutcome(
+        checks=[],
+        issues=[{"code": "UNITY_RUNTIME_TEST_FAILED", "severity": "error", "message": "timeout"}],
+        unity_log="UNITY_RUNTIME_SMOKE_FAILED: runtime.timeout",
+    )
+    passed = UnityValidationOutcome(checks=[], issues=[], unity_log="UNITY_RUNTIME_SMOKE_OK")
+    with (
+        patch(
+            "game_pipeline.codex_cli.harness._normalize_windows_project_permissions",
+            return_value={"status": "passed"},
+        ),
+        patch("game_pipeline.codex_cli.harness._require_normalized_permissions"),
+        patch("game_pipeline.codex_cli.harness.UnityProjectValidator") as validator,
+    ):
+        validator.return_value.validate.side_effect = [failed, passed]
+        outcome, repairs, attempts = harness._run_validation_repair_loop(
+            project_root=project,
+            draft={"status": "generated"},  # type: ignore[arg-type]
+            request={"condition": "jump"},  # type: ignore[arg-type]
+            phase="design_game_logic",
+        )
+
+    assert outcome.status == "passed"
+    assert len(repairs) == 1
+    assert len(attempts) == 2
+    assert validator.return_value.validate.call_count == 2
+    assert source.read_text(encoding="utf-8") == "after"
 
 
 def test_runner_rejects_non_jsonl_output(tmp_path: Path) -> None:
@@ -874,6 +937,35 @@ def test_downstream_validation_failure_preserves_compile_fix() -> None:
     assert _failure_severity(downstream_failure) > _failure_severity(compiler_failure)
     assert _validation_progress(downstream_failure) > _validation_progress(compiler_failure)
     assert not _repair_is_regression(compiler_failure, downstream_failure)
+
+
+def test_runtime_route_failure_preserves_ui_quality_fix() -> None:
+    ui_failure = UnityValidationOutcome(
+        checks=[],
+        issues=[
+            {
+                "code": "UNITY_RUNTIME_TEST_FAILED",
+                "severity": "error",
+                "message": "Play Mode smoke tests failed; inspect log",
+            }
+        ],
+        unity_log=(
+            "UNITY_TEMPLATE_BUILD_OK\n"
+            "UNITY_RUNTIME_SMOKE_FAILED: runtime.ui_quality: IMGUI debug panel is enabled"
+        ),
+    )
+    route_failure = UnityValidationOutcome(
+        checks=ui_failure.checks,
+        issues=ui_failure.issues,
+        unity_log=(
+            "UNITY_TEMPLATE_BUILD_OK\n"
+            "UNITY_UI_QUALITY_OK:canvas=1:graphics=8:texts=4:buttons=2\n"
+            "UNITY_RUNTIME_SMOKE_FAILED: runtime.route_no_progress: player is stuck"
+        ),
+    )
+
+    assert _validation_progress(route_failure) > _validation_progress(ui_failure)
+    assert not _repair_is_regression(ui_failure, route_failure)
 
 
 def test_repair_that_loses_a_validation_milestone_is_rolled_back() -> None:

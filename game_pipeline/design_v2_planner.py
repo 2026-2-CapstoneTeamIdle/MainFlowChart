@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from typing import Any, Literal, cast
 
 from game_pipeline.design_v2 import build_design_v2, validate_design_v2
+from game_pipeline.gameplay_contracts import requested_collectible_count
 from game_pipeline.feature_contract import build_generation_contract
 from game_pipeline.gemini_feature_generator import (
     GeminiApiClient,
@@ -253,6 +254,9 @@ class StagedDesignV2Planner:
                     _schema_for(result["level_plan"]),
                 )
                 _require_same_shape(revised_level, result["level_plan"], REVISION_STAGE)
+                if len(revised_level["zones"]) < len(fallback["level_plan"]["zones"]):
+                    raise ValueError("revised level_plan removed required progression zones")
+                self._validate_requested_collectibles(revised_level, fallback)
                 candidate = {**result, "level_plan": revised_level}
                 validate_design_v2(cast(DesignV2Bundle, candidate))
                 result["level_plan"] = revised_level  # type: ignore[typeddict-item]
@@ -279,11 +283,31 @@ class StagedDesignV2Planner:
         result: DesignV2Bundle,
     ) -> None:
         _require_same_shape(response, baseline, stage)
-        if stage == "game_design" and response["target_play_minutes"] < 3:
-            raise ValueError("target_play_minutes must be at least 3")
+        if stage == "game_design":
+            if response["target_play_minutes"] != baseline["target_play_minutes"]:
+                raise ValueError("target_play_minutes must preserve the requested playtime")
+            if response["player_experience"] != baseline["player_experience"]:
+                raise ValueError("player_experience must preserve the user's exact condition")
+        if stage == "level_plan" and len(response["zones"]) < len(baseline["zones"]):
+            raise ValueError("level_plan removed required progression zones")
+        if stage == "level_plan":
+            StagedDesignV2Planner._validate_requested_collectibles(response, fallback)
         if stage in {"level_plan", "balance_plan", "presentation_plan", "validation_plan"}:
             candidate = cast(DesignV2Bundle, {**fallback, **result, stage: response})
             validate_design_v2(candidate)
+
+    @staticmethod
+    def _validate_requested_collectibles(
+        level: Mapping[str, Any], fallback: DesignV2Bundle
+    ) -> None:
+        if fallback["level_plan"]["genre"] != "Platformer":
+            return
+        requested = requested_collectible_count(fallback["game_design"]["player_experience"])
+        if requested is None:
+            return
+        actual = sum(len(zone["collectibles"]) for zone in level["zones"])
+        if actual != requested:
+            raise ValueError(f"level_plan requires {requested} collectibles, found {actual}")
 
     @staticmethod
     def _revision_prompt(
@@ -334,7 +358,10 @@ class StagedDesignV2Planner:
             f"{MIN_CUSTOMIZED_LEAVES} non-structural values compared with the baseline. For "
             "Platformer, keep at least three ordered zones (tutorial, challenge, "
             "mastery), landing widths >= minimum_landing_width, horizontal gaps <= "
-            "max_horizontal_gap, and upward steps <= max_step_up. The requested mechanic must be "
+            "max_horizontal_gap, and upward steps <= max_step_up. Put every required reward, "
+            "checkpoint, and goal within jump/dash reach of the connected platform route. "
+            "Author enough traversable challenges for the target human playtime; accelerated "
+            "smoke-test duration is not normal playtime evidence. The requested mechanic must be "
             "used by progression rather than decorative. Treat RUNTIME_INVARIANTS as mandatory "
             "genre rules even when the user did not spell them out; design their initialization, "
             "runtime loop, feedback, and validation explicitly. GAME_SPEC features whose origin "

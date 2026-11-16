@@ -78,6 +78,19 @@ docker compose -f "CI/CD/LocalWeb/compose.yaml" up --build -d
 http://127.0.0.1:8000
 ```
 
+`완료 알림`을 켜면 Feature 분석 종료와 게임 생성 종료 시 소리와 Chrome 시스템 알림을
+보낸다. 처음 켤 때 Chrome의 알림 권한 요청을 허용해야 하며, 체크박스 옆에 현재 권한
+상태가 표시된다. Windows 알림이 보이지 않으면 Windows 설정에서 Chrome 알림과
+방해 금지 상태를 확인한다. 진행 상태를 감지하려면 Web UI 탭을 열어 둔다.
+
+이미지 생성 백엔드에서 만든 검증된 이미지는 기본적으로 Unity 프로젝트에 적용된다.
+적용 없이 파일만 생성하려면 서버 시작 전에 `MAINFLOW_APPLY_IMAGE_ASSETS=off`로 설정한다.
+
+Docker의 Unity 검증은 Linux Editor에서 실행되지만, Windows에서 생성 프로젝트를 열면
+기본 빌드 타깃을 Windows 64-bit로 선택한다. Web UI의 Editor 열기 버튼과 Unity Hub에서
+직접 여는 경우 모두 적용되며, Editor를 연 뒤 사용자가 선택한 플랫폼은 해당 세션 동안 유지한다.
+WebGL Preview 빌드는 별도로 WebGL 타깃을 사용한다.
+
 종료:
 
 ```powershell

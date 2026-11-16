@@ -30,6 +30,12 @@ from mainflow.contracts import (
     ValidationPlan,
 )
 
+from game_pipeline.gameplay_contracts import (
+    checkpoint_respawn_requested,
+    requested_collectible_count,
+    requested_play_minutes,
+    requested_zone_count,
+)
 from game_pipeline.presentation_sound_assets import feedback_sound_asset_id
 
 
@@ -74,7 +80,7 @@ def build_design_v2(
         level_plan = _generic_level_plan(game_spec)
     content_plan = _content_plan(game_spec, level_plan, intent)
     balance_plan = _balance_plan(game_spec)
-    presentation_plan = _presentation_plan(game_spec, image_ids, sound_ids)
+    presentation_plan = _presentation_plan(game_spec, image_ids, sound_ids, intent)
     validation_plan = _validation_plan(game_spec, level_plan)
     return {
         "game_design": game_design,
@@ -88,7 +94,7 @@ def build_design_v2(
 
 
 def _presentation_plan(
-    game_spec: GameSpec, image_ids: list[str], sound_ids: list[str]
+    game_spec: GameSpec, image_ids: list[str], sound_ids: list[str], intent: str
 ) -> PresentationPlan:
     if game_spec["genre"] == "TowerDefense":
         return {
@@ -279,7 +285,7 @@ def _presentation_plan(
                 },
             ],
         }
-    return {
+    plan: PresentationPlan = {
         "plan_version": "2.0.0",
         "ui_screens": ["hud", "pause", "stage_result", "failure"],
         "state_transitions": [
@@ -366,6 +372,17 @@ def _presentation_plan(
             },
         ],
     }
+    if checkpoint_respawn_requested(intent):
+        plan["ui_screens"] = [screen for screen in plan["ui_screens"] if screen != "failure"]
+        plan["screen_requirements"] = [
+            screen for screen in plan["screen_requirements"] if screen["screen_id"] != "failure"
+        ]
+        plan["state_transitions"] = [
+            transition
+            for transition in plan["state_transitions"]
+            if transition != "playing -> failed"
+        ]
+    return plan
 
 
 def validate_design_v2(bundle: DesignV2Bundle) -> None:
@@ -430,7 +447,14 @@ def validate_design_v2(bundle: DesignV2Bundle) -> None:
             "mastery",
         }:
             raise ValueError("Platformer zones must cover tutorial, challenge, and mastery")
-        _validate_platformer_route(level)
+        _validate_platformer_route(level, bundle["game_design"]["target_play_minutes"])
+        requested_rewards = requested_collectible_count(bundle["game_design"]["player_experience"])
+        if requested_rewards is not None:
+            actual_rewards = sum(len(zone["collectibles"]) for zone in level["zones"])
+            if actual_rewards != requested_rewards:
+                raise ValueError(
+                    f"Platformer requires {requested_rewards} collectibles, found {actual_rewards}"
+                )
         content = bundle["content_plan"]
         for category, collection in (
             ("enemies", "enemies"),
@@ -518,9 +542,14 @@ def validate_design_v2(bundle: DesignV2Bundle) -> None:
     if len(presentation["hud_layout"]) < 3:
         raise ValueError("presentation_plan requires at least three intentional HUD regions")
     screen_ids = {item["screen_id"] for item in presentation["screen_requirements"]}
-    required_screen_ids = {"hud", "stage_result", "failure"}
+    checkpoint_respawn = checkpoint_respawn_requested(bundle["game_design"]["player_experience"])
+    required_screen_ids = {"hud", "stage_result"}
+    if not checkpoint_respawn:
+        required_screen_ids.add("failure")
     if not screen_ids.issuperset(required_screen_ids):
         raise ValueError("presentation_plan is missing required state screen specifications")
+    if checkpoint_respawn and "failure" in screen_ids:
+        raise ValueError("checkpoint respawn must not require a health-zero failure screen")
     for screen in presentation["screen_requirements"]:
         if not screen["required_elements"]:
             raise ValueError(
@@ -547,12 +576,13 @@ def validate_design_v2(bundle: DesignV2Bundle) -> None:
 
 
 def _game_design(game_spec: GameSpec, intent: str) -> GameDirectorDesign:
+    target_minutes = requested_play_minutes(intent)
     if game_spec["genre"] == "TowerDefense":
         return {
             "design_version": "2.0.0",
             "title": game_spec["title"],
             "player_experience": intent,
-            "target_play_minutes": 5,
+            "target_play_minutes": target_minutes,
             "differentiators": [
                 "route-aware tower placement",
                 "distinct enemy counterplay",
@@ -570,7 +600,7 @@ def _game_design(game_spec: GameSpec, intent: str) -> GameDirectorDesign:
         "design_version": "2.0.0",
         "title": game_spec["title"],
         "player_experience": intent,
-        "target_play_minutes": 4,
+        "target_play_minutes": target_minutes,
         "differentiators": [
             "요청 기능을 진행 필수 동작으로 사용",
             "구역마다 새 규칙을 소개하고 마지막에 조합",
@@ -582,7 +612,9 @@ def _game_design(game_spec: GameSpec, intent: str) -> GameDirectorDesign:
             "endgame": "앞서 배운 기능을 연속 사용해 목표에 도달",
         },
         "win_conditions": list(game_spec["win_conditions"]),
-        "lose_conditions": list(game_spec["lose_conditions"]),
+        "lose_conditions": (
+            [] if checkpoint_respawn_requested(intent) else list(game_spec["lose_conditions"])
+        ),
     }
 
 
@@ -1038,10 +1070,12 @@ def _platformer_level_plan(
         16,
     )
     rng = random.Random(seed)
+    target_minutes = requested_play_minutes(intent)
+    requested_rewards = requested_collectible_count(intent)
     mechanics = list(dict.fromkeys(game_spec["mechanics"]))
     if not mechanics:
         mechanics = ["move", "jump"]
-    zone_count = 3 + rng.randrange(3)
+    zone_count = requested_zone_count(intent, default=3 + rng.randrange(3))
     purposes = ["tutorial", *("challenge" for _ in range(zone_count - 2)), "mastery"]
     theme_words = [word for word in intent.replace(",", " ").split() if len(word) > 1]
     platform_groups: list[list[LevelPlatform]] = []
@@ -1051,7 +1085,8 @@ def _platformer_level_plan(
     platform_index = 0
     for zone_index in range(zone_count):
         group: list[LevelPlatform] = []
-        count = 4 + rng.randrange(3)
+        minimum_platforms = max(target_minutes * 8, (requested_rewards or 0) + 1)
+        count = max(4 + rng.randrange(3), (minimum_platforms + zone_count - 1) // zone_count)
         for local_index in range(count):
             width = round(rng.uniform(2.5, 3.6), 2)
             if platform_index == 0:
@@ -1068,6 +1103,18 @@ def _platformer_level_plan(
             group.append(_platform(f"route_{platform_index}", round(x, 2), y, width, role))
             cursor_x, previous_width, previous_y = x, width, y
         platform_groups.append(group)
+
+    selected_reward_ids: set[str] | None = None
+    if requested_rewards is not None:
+        candidates = [platform for group in platform_groups for platform in group][:-1]
+        if requested_rewards == 1:
+            chosen_indices = [len(candidates) // 2]
+        else:
+            chosen_indices = [
+                round(index * (len(candidates) - 1) / (requested_rewards - 1))
+                for index in range(requested_rewards)
+            ]
+        selected_reward_ids = {candidates[index]["platform_id"] for index in chosen_indices}
 
     zones: list[LevelZone] = []
     hazard_index = 0
@@ -1101,7 +1148,11 @@ def _platformer_level_plan(
             enemies.append(
                 _placement(f"enemy_{enemy_index}", enemy_kind, target["x"], target["y"] + 0.65)
             )
-        reward_targets = platforms[::2]
+        reward_targets = (
+            [platform for platform in platforms if platform["platform_id"] in selected_reward_ids]
+            if selected_reward_ids is not None
+            else platforms[::2]
+        )
         if purpose == "mastery" and reward_targets and reward_targets[-1] is platforms[-1]:
             reward_targets = reward_targets[:-1]
         for reward_offset, target in enumerate(reward_targets):
@@ -1596,7 +1647,7 @@ def _validation_plan(game_spec: GameSpec, level_plan: LevelPlan) -> ValidationPl
     }
 
 
-def _validate_platformer_route(level: LevelPlan) -> None:
+def _validate_platformer_route(level: LevelPlan, target_minutes: int) -> None:
     mechanics = {mechanic for zone in level["zones"] for mechanic in zone["required_mechanics"]}
     if not mechanics:
         raise ValueError("Platformer zones must require progression mechanics")
@@ -1604,8 +1655,8 @@ def _validate_platformer_route(level: LevelPlan) -> None:
         raise ValueError("Mastery zone must combine all introduced mechanics")
 
     platforms = [platform for zone in level["zones"] for platform in zone["platforms"]]
-    if len(platforms) < 10:
-        raise ValueError("Platformer route requires at least ten planned platforms")
+    if len(platforms) < max(10, target_minutes * 6):
+        raise ValueError("Platformer route is too short for the planned playtime")
     ordered_zones = sorted(level["zones"], key=lambda item: item["start_x"])
     if ordered_zones != level["zones"]:
         raise ValueError("Platformer zones must be ordered from left to right")
@@ -1636,6 +1687,26 @@ def _validate_platformer_route(level: LevelPlan) -> None:
             raise ValueError(f"Route gap before {current['platform_id']} is too wide")
         if current["y"] - previous["y"] > level["max_step_up"]:
             raise ValueError(f"Route step before {current['platform_id']} is too high")
+
+    # Zone bounds are not reachability evidence. A collectible can sit within its zone
+    # while all platforms end several metres before it, making the advertised count false.
+    reachable_points = [level["player_spawn"], level["goal"]]
+    for zone in level["zones"]:
+        reachable_points.extend(zone["collectibles"])
+        if zone["checkpoint"] is not None:
+            reachable_points.append(zone["checkpoint"])
+    for point in reachable_points:
+        supported = any(
+            platform["x"] - platform["width"] / 2 - level["max_horizontal_gap"]
+            <= point["x"]
+            <= platform["x"] + platform["width"] / 2 + level["max_horizontal_gap"]
+            and platform["y"] - 0.5 <= point["y"] <= platform["y"] + level["max_step_up"] + 1.5
+            for platform in ordered
+        )
+        if not supported:
+            raise ValueError(
+                f"{point['placement_id']} is unreachable from the planned platform route"
+            )
 
 
 def _count_placements(level: LevelPlan, collection: str, archetype: str) -> int:

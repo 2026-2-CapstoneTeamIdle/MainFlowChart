@@ -28,8 +28,22 @@ namespace TeamIdle.GameTemplate.Prototype
                 return;
             }
 
-            other.GetComponent<HealthComponent>()?.Damage(damage);
-            FindFirstObjectByType<PrototypePlatformerStageController>()?.Respawn();
+            var health = other.GetComponent<HealthComponent>();
+            if (health == null)
+            {
+                return;
+            }
+
+            health.Damage(damage);
+            if (health != null && !health.IsAlive)
+            {
+                var stage = FindFirstObjectByType<PrototypePlatformerStageController>();
+                if (stage != null)
+                {
+                    stage.Respawn();
+                    health.SetMaximum(health.Maximum);
+                }
+            }
         }
     }
 }

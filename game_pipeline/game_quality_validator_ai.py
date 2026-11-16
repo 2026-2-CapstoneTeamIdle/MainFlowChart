@@ -140,6 +140,18 @@ of truth for preserved user requirements, selected modules, exact project classe
 events. Use it to choose the Unity files that need closer inspection; never replace exact identifiers
 with a natural-language summary. A passed report requires all hard validators to pass and no error
 finding. Missing runtime evidence is unverifiable, never automatically satisfied.
+Read game/design/pacing_contract.json and game/design/ui_contract.json when present. Check that
+the implemented route, wave progression, or decisions support the requested normal human-play
+duration. A short accelerated test is only evidence that transitions work; a countdown by itself
+does not make a game the requested length. Check every required collectible and checkpoint for a
+reachable spawn-to-goal route. Check each HUD region and state screen against live runtime state,
+working actions, readability, and world-interaction occlusion. Report missing evidence explicitly
+as an info-level limitation when it is only an absent real-control timing trace. Report an error
+when authored content or pacing code suggests a duration gap, but keep estimated total normal
+playtime informational because it has no reliable real-control measurement. Do not fail the game
+solely for estimated duration, and do not suggest a minimum-time gate. Judge missing gameplay
+mechanics, broken health/damage rules, unreachable content, and UI bindings separately.
+Do not pass a UI requirement on design claims alone.
 If visual validation was deliberately skipped because the configured image backend produced only
 placeholders, record that only as an info-level limitation. It must not create a warning/error or
 cause needs_revision by itself; evaluate primitive fallback readability separately.

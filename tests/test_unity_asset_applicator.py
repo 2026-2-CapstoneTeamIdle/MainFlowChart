@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
 from typing import cast
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -26,6 +28,14 @@ from mainflow.contracts import (
     SoundDraft,
     SoundValidationResult,
 )
+from mainflow.nodes.apply_assets import image_application_enabled
+
+
+def test_image_application_is_on_by_default_and_can_be_disabled() -> None:
+    with patch.dict(os.environ, {}, clear=True):
+        assert image_application_enabled()
+    with patch.dict(os.environ, {"MAINFLOW_APPLY_IMAGE_ASSETS": "off"}):
+        assert not image_application_enabled()
 
 
 class UnityAssetApplicatorTest(unittest.TestCase):

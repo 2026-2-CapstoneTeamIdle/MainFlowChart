@@ -54,6 +54,8 @@ def open_unity_project(project_root: Path) -> Path | None:
         )
         return None
     command = [str(executable), "-projectPath", str(project_root)]
+    if os.name == "nt":
+        command.extend(["-buildTarget", "win64"])
     options: dict[str, object] = {
         "cwd": project_root,
         "stdin": subprocess.DEVNULL,

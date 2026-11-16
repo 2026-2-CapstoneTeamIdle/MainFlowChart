@@ -42,7 +42,8 @@ $env:MAINFLOW_CODEX_MAX_REPAIRS="6"
 $env:MAINFLOW_AGENT_HARD_MAX_REPAIRS="12"
 $env:MAINFLOW_AGENT_REPAIR_EXTENSION="3"
 $env:MAINFLOW_AGENT_POST_VALIDATION_REPAIRS="3"
-$env:MAINFLOW_GAME_QUALITY_REPAIRS="2"
+$env:MAINFLOW_GAME_QUALITY_REPAIRS="8"
+$env:MAINFLOW_GAME_QUALITY_TIME_BUDGET_SECONDS="2400"
 $env:MAINFLOW_GAME_QUALITY_UNITY_REPAIRS="2"
 $env:MAINFLOW_FEATURE_CHECKLIST_AGENT_REPAIRS="1"
 ```
@@ -72,7 +73,10 @@ $env:MAINFLOW_FEATURE_CHECKLIST_AGENT_REPAIRS="1"
   오류를 만들면 변경을 롤백한다.
 - 독립 품질 검수가 실제 기능 누락을 찾으면 근거 파일과 권고를 Codex에 전달한다. 수정 후
   Unity 컴파일·Play Mode를 다시 통과해야 다음 품질 검수를 진행하며, 실패한 변경은 복원한다.
-  품질 수정은 기본 2회, `MAINFLOW_GAME_QUALITY_REPAIRS`로 0~3회까지 조정할 수 있다.
+  품질 수정은 기본 8회, `MAINFLOW_GAME_QUALITY_REPAIRS`로 0~10회까지 조정할 수 있다.
+  품질 수정 단계의 총 시간 예산은 기본 40분이며
+  `MAINFLOW_GAME_QUALITY_TIME_BUDGET_SECONDS`로 60~7200초 사이에서 조정한다.
+  검수가 통과하거나 동일 지적에 대해 소스 변경이 반복해서 없으면 일찍 종료한다.
   품질 수정에서 컴파일·런타임 오류가 생기면 변경 전체를 바로 폐기하지 않고 오류 로그를
   같은 Agent에 다시 전달한다. 이 내부 수정 횟수는
   `MAINFLOW_GAME_QUALITY_UNITY_REPAIRS`로 0~3회까지 조정한다. 내부 수정까지 실패하면
