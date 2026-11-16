@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using TeamIdle.GameTemplate.Common;
+using TeamIdle.GameTemplate.Prototype;
 using UnityEditor;
 using UnityEditor.U2D.Sprites;
 using UnityEngine;
@@ -111,7 +112,7 @@ namespace TeamIdle.GameTemplate.Editor
             {
                 if (entry.asset_type == "image")
                 {
-                    var sprite = AssetDatabase.LoadAssetAtPath<Sprite>(entry.unity_path);
+                    var sprite = LoadEntrySprite(entry);
                     if (sprite == null)
                     {
                         report.warnings.Add($"Sprite import failed: {entry.asset_id}");
@@ -204,15 +205,12 @@ namespace TeamIdle.GameTemplate.Editor
             importer.spritePixelsPerUnit = Mathf.Max(1, entry.pixels_per_unit);
             importer.alphaIsTransparency = entry.transparent;
             importer.mipmapEnabled = false;
-            if (entry.sprite_mode != "multiple")
-            {
-                // Sliced draw mode (used to fit generated art into the planned object size)
-                // needs a full-rect mesh.
-                var textureSettings = new TextureImporterSettings();
-                importer.ReadTextureSettings(textureSettings);
-                textureSettings.spriteMeshType = SpriteMeshType.FullRect;
-                importer.SetTextureSettings(textureSettings);
-            }
+            // Sliced and tiled draw modes (used to fit generated art to the planned object
+            // size and to repeat ground tiles) need full-rect sprite meshes.
+            var textureSettings = new TextureImporterSettings();
+            importer.ReadTextureSettings(textureSettings);
+            textureSettings.spriteMeshType = SpriteMeshType.FullRect;
+            importer.SetTextureSettings(textureSettings);
             importer.filterMode =
                 imageStyle == "Pixel Art" ? FilterMode.Point : FilterMode.Bilinear;
             importer.SaveAndReimport();
@@ -372,11 +370,127 @@ namespace TeamIdle.GameTemplate.Editor
             {
                 if (names.Any(name => RendererNameMatches(renderer.name, name)))
                 {
-                    AssignSprite(renderer, sprite, entry.kind);
+                    if (entry.kind == "tileset")
+                    {
+                        AssignTiledSurface(renderer, sprite);
+                    }
+                    else if (entry.asset_id == StageBackgroundAssetId)
+                    {
+                        AssignScrollingBackground(renderer, sprite, generatedRoot);
+                    }
+                    else
+                    {
+                        AssignSprite(renderer, sprite, entry.kind);
+                    }
                     bound = true;
                 }
             }
             return bound;
+        }
+
+        private const string StageBackgroundAssetId = "stage_background";
+        private const float SideViewBackgroundParallax = 0.25f;
+
+        // Tileset sheets are sliced into frames named "{asset_id}_{index}" from the top-left.
+        // The top row holds the walkable ground surface tiles, so frame 0 is the surface tile.
+        private static Sprite LoadEntrySprite(BindingEntry entry)
+        {
+            if (entry.sprite_mode == "multiple")
+            {
+                var frames = AssetDatabase
+                    .LoadAllAssetsAtPath(entry.unity_path)
+                    .OfType<Sprite>()
+                    .ToList();
+                var surface = frames.FirstOrDefault(frame => frame.name == $"{entry.asset_id}_0");
+                if (surface != null)
+                {
+                    return surface;
+                }
+                if (frames.Count > 0)
+                {
+                    return frames[0];
+                }
+            }
+            return AssetDatabase.LoadAssetAtPath<Sprite>(entry.unity_path);
+        }
+
+        // Ground and platforms are a 1x1-unit placeholder stretched to the platform size.
+        // Stretching a tile over a long platform smears it, so the object is rescaled to a
+        // uniform tile size and the tile is repeated with SpriteDrawMode.Tiled. Box colliders
+        // are resized in local space so their world footprint stays exactly the same.
+        private static void AssignTiledSurface(SpriteRenderer renderer, Sprite tile)
+        {
+            var previous = renderer.sprite;
+            var transform = renderer.transform;
+            var colliders = renderer.GetComponents<Collider2D>();
+            if (
+                previous == null
+                || transform.childCount > 0
+                || colliders.Any(collider => collider is not BoxCollider2D)
+            )
+            {
+                renderer.sprite = tile;
+                return;
+            }
+
+            var scale = transform.localScale;
+            var previousSize =
+                renderer.drawMode == SpriteDrawMode.Simple
+                    ? (Vector2)previous.bounds.size
+                    : renderer.size;
+            var world = new Vector2(
+                previousSize.x * Mathf.Abs(scale.x),
+                previousSize.y * Mathf.Abs(scale.y)
+            );
+            var tileHeight = tile.bounds.size.y;
+            if (world.x <= 0f || world.y <= 0f || tileHeight <= 0f)
+            {
+                renderer.sprite = tile;
+                return;
+            }
+
+            // Fit a whole number of tile rows into the platform height so the surface edge
+            // of the top row is always visible; thin platforms use one smaller row.
+            var rows = Mathf.Max(1f, Mathf.Round(world.y / tileHeight));
+            var tileScale = world.y / (rows * tileHeight);
+            foreach (var box in colliders.Cast<BoxCollider2D>())
+            {
+                box.size = new Vector2(
+                    box.size.x * Mathf.Abs(scale.x) / tileScale,
+                    box.size.y * Mathf.Abs(scale.y) / tileScale
+                );
+                box.offset = new Vector2(
+                    box.offset.x * scale.x / tileScale,
+                    box.offset.y * scale.y / tileScale
+                );
+            }
+
+            transform.localScale = new Vector3(tileScale, tileScale, scale.z);
+            renderer.sprite = tile;
+            renderer.drawMode = SpriteDrawMode.Tiled;
+            renderer.tileMode = SpriteTileMode.Continuous;
+            renderer.size = world / tileScale;
+        }
+
+        // The stage background must cover the whole camera route, not just the scene origin,
+        // so it follows the camera and repeats horizontally with a slight parallax. Top-down
+        // genres repeat it in both directions and keep it locked to the world.
+        private static void AssignScrollingBackground(
+            SpriteRenderer renderer,
+            Sprite sprite,
+            Transform generatedRoot
+        )
+        {
+            renderer.sprite = sprite;
+            var sideView =
+                generatedRoot.GetComponentInChildren<PrototypePlatformerStageController>(true)
+                != null;
+            var scroller = renderer.GetComponent<PrototypeBackgroundScroller>();
+            if (scroller == null)
+            {
+                scroller = renderer.gameObject.AddComponent<PrototypeBackgroundScroller>();
+            }
+            scroller.Configure(sideView ? SideViewBackgroundParallax : 1f, !sideView);
         }
 
         // Scene objects are built from a 1x1-unit placeholder scaled to their gameplay size,

@@ -19,6 +19,14 @@ namespace TeamIdle.GameTemplate.Editor
     {
         private const float PlatformerPlayerWidth = 0.8f;
         private const float PlatformerPlayerHeight = 1.2f;
+
+        // Draw order so generated art overlaps naturally: background < ground < props
+        // (goal, checkpoint) < pickups and hazards < enemies < player.
+        private const int PlatformSortingOrder = -10;
+        private const int LandmarkSortingOrder = -5;
+        private const int PickupSortingOrder = 2;
+        private const int EnemySortingOrder = 5;
+        private const int PlayerSortingOrder = 10;
         private const float PlatformerMinimumLandingWidth = 2.4f;
         private const float PlatformerMaximumHorizontalGap = 1.35f;
         private const float PlatformerMaximumStepUp = 1.15f;
@@ -396,7 +404,8 @@ namespace TeamIdle.GameTemplate.Editor
                 playerSpawn,
                 new Vector2(PlatformerPlayerWidth, PlatformerPlayerHeight),
                 new Color(0.25f, 0.75f, 1f),
-                "platformer-player"
+                "platformer-player",
+                PlayerSortingOrder
             );
             player.tag = "Player";
             var playerBody = player.AddComponent<Rigidbody2D>();
@@ -459,7 +468,8 @@ namespace TeamIdle.GameTemplate.Editor
                         new Vector2(collectiblePlan.x, collectiblePlan.y),
                         Vector2.one * 0.45f,
                         new Color(1f, 0.82f, 0.2f),
-                        "collectible"
+                        "collectible",
+                        PickupSortingOrder
                     );
                     var collider = collectible.AddComponent<CircleCollider2D>();
                     collider.isTrigger = true;
@@ -480,7 +490,8 @@ namespace TeamIdle.GameTemplate.Editor
                         new Vector2(hazardPlan.x, hazardPlan.y),
                         new Vector2(0.9f, 0.35f),
                         new Color(1f, 0.2f, 0.25f),
-                        "hazard"
+                        "hazard",
+                        PickupSortingOrder
                     );
                     var collider = hazard.AddComponent<BoxCollider2D>();
                     collider.isTrigger = true;
@@ -499,7 +510,8 @@ namespace TeamIdle.GameTemplate.Editor
                         new Vector2(enemyPlan.x, enemyPlan.y),
                         new Vector2(0.8f, 0.8f),
                         new Color(0.95f, 0.35f, 0.4f),
-                        "platformer-enemy"
+                        "platformer-enemy",
+                        EnemySortingOrder
                     );
                     enemy.AddComponent<BoxCollider2D>();
                     var body = enemy.AddComponent<Rigidbody2D>();
@@ -530,7 +542,8 @@ namespace TeamIdle.GameTemplate.Editor
                         new Vector2(zone.checkpoint.x, zone.checkpoint.y),
                         new Vector2(0.45f, 1.8f),
                         new Color(0.25f, 0.9f, 0.95f),
-                        "checkpoint"
+                        "checkpoint",
+                        LandmarkSortingOrder
                     );
                     var collider = checkpoint.AddComponent<BoxCollider2D>();
                     collider.isTrigger = true;
@@ -565,7 +578,8 @@ namespace TeamIdle.GameTemplate.Editor
                 goalPosition,
                 new Vector2(0.8f, 2f),
                 new Color(0.2f, 1f, 0.45f),
-                "goal"
+                "goal",
+                LandmarkSortingOrder
             );
             var goalCollider = goal.AddComponent<BoxCollider2D>();
             goalCollider.isTrigger = true;
@@ -1550,7 +1564,8 @@ namespace TeamIdle.GameTemplate.Editor
                 position,
                 size,
                 new Color(0.28f, 0.34f, 0.42f),
-                "platform"
+                "platform",
+                PlatformSortingOrder
             );
             platform.AddComponent<BoxCollider2D>();
         }

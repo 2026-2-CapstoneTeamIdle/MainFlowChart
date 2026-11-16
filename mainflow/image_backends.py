@@ -58,6 +58,9 @@ OPENAI_SIZES: dict[ImageKind, str] = {
     "illustration": "1024x1024",
     "background": "1536x1024",
 }
+# Sprites at least this much wider (or taller) than square use a landscape (or
+# portrait) OpenAI canvas so flat hazards and tall goals are not drawn tiny.
+SPRITE_ORIENTATION_RATIO = 1.4
 PIXEL_ART_COLORS = 32
 # Sprites keep this fraction of the canvas as empty margin after cropping.
 SPRITE_MARGIN = 0.08
@@ -211,7 +214,7 @@ class OpenAIImageGenerator:
         options: dict[str, Any] = {
             "model": self.model,
             "prompt": prompt,
-            "size": OPENAI_SIZES[request.plan.kind],
+            "size": _openai_size(request),
             "quality": self.quality,
             "background": background,
             "output_format": "png",
@@ -234,6 +237,18 @@ class OpenAIImageGenerator:
         raw = base64.b64decode(response.data[0].b64_json)
         self.raw_outputs[request.plan.asset_id] = raw
         return postprocess(raw, request)
+
+
+def _openai_size(request: ImageRequest) -> str:
+    """Pick the OpenAI canvas whose orientation matches the planned sprite."""
+
+    if request.plan.kind == "sprite" and request.width > 0 and request.height > 0:
+        ratio = request.width / request.height
+        if ratio >= SPRITE_ORIENTATION_RATIO:
+            return "1536x1024"
+        if ratio <= 1 / SPRITE_ORIENTATION_RATIO:
+            return "1024x1536"
+    return OPENAI_SIZES[request.plan.kind]
 
 
 def _retry_moderation(call: Any) -> bytes:

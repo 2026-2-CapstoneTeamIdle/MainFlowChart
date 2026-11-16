@@ -97,8 +97,18 @@ Unity의 기본 도형으로 대체될 뿐 실행 전체가 실패하지 않는�
 | `platformer_goal` | 플랫포머 | `StageGoal` |
 | `stage_background` | 기본 템플릿에 배경 이미지가 없는 장르 | `Background` |
 
-Unity의 `GeneratedAssetBinder`는 생성된 스프라이트를 오브젝트에 연결할 때 기존 오브젝트 크기(충돌 범위)
-안에 비율을 유지해 맞춘다. 배경은 화면을 채우도록 맞춘다. 타일셋은 기존 방식대로 연결한다.
+Unity의 `GeneratedAssetBinder`는 생성된 이미지를 다음처럼 오브젝트에 연결한다.
+
+- 오브젝트 스프라이트: 기존 오브젝트 크기(충돌 범위) 안에 비율을 유지해 맞춘다. 플랫포머 오브젝트는
+  생성 단계부터 오브젝트 비율에 맞춘 캔버스(64px/유닛, `asset_specs.OBJECT_FOOTPRINT_UNITS`)로 만들고,
+  OpenAI는 세로·가로로 긴 오브젝트에 1024×1536·1536×1024 캔버스를 쓴다.
+- 발판(`Ground`, `Platform_N`): 타일셋 맨 윗줄 첫 타일(`{asset_id}_0`)을 `SpriteDrawMode.Tiled`로 반복한다.
+  충돌 범위는 그대로 유지한다.
+- 스테이지 배경(`stage_background`): `PrototypeBackgroundScroller`가 카메라를 따라가며 가로로 반복한다.
+  사이드뷰는 시차 0.25로 천천히 움직이고, 탑다운 장르는 상하좌우로 반복하며 월드에 고정된다.
+- 그리는 순서(플랫포머): 배경 < 발판 < 골·체크포인트 < 수집물·함정 < 적 < 플레이어.
+
+실제로 Unity에 적용하려면 `MAINFLOW_APPLY_IMAGE_ASSETS=on`으로 실행한다.
 
 ```powershell
 $env:MAINFLOW_IMAGE_BACKEND = "openai"

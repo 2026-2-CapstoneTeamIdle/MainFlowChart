@@ -28,6 +28,34 @@ IMAGE_SIZES: dict[ImageAssetKind, tuple[int, int]] = {
     "background": (512, 384),
 }
 
+# On-screen size (width, height in Unity units) of scene objects built by
+# PrefabSceneAssembler.cs. Sprites for these objects are generated with the same
+# aspect ratio, so the art fills the object instead of shrinking into a square.
+# Keep in sync with the sizes passed to CreateSpriteObject in PrefabSceneAssembler.cs.
+OBJECT_FOOTPRINT_UNITS: dict[str, tuple[float, float]] = {
+    "platformer_player": (0.8, 1.2),
+    "platformer_enemy": (0.8, 0.8),
+    "platformer_hazard": (0.9, 0.35),
+    "platformer_collectible": (0.45, 0.45),
+    "platformer_checkpoint": (0.45, 1.8),
+    "platformer_goal": (0.8, 2.0),
+}
+# Pixel density of footprint-sized sprites (two pixels per tileset pixel).
+OBJECT_PIXELS_PER_UNIT = 64
+MINIMUM_OBJECT_SPRITE_PIXELS = 24
+
+
+def _footprint_pixels(asset_id: str | None) -> tuple[int, int] | None:
+    footprint = OBJECT_FOOTPRINT_UNITS.get(asset_id or "")
+    if footprint is None:
+        return None
+    width, height = (
+        max(MINIMUM_OBJECT_SPRITE_PIXELS, 2 * round(units * OBJECT_PIXELS_PER_UNIT / 2))
+        for units in footprint
+    )
+    return width, height
+
+
 SOUND_KIND_KEYWORDS: tuple[tuple[SoundAssetKind, tuple[str, ...]], ...] = (
     ("bgm", ("bgm", "배경음악", "음악", "music", "theme")),
     ("ambience", ("환경음", "ambience", "ambient")),
@@ -122,16 +150,25 @@ def classify_image_kind(purpose: str, description: str) -> ImageAssetKind:
     return "sprite"
 
 
-def build_image_generation_spec(purpose: str, description: str) -> ImageGenerationSpec:
+def build_image_generation_spec(
+    purpose: str,
+    description: str,
+    asset_id: str | None = None,
+) -> ImageGenerationSpec:
     kind = classify_image_kind(purpose, description)
     width, height = IMAGE_SIZES[kind]
+    pixels_per_unit = 32
+    footprint = _footprint_pixels(asset_id) if kind == "sprite" else None
+    if footprint is not None:
+        width, height = footprint
+        pixels_per_unit = OBJECT_PIXELS_PER_UNIT
     spec: ImageGenerationSpec = {
         "kind": kind,
         "width": width,
         "height": height,
         "transparent": kind in {"sprite", "portrait", "ui"},
         "sprite_mode": "multiple" if kind == "tileset" else "single",
-        "pixels_per_unit": 32,
+        "pixels_per_unit": pixels_per_unit,
     }
     if kind == "tileset":
         # Unity slices the 128x128 sheet into sixteen 32x32 tiles.

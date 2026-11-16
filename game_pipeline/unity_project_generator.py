@@ -445,7 +445,11 @@ class UnityProjectGenerator:
                     "suggested_filename": f"{requirement['asset_id']}.{extension}",
                     "unity_binding_key": f"asset_registry:{requirement['asset_id']}",
                     "generation_spec": (
-                        build_image_generation_spec(requirement["purpose"], variation_description)
+                        build_image_generation_spec(
+                            requirement["purpose"],
+                            variation_description,
+                            requirement["asset_id"],
+                        )
                         if asset_type == "image"
                         else build_sound_generation_spec(
                             requirement["purpose"], requirement["description"]

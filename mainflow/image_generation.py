@@ -44,7 +44,12 @@ KIND_PROMPTS: dict[ImageKind, str] = {
     "sprite": "A 2D game sprite",
     "portrait": "A 2D character portrait for dialogue scenes",
     "ui": "A 2D game UI element",
-    "tileset": "A seamless 2D tileset texture arranged as a grid of tiles",
+    "tileset": (
+        "A 2D tileset sheet laid out as an exact 4x4 grid of equal square tiles with no gaps, "
+        "borders or labels. The top row holds walkable ground surface tiles (top edge visible) "
+        "that tile seamlessly left to right; the lower rows hold matching underground fill "
+        "and variation tiles"
+    ),
     "illustration": "A 2D card illustration",
     "background": "A 2D game background scene",
 }
