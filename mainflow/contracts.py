@@ -709,6 +709,8 @@ class AssetBindingEntry(TypedDict):
     mixer_group: str
     spatial_blend: float
     audio_cue: str  # gameplay event that plays a sound; empty for images
+    # Tilesets only: separate top-left ground tile repeated on platforms.
+    surface_tile_path: NotRequired[str]
 
 
 class AssetBindingManifest(TypedDict):

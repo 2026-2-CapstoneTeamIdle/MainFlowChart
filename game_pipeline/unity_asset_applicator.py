@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
+
+from PIL import Image, ImageDraw
 
 from game_pipeline.asset_specs import classify_sound_cue
 from mainflow.ArtifactManager import ArtifactManager
@@ -276,11 +279,90 @@ class UnityAssetApplicator:
                 content,
             )
             entry = self._binding_entry(item, unity_path)
+            surface_path = self._stage_surface_tile(project_id, item, unity_path, content, warnings)
+            if surface_path:
+                entry["surface_tile_path"] = surface_path
             if asset_type == "sound" and not entry["audio_cue"]:
                 warnings.append(f"No gameplay event matches sound; it will not play: {asset_id}")
             entries.append(entry)
             applied.append(asset_id)
         return applied
+
+    def _stage_surface_tile(
+        self,
+        project_id: str,
+        item: AssetGenerationItem,
+        unity_path: str,
+        content: bytes,
+        warnings: list[str],
+    ) -> str:
+        """Copy the tileset's ground surface tile (top-left) as its own sprite file.
+
+        Platforms repeat this one tile. Cutting it here keeps the tiled ground independent
+        of Unity's sprite-sheet slicing, which is unavailable in some 2D Sprite package
+        versions; without it Unity repeats the whole sheet instead of one tile. The
+        validated sheet itself is still staged unchanged.
+        """
+
+        spec = item["generation_spec"]
+        if item["asset_type"] != "image" or spec.get("kind") != "tileset":
+            return ""
+        tile_width = int(spec.get("tile_width", 0))
+        tile_height = int(spec.get("tile_height", 0))
+        try:
+            if tile_width <= 0 or tile_height <= 0:
+                raise ValueError("tileset has no tile size")
+            with Image.open(io.BytesIO(content)) as sheet:
+                if sheet.width < tile_width or sheet.height < tile_height:
+                    raise ValueError("tileset is smaller than one tile")
+                tile = sheet.convert("RGBA").crop((0, 0, tile_width, tile_height))
+            tile = self._clear_surface_sky(tile)
+            output = io.BytesIO()
+            tile.save(output, format="PNG")
+        except (OSError, ValueError) as error:
+            warnings.append(f"Surface tile not extracted for {item['asset_id']}: {error}")
+            return ""
+        surface_path = unity_path.rsplit(".", 1)[0] + "_surface.png"
+        self._write_mutable(
+            project_id,
+            self.UNITY_PROJECT_ROOT / surface_path,
+            output.getvalue(),
+        )
+        return surface_path
+
+    SURFACE_SKY_THRESHOLD = 40
+    SURFACE_SKY_MAX_FRACTION = 0.5
+
+    @classmethod
+    def _clear_surface_sky(cls, tile: Image.Image) -> Image.Image:
+        """Make the flat sky above the ground edge transparent.
+
+        Tilesets are generated opaque, so the surface tile usually carries a band of
+        background color above the grass. Left in place it draws a dark strip on top of
+        every platform. Only regions connected to the two top corners are cleared, and
+        the original tile is kept when the result does not look like sky above ground.
+        """
+
+        width, height = tile.size
+        top_left = tile.getpixel((0, 0))
+        top_right = tile.getpixel((width - 1, 0))
+        if top_left[3] == 0 or top_right[3] == 0:
+            return tile
+        if max(abs(a - b) for a, b in zip(top_left[:3], top_right[:3], strict=True)) > (
+            cls.SURFACE_SKY_THRESHOLD
+        ):
+            return tile
+
+        cleared = tile.copy()
+        for corner in ((0, 0), (width - 1, 0)):
+            if cleared.getpixel(corner)[3]:
+                ImageDraw.floodfill(cleared, corner, (0, 0, 0, 0), thresh=cls.SURFACE_SKY_THRESHOLD)
+        alpha = cleared.getchannel("A")
+        removed = alpha.histogram()[0] - tile.getchannel("A").histogram()[0]
+        bottom_intact = all(alpha.getpixel((x, height - 1)) == 255 for x in range(width))
+        if not bottom_intact or removed > width * height * cls.SURFACE_SKY_MAX_FRACTION:
+            return tile
+        return cleared
 
     @staticmethod
     def _binding_entry(item: AssetGenerationItem, unity_path: str) -> AssetBindingEntry:

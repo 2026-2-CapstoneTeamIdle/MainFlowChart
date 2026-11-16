@@ -342,12 +342,19 @@ namespace TeamIdle.GameTemplate.Editor
                 }
 
                 // Feature and objective entries describe requirements, not scene geometry.
-                // Tower-defense landmarks are also abstract blueprint markers; rendering them
-                // as sprites covers the path and build points with unrelated colored blocks.
+                // Tower-defense and platformer landmarks are also abstract blueprint markers:
+                // the path or the LevelPlan already authors the scene, and rendering them as
+                // sprites drops unrelated colored blocks over the route and generated art.
                 if (
                     entity.archetype == "feature_marker"
                     || entity.archetype == "objective"
-                    || (context.Config.Genre == "TowerDefense" && entity.archetype == "landmark")
+                    || (
+                        entity.archetype == "landmark"
+                        && (
+                            context.Config.Genre == "TowerDefense"
+                            || context.Config.Genre == "Platformer"
+                        )
+                    )
                 )
                 {
                     continue;

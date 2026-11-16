@@ -40,6 +40,7 @@ namespace TeamIdle.GameTemplate.Platformer
         private float jumpQueuedUntil = float.NegativeInfinity;
         private float groundedUntil = float.NegativeInfinity;
         private bool blockedJumpAvailable;
+        private SpriteRenderer targetRenderer;
 
         public override string ModuleId => "platformer_movement";
 
@@ -81,6 +82,7 @@ namespace TeamIdle.GameTemplate.Platformer
             }
 
             var movementX = input.Movement.x;
+            FaceMovement(movementX);
             var velocity = target.linearVelocity;
             var wasBlocked =
                 Mathf.Abs(movementX) > 0.1f && Mathf.Abs(velocity.x) <= blockedSpeedThreshold;
@@ -104,6 +106,23 @@ namespace TeamIdle.GameTemplate.Platformer
                 groundedUntil = float.NegativeInfinity;
                 blockedJumpAvailable = false;
                 GameAudioCues.Raise(GameAudioCues.Jump);
+            }
+        }
+
+        // Generated character art faces right; mirror it while moving left.
+        private void FaceMovement(float movementX)
+        {
+            if (Mathf.Abs(movementX) <= 0.1f)
+            {
+                return;
+            }
+            if (targetRenderer == null)
+            {
+                targetRenderer = target.GetComponent<SpriteRenderer>();
+            }
+            if (targetRenderer != null)
+            {
+                targetRenderer.flipX = movementX < 0f;
             }
         }
 

@@ -9,6 +9,7 @@ from PIL import Image
 
 from game_pipeline import UnityProjectGenerator, build_game_logic_design, normalize_game_spec
 from game_pipeline.asset_specs import (
+    OBJECT_ART_WIDTH_ROOM,
     OBJECT_FOOTPRINT_UNITS,
     OBJECT_PIXELS_PER_UNIT,
     build_image_generation_spec,
@@ -54,10 +55,9 @@ class ObjectFootprintSpecTest(unittest.TestCase):
                 spec = build_image_generation_spec("오브젝트", "테스트 스프라이트", asset_id)
                 self.assertEqual(spec["kind"], "sprite")
                 self.assertEqual(spec["pixels_per_unit"], OBJECT_PIXELS_PER_UNIT)
+                expected = width_units * OBJECT_ART_WIDTH_ROOM.get(asset_id, 1.0) / height_units
                 self.assertAlmostEqual(
-                    spec["width"] / spec["height"],
-                    width_units / height_units,
-                    delta=0.15 * width_units / height_units,
+                    spec["width"] / spec["height"], expected, delta=0.15 * expected
                 )
 
     def test_unknown_assets_and_non_sprite_kinds_keep_default_sizes(self) -> None:
@@ -144,10 +144,14 @@ class UnityPlacementTest(unittest.TestCase):
     def test_ground_tiles_and_background_scroll_instead_of_stretching(self) -> None:
         binder = BINDER.read_text(encoding="utf-8")
 
-        self.assertIn("AssignTiledSurface(renderer, sprite)", binder)
+        self.assertIn("AssignTiledSurface(renderer, surface != null ? surface : sprite)", binder)
         self.assertIn("SpriteDrawMode.Tiled", binder)
         self.assertIn("AddComponent<PrototypeBackgroundScroller>", binder)
         self.assertIn('$"{entry.asset_id}_0"', binder)
+        # Platforms use the separately staged ground tile, not the whole sheet.
+        self.assertIn("public string surface_tile_path", binder)
+        self.assertIn("ConfigureSurfaceTile(entry, manifest.image_style, warnings)", binder)
+        self.assertIn("LoadSurfaceTile(entry)", binder)
 
     def test_background_scroller_is_a_dedicated_runtime_script(self) -> None:
         source = SCROLLER.read_text(encoding="utf-8")

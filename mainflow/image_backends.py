@@ -29,6 +29,7 @@ from typing import Any
 
 from PIL import Image, ImageChops, ImageDraw
 
+from game_pipeline.asset_specs import is_grounded_object
 from mainflow.image_generation import (
     STYLE_PROMPTS,
     ImageGenerator,
@@ -64,6 +65,10 @@ SPRITE_ORIENTATION_RATIO = 1.4
 PIXEL_ART_COLORS = 32
 # Sprites keep this fraction of the canvas as empty margin after cropping.
 SPRITE_MARGIN = 0.08
+# Pixel Art snaps alpha at this value, so pixels below it never show in the result.
+PIXEL_ART_ALPHA_THRESHOLD = 128
+# Other styles keep soft edges; below this alpha a pixel does not count as the object.
+SPRITE_VISIBLE_ALPHA_THRESHOLD = 32
 BACKGROUND_REMOVAL_THRESHOLD = 40
 # Larger images find the connected background on a reduced copy (much faster).
 EXACT_FLOODFILL_MAX_PIXELS = 256 * 256
@@ -384,7 +389,7 @@ class LocalImageGenerator:
 def _download(url: str, timeout_seconds: float = 60.0) -> bytes:
     if not url.startswith(("http://", "https://")):
         raise RuntimeError(f"Unsupported image URL from local server: {url!r}")
-    with urllib.request.urlopen(url, timeout=timeout_seconds) as response:  # noqa: S310
+    with urllib.request.urlopen(url, timeout=timeout_seconds) as response:
         return response.read()
 
 
@@ -415,7 +420,8 @@ def postprocess(content: bytes, request: ImageRequest) -> bytes:
     if request.plan.transparent:
         if not _has_transparency(image):
             image = remove_flat_background(image)
-        image = _fit_sprite(image, request.width, request.height, request.style)
+        anchor = "bottom" if is_grounded_object(request.plan.asset_id) else "center"
+        image = _fit_sprite(image, request.width, request.height, request.style, anchor)
     else:
         image = _cover(image, request.width, request.height, request.style)
         image.putalpha(255)
@@ -488,7 +494,9 @@ def _floodfill_corners(image: Image.Image, threshold: int) -> Image.Image:
 def pixelate_palette(image: Image.Image, colors: int) -> Image.Image:
     """Reduce colors and snap alpha to fully opaque/transparent pixels."""
 
-    alpha = image.getchannel("A").point(lambda value: 255 if value >= 128 else 0)
+    alpha = image.getchannel("A").point(
+        lambda value: 255 if value >= PIXEL_ART_ALPHA_THRESHOLD else 0
+    )
     quantized = image.convert("RGB").quantize(
         colors=colors,
         method=Image.Quantize.MEDIANCUT,
@@ -509,24 +517,40 @@ def _resample(style: str) -> Image.Resampling:
     return Image.Resampling.BOX if style == "Pixel Art" else Image.Resampling.LANCZOS
 
 
-def _fit_sprite(image: Image.Image, width: int, height: int, style: str) -> Image.Image:
-    """Crop to the visible object and center it with a margin on the canvas."""
+def _fit_sprite(
+    image: Image.Image,
+    width: int,
+    height: int,
+    style: str,
+    anchor: str = "center",
+) -> Image.Image:
+    """Crop to the visible object and place it on the canvas with a margin.
 
-    bounding_box = image.getchannel("A").getbbox()
+    ``anchor="bottom"`` puts the object on the bottom edge with no margin below it, for
+    objects that stand on the ground; otherwise it is centered.
+    """
+
+    # Measure the object from clearly visible pixels only. Generated "transparent" images
+    # often carry faint alpha (soft shadows, glow, noise) across the whole canvas; counting
+    # it made the crop cover the full canvas and left the object tiny in its frame.
+    threshold = (
+        PIXEL_ART_ALPHA_THRESHOLD if style == "Pixel Art" else SPRITE_VISIBLE_ALPHA_THRESHOLD
+    )
+    visible = image.getchannel("A").point(lambda value: 255 if value >= threshold else 0)
+    bounding_box = visible.getbbox() or image.getchannel("A").getbbox()
     if bounding_box is not None:
         image = image.crop(bounding_box)
     inner_width = max(1, round(width * (1 - 2 * SPRITE_MARGIN)))
-    inner_height = max(1, round(height * (1 - 2 * SPRITE_MARGIN)))
+    vertical_margins = 1 if anchor == "bottom" else 2
+    inner_height = max(1, round(height * (1 - vertical_margins * SPRITE_MARGIN)))
     scale = min(inner_width / image.width, inner_height / image.height)
     resized = image.resize(
         (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
         _resample(style),
     )
     canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    canvas.alpha_composite(
-        resized,
-        ((width - resized.width) // 2, (height - resized.height) // 2),
-    )
+    top = height - resized.height if anchor == "bottom" else (height - resized.height) // 2
+    canvas.alpha_composite(resized, ((width - resized.width) // 2, top))
     return canvas
 
 

@@ -37,6 +37,7 @@ namespace TeamIdle.GameTemplate.Editor
             public string mixer_group = string.Empty;
             public float spatial_blend;
             public string audio_cue = string.Empty;
+            public string surface_tile_path = string.Empty;
         }
 
         [Serializable]
@@ -78,6 +79,7 @@ namespace TeamIdle.GameTemplate.Editor
                 if (entry.asset_type == "image")
                 {
                     ConfigureTexture(entry, manifest.image_style, warnings);
+                    ConfigureSurfaceTile(entry, manifest.image_style, warnings);
                 }
                 else if (entry.asset_type == "sound")
                 {
@@ -183,6 +185,44 @@ namespace TeamIdle.GameTemplate.Editor
             }
             return JsonUtility.FromJson<BindingReport>(File.ReadAllText(ReportPath))
                 ?? new BindingReport();
+        }
+
+        // The tileset's ground tile is staged as its own single sprite by the Python
+        // applicator, so platforms never depend on sprite-sheet slicing succeeding.
+        private static void ConfigureSurfaceTile(
+            BindingEntry entry,
+            string imageStyle,
+            List<string> warnings
+        )
+        {
+            if (string.IsNullOrEmpty(entry.surface_tile_path))
+            {
+                return;
+            }
+
+            AssetDatabase.ImportAsset(
+                entry.surface_tile_path,
+                ImportAssetOptions.ForceSynchronousImport
+            );
+            if (AssetImporter.GetAtPath(entry.surface_tile_path) is not TextureImporter importer)
+            {
+                warnings.Add($"Surface tile importer unavailable: {entry.asset_id}");
+                return;
+            }
+
+            importer.textureType = TextureImporterType.Sprite;
+            importer.spriteImportMode = SpriteImportMode.Single;
+            importer.spritePixelsPerUnit = Mathf.Max(1, entry.pixels_per_unit);
+            importer.alphaIsTransparency = true;
+            importer.mipmapEnabled = false;
+            importer.wrapMode = TextureWrapMode.Clamp;
+            var textureSettings = new TextureImporterSettings();
+            importer.ReadTextureSettings(textureSettings);
+            textureSettings.spriteMeshType = SpriteMeshType.FullRect;
+            importer.SetTextureSettings(textureSettings);
+            importer.filterMode =
+                imageStyle == "Pixel Art" ? FilterMode.Point : FilterMode.Bilinear;
+            importer.SaveAndReimport();
         }
 
         private static void ConfigureTexture(
@@ -372,7 +412,8 @@ namespace TeamIdle.GameTemplate.Editor
                 {
                     if (entry.kind == "tileset")
                     {
-                        AssignTiledSurface(renderer, sprite);
+                        var surface = LoadSurfaceTile(entry);
+                        AssignTiledSurface(renderer, surface != null ? surface : sprite);
                     }
                     else if (entry.asset_id == StageBackgroundAssetId)
                     {
@@ -380,7 +421,7 @@ namespace TeamIdle.GameTemplate.Editor
                     }
                     else
                     {
-                        AssignSprite(renderer, sprite, entry.kind);
+                        AssignSprite(renderer, sprite, entry);
                     }
                     bound = true;
                 }
@@ -390,6 +431,11 @@ namespace TeamIdle.GameTemplate.Editor
 
         private const string StageBackgroundAssetId = "stage_background";
         private const float SideViewBackgroundParallax = 0.25f;
+
+        private static Sprite LoadSurfaceTile(BindingEntry entry) =>
+            string.IsNullOrEmpty(entry.surface_tile_path)
+                ? null
+                : AssetDatabase.LoadAssetAtPath<Sprite>(entry.surface_tile_path);
 
         // Tileset sheets are sliced into frames named "{asset_id}_{index}" from the top-left.
         // The top row holds the walkable ground surface tiles, so frame 0 is the surface tile.
@@ -498,8 +544,21 @@ namespace TeamIdle.GameTemplate.Editor
         // must keep that footprint, so the new sprite is drawn inside the old visual box
         // (aspect-fit, or aspect-fill for backgrounds) through SpriteRenderer.size instead of
         // changing the transform scale, which would also resize colliders and child anchors.
-        private static void AssignSprite(SpriteRenderer renderer, Sprite sprite, string kind)
+        // Objects standing on the ground. Their art is generated bottom-anchored and may be
+        // wider than the collider, so it is fitted to the object height and keeps its own
+        // width. Keep in sync with GROUNDED_OBJECT_IDS in game_pipeline/asset_specs.py.
+        private static readonly HashSet<string> GroundedAssetIds = new(StringComparer.Ordinal)
         {
+            "platformer_player",
+            "platformer_enemy",
+            "platformer_hazard",
+            "platformer_checkpoint",
+            "platformer_goal",
+        };
+
+        private static void AssignSprite(SpriteRenderer renderer, Sprite sprite, BindingEntry entry)
+        {
+            var kind = entry.kind;
             var previous = renderer.sprite;
             if (kind == "tileset" || previous == null)
             {
@@ -531,9 +590,9 @@ namespace TeamIdle.GameTemplate.Editor
             }
 
             var fit =
-                kind == "background"
-                    ? Mathf.Max(box.x / natural.x, box.y / natural.y)
-                    : Mathf.Min(box.x / natural.x, box.y / natural.y);
+                kind == "background" ? Mathf.Max(box.x / natural.x, box.y / natural.y)
+                : GroundedAssetIds.Contains(entry.asset_id) ? box.y / natural.y
+                : Mathf.Min(box.x / natural.x, box.y / natural.y);
             renderer.drawMode = SpriteDrawMode.Sliced;
             renderer.size = new Vector2(
                 natural.x * fit / Mathf.Abs(scale.x),
@@ -593,7 +652,7 @@ namespace TeamIdle.GameTemplate.Editor
                 var renderer = root.GetComponentInChildren<SpriteRenderer>(true);
                 if (renderer != null)
                 {
-                    AssignSprite(renderer, sprite, entry.kind);
+                    AssignSprite(renderer, sprite, entry);
                     PrefabUtility.SaveAsPrefabAsset(root, path);
                     report.scene_bound_asset_ids.Add(entry.asset_id);
                 }

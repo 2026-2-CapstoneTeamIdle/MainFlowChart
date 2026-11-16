@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import tempfile
 import unittest
@@ -7,7 +8,13 @@ from datetime import date
 from pathlib import Path
 from typing import cast
 
-from game_pipeline.asset_specs import build_sound_generation_spec, classify_sound_cue
+from PIL import Image
+
+from game_pipeline.asset_specs import (
+    build_image_generation_spec,
+    build_sound_generation_spec,
+    classify_sound_cue,
+)
 from game_pipeline.design_catalog import GENRE_PRESETS
 from game_pipeline.unity_asset_applicator import UnityAssetApplicator
 from mainflow.ArtifactManager import ArtifactManager
@@ -328,6 +335,114 @@ class UnityAssetApplicatorTest(unittest.TestCase):
                 kind = build_sound_generation_spec(item["purpose"], item["description"])["kind"]
                 with self.subTest(genre=genre, asset_id=item["asset_id"]):
                     self.assertTrue(classify_sound_cue(item["purpose"], item["description"], kind))
+
+    def test_tileset_surface_tile_is_staged_without_changing_the_sheet(self) -> None:
+        sheet = Image.new("RGBA", (128, 128), (40, 20, 60, 255))
+        for column in range(4):
+            sheet.paste((90 + column * 30, 200, 120, 255), (column * 32, 0, column * 32 + 32, 32))
+        # Flat sky band above the grass of the surface tile, plus a marker pixel below it.
+        sheet.paste((20, 22, 56, 255), (0, 0, 32, 8))
+        sheet.paste((255, 255, 255, 255), (0, 8, 4, 12))
+        buffer = io.BytesIO()
+        sheet.save(buffer, format="PNG")
+        sheet_bytes = buffer.getvalue()
+        artifact = self.manager.write_bytes(
+            self.project_id,
+            "image",
+            "platformer_tileset.png",
+            sheet_bytes,
+            producer="test",
+            media_type="image/png",
+        )
+        item = self._image_item("platformer_tileset", True)
+        item["generation_spec"] = build_image_generation_spec("맵", "발판과 지형 타일셋")
+        image_request = cast(
+            AssetGenerationRequest,
+            {
+                "contract_version": CONTRACT_VERSION,
+                "request_id": "images",
+                "source_design_id": "design",
+                "game_title": "Test",
+                "genre": "Platformer",
+                "asset_type": "image",
+                "image_style": "Pixel Art",
+                "mood_style": "Fantasy",
+                "viewpoint": "사이드뷰",
+                "reference_image": None,
+                "output_directory": "generated/images",
+                "assets": [item],
+            },
+        )
+        sound_request = cast(
+            AssetGenerationRequest,
+            {**image_request, "request_id": "sounds", "asset_type": "sound", "assets": []},
+        )
+        asset = {**self._image_asset("platformer_tileset", artifact), "kind": "tileset"}
+        image_draft = cast(
+            ImageDraft,
+            {
+                "contract_version": CONTRACT_VERSION,
+                "draft_id": "image-draft",
+                "status": "generated",
+                "assets": [asset],
+                "missing_required_asset_ids": [],
+                "notes": ["generator=openai"],
+            },
+        )
+        sound_draft = cast(
+            SoundDraft,
+            {
+                "contract_version": CONTRACT_VERSION,
+                "draft_id": "sound-draft",
+                "status": "generated",
+                "assets": [],
+                "missing_required_asset_ids": [],
+                "notes": [],
+            },
+        )
+
+        def validation(ids: list[str]) -> dict[str, object]:
+            return {
+                "contract_version": CONTRACT_VERSION,
+                "status": "passed",
+                "checks": [],
+                "issues": [],
+                "validated_asset_ids": ids,
+            }
+
+        result = UnityAssetApplicator(self.manager).apply(
+            self.project_id,
+            image_request,
+            sound_request,
+            image_draft,
+            sound_draft,
+            cast(ImageValidationResult, validation(["platformer_tileset"])),
+            cast(SoundValidationResult, validation([])),
+        )
+
+        entry = result.manifest["entries"][0]
+        project_root = self.manager.resolve_project_path(
+            self.project_id, UnityAssetApplicator.UNITY_PROJECT_ROOT
+        )
+        self.assertEqual(
+            entry["surface_tile_path"],
+            "Assets/GameTemplate/Generated/AppliedAssets/Images/platformer_tileset_surface.png",
+        )
+        self.assertEqual((project_root / entry["unity_path"]).read_bytes(), sheet_bytes)
+        with Image.open(project_root / entry["surface_tile_path"]) as tile:
+            self.assertEqual(tile.size, (32, 32))
+            self.assertEqual(tile.getpixel((0, 0))[3], 0)
+            self.assertEqual(tile.getpixel((31, 7))[3], 0)
+            self.assertEqual(tile.getpixel((0, 8)), (255, 255, 255, 255))
+            self.assertEqual(tile.getpixel((20, 20)), (90, 200, 120, 255))
+            self.assertTrue(all(tile.getpixel((x, 31))[3] == 255 for x in range(32)))
+
+    def test_surface_tile_without_sky_is_kept_opaque(self) -> None:
+        grass = Image.new("RGBA", (32, 32), (90, 200, 120, 255))
+
+        result = UnityAssetApplicator._clear_surface_sky(grass)
+
+        self.assertEqual(result.getchannel("A").histogram()[255], 32 * 32)
 
     @staticmethod
     def _image_item(asset_id: str, required: bool) -> dict[str, object]:

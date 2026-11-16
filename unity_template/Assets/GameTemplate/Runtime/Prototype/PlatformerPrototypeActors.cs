@@ -86,6 +86,8 @@ namespace TeamIdle.GameTemplate.Prototype
         private float contactDamage = 15f;
 
         private Vector3 origin;
+        private float previousOffset;
+        private SpriteRenderer spriteRenderer;
 
         public float Range => range;
 
@@ -111,12 +113,22 @@ namespace TeamIdle.GameTemplate.Prototype
         private void Awake()
         {
             origin = transform.position;
+            previousOffset = -range;
+            spriteRenderer = GetComponent<SpriteRenderer>();
         }
 
         private void Update()
         {
             var offset = Mathf.PingPong(Time.time * speed, range * 2f) - range;
             transform.position = origin + Vector3.right * offset;
+
+            // Generated enemy art faces right; mirror it while patrolling to the left.
+            var step = offset - previousOffset;
+            previousOffset = offset;
+            if (spriteRenderer != null && Mathf.Abs(step) > 0.0001f)
+            {
+                spriteRenderer.flipX = step < 0f;
+            }
         }
 
         private void OnCollisionEnter2D(Collision2D collision)

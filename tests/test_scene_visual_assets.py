@@ -143,7 +143,7 @@ class SceneVisualAssetsTest(unittest.TestCase):
                 rf'"{re.escape(item["asset_id"])}" =>',
                 f"GeneratedAssetBinder.SceneObjectNames is missing {item['asset_id']}",
             )
-        self.assertIn("AssignSprite(renderer, sprite, entry.kind)", binder)
+        self.assertIn("AssignSprite(renderer, sprite, entry)", binder)
 
 
 if __name__ == "__main__":
