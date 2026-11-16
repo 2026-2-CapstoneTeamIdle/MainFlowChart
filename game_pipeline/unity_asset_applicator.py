@@ -39,6 +39,11 @@ class UnityAssetApplicationResult:
     suppressed_placeholder_image_asset_ids: list[str]
 
 
+# Only the side-view platformer scrolls its background horizontally alone; Unity's
+# PrototypeBackgroundScroller repeats every other genre's background in both directions.
+SIDE_VIEW_GENRE = "Platformer"
+
+
 class UnityAssetApplicator:
     """Copy validated artifacts and describe deterministic Unity bindings."""
 
@@ -282,7 +287,9 @@ class UnityAssetApplicator:
             entry = self._binding_entry(item, unity_path)
             entry.update(self._stage_surface_tiles(project_id, item, unity_path, content, warnings))
             entry.update(
-                self._stage_scroll_background(project_id, item, unity_path, content, warnings)
+                self._stage_scroll_background(
+                    project_id, item, unity_path, content, warnings, request["genre"]
+                )
             )
             if asset_type == "sound" and not entry["audio_cue"]:
                 warnings.append(f"No gameplay event matches sound; it will not play: {asset_id}")
@@ -349,12 +356,16 @@ class UnityAssetApplicator:
         unity_path: str,
         content: bytes,
         warnings: list[str],
+        genre: str = SIDE_VIEW_GENRE,
     ) -> dict[str, Any]:
         """Stage a seamlessly repeatable copy of the stage background.
 
-        Generated backgrounds rarely match left and right edges, which shows a hard seam
-        every time the background repeats. Placing a mirrored copy next to the original
-        makes both joins continuous by construction.
+        Generated backgrounds rarely match opposite edges, which shows a hard seam every
+        time the background repeats. Mirrored copies make every join continuous by
+        construction. The side-view platformer only repeats horizontally, so the original
+        is followed by a left-right mirror; other genres also repeat vertically
+        (``PrototypeBackgroundScroller.tileVertically``), so they get a 2x2 block with
+        up-down mirrors as well.
         """
 
         if item["asset_id"] != STAGE_BACKGROUND_ASSET_ID or item["asset_type"] != "image":
@@ -365,9 +376,18 @@ class UnityAssetApplicator:
         except OSError as error:
             warnings.append(f"Scrolling background not prepared: {error}")
             return {}
-        strip = Image.new("RGBA", (image.width * 2, image.height))
+        mirrored = image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+        repeats_vertically = genre != SIDE_VIEW_GENRE
+        strip = Image.new(
+            "RGBA", (image.width * 2, image.height * (2 if repeats_vertically else 1))
+        )
         strip.paste(image, (0, 0))
-        strip.paste(image.transpose(Image.Transpose.FLIP_LEFT_RIGHT), (image.width, 0))
+        strip.paste(mirrored, (image.width, 0))
+        if repeats_vertically:
+            strip.paste(image.transpose(Image.Transpose.FLIP_TOP_BOTTOM), (0, image.height))
+            strip.paste(
+                mirrored.transpose(Image.Transpose.FLIP_TOP_BOTTOM), (image.width, image.height)
+            )
         base = unity_path.rsplit(".", 1)[0]
         return {"scroll_tile_path": self._write_png(project_id, base + "_scroll.png", strip)}
 

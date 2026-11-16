@@ -107,7 +107,7 @@ Unity의 `GeneratedAssetBinder`는 생성된 이미지를 다음처럼 오브젝
   그대로 두고 자식 렌더러(`SurfaceTiles`, `SurfaceFill`)로 타일을 반복한다. 지면 타일의 단단한 지면선을
   충돌 범위 윗면에 맞추고 풀·장식은 그 위로 그려지며, 두꺼운 바닥은 아래를 흙 타일로 채운다.
 - 스테이지 배경(`stage_background`): 원본 옆에 좌우 반전본을 붙인 `_scroll.png`를 반복해 이음매가 생기지
-  않는다. `PrototypeBackgroundScroller`가 카메라를 따라가며 반복하고, 사이드뷰는 시차 0.25로 천천히
+  않는다. 상하로도 반복하는 탑다운 장르는 상하 반전본까지 붙인 2×2 묶음을 쓴다. `PrototypeBackgroundScroller`가 카메라를 따라가며 반복하고, 사이드뷰는 시차 0.25로 천천히
   움직이며 탑다운 장르는 상하좌우로 반복하고 월드에 고정된다.
 - 땅에 서는 오브젝트는 그림 아래 끝이 충돌 범위 아래 끝과 0.05유닛 넘게 어긋나면
   `AssetBindingReport.json`의 `warnings`에 위치와 크기를 기록한다.
