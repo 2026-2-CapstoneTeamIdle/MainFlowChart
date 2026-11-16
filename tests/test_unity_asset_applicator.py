@@ -436,6 +436,51 @@ class UnityAssetApplicatorTest(unittest.TestCase):
             self.assertEqual(tile.getpixel((0, 8)), (255, 255, 255, 255))
             self.assertEqual(tile.getpixel((20, 20)), (90, 200, 120, 255))
             self.assertTrue(all(tile.getpixel((x, 31))[3] == 255 for x in range(32)))
+        # Rows 0-7 are cleared sky, so the solid ground edge starts a quarter down.
+        self.assertEqual(entry["surface_top_inset"], 0.25)
+        self.assertEqual(
+            entry["surface_fill_path"],
+            "Assets/GameTemplate/Generated/AppliedAssets/Images/platformer_tileset_fill.png",
+        )
+        with Image.open(project_root / entry["surface_fill_path"]) as fill:
+            self.assertEqual(fill.size, (32, 32))
+            self.assertEqual(fill.getpixel((16, 16)), (40, 20, 60, 255))
+        self.assertNotIn("scroll_tile_path", entry)
+
+    def test_stage_background_gets_a_mirrored_repeatable_copy(self) -> None:
+        image = Image.new("RGBA", (8, 4), (10, 20, 30, 255))
+        image.paste((200, 0, 0, 255), (0, 0, 1, 4))
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        item = self._image_item("stage_background", False)
+        applicator = UnityAssetApplicator(self.manager)
+
+        fields = applicator._stage_scroll_background(
+            self.project_id,
+            item,
+            "Assets/GameTemplate/Generated/AppliedAssets/Images/stage_background.png",
+            buffer.getvalue(),
+            [],
+        )
+
+        path = (
+            self.manager.resolve_project_path(
+                self.project_id, UnityAssetApplicator.UNITY_PROJECT_ROOT
+            )
+            / fields["scroll_tile_path"]
+        )
+        with Image.open(path) as strip:
+            self.assertEqual(strip.size, (16, 4))
+            # Both seams join identical columns: original left edge meets the mirror's right
+            # edge on repeat, and the original right edge meets the mirror's left edge.
+            self.assertEqual(strip.getpixel((0, 0)), strip.getpixel((15, 0)))
+            self.assertEqual(strip.getpixel((7, 0)), strip.getpixel((8, 0)))
+        self.assertEqual(
+            applicator._stage_scroll_background(
+                self.project_id, self._image_item("platformer_enemy", False), "x.png", b"", []
+            ),
+            {},
+        )
 
     def test_surface_tile_without_sky_is_kept_opaque(self) -> None:
         grass = Image.new("RGBA", (32, 32), (90, 200, 120, 255))

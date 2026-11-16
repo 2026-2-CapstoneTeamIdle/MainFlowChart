@@ -13,6 +13,7 @@ from typing import Any, ClassVar
 from PIL import Image, ImageDraw
 
 from game_pipeline.asset_specs import classify_sound_cue
+from game_pipeline.scene_visual_assets import STAGE_BACKGROUND_ASSET_ID
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -279,34 +280,40 @@ class UnityAssetApplicator:
                 content,
             )
             entry = self._binding_entry(item, unity_path)
-            surface_path = self._stage_surface_tile(project_id, item, unity_path, content, warnings)
-            if surface_path:
-                entry["surface_tile_path"] = surface_path
+            entry.update(self._stage_surface_tiles(project_id, item, unity_path, content, warnings))
+            entry.update(
+                self._stage_scroll_background(project_id, item, unity_path, content, warnings)
+            )
             if asset_type == "sound" and not entry["audio_cue"]:
                 warnings.append(f"No gameplay event matches sound; it will not play: {asset_id}")
             entries.append(entry)
             applied.append(asset_id)
         return applied
 
-    def _stage_surface_tile(
+    def _stage_surface_tiles(
         self,
         project_id: str,
         item: AssetGenerationItem,
         unity_path: str,
         content: bytes,
         warnings: list[str],
-    ) -> str:
-        """Copy the tileset's ground surface tile (top-left) as its own sprite file.
+    ) -> dict[str, Any]:
+        """Copy the tileset's ground surface and fill tiles as their own sprite files.
 
-        Platforms repeat this one tile. Cutting it here keeps the tiled ground independent
-        of Unity's sprite-sheet slicing, which is unavailable in some 2D Sprite package
-        versions; without it Unity repeats the whole sheet instead of one tile. The
-        validated sheet itself is still staged unchanged.
+        Platforms repeat the surface tile (top-left) and fill thick ground below it with
+        the fill tile (first tile of the second row). Cutting them here keeps the tiled
+        ground independent of Unity's sprite-sheet slicing, which is unavailable in some
+        2D Sprite package versions; without it Unity repeats the whole sheet. The validated
+        sheet itself is still staged unchanged.
+
+        ``surface_top_inset`` is the fraction of the surface tile above its solid ground
+        edge (cleared sky plus grass or rock decorations). Unity lines the solid edge up
+        with the platform's collider so characters stand on the ground, not on the sky.
         """
 
         spec = item["generation_spec"]
         if item["asset_type"] != "image" or spec.get("kind") != "tileset":
-            return ""
+            return {}
         tile_width = int(spec.get("tile_width", 0))
         tile_height = int(spec.get("tile_height", 0))
         try:
@@ -315,20 +322,76 @@ class UnityAssetApplicator:
             with Image.open(io.BytesIO(content)) as sheet:
                 if sheet.width < tile_width or sheet.height < tile_height:
                     raise ValueError("tileset is smaller than one tile")
-                tile = sheet.convert("RGBA").crop((0, 0, tile_width, tile_height))
-            tile = self._clear_surface_sky(tile)
-            output = io.BytesIO()
-            tile.save(output, format="PNG")
+                rgba = sheet.convert("RGBA")
+                surface = self._clear_surface_sky(rgba.crop((0, 0, tile_width, tile_height)))
+                fill = (
+                    rgba.crop((0, tile_height, tile_width, tile_height * 2))
+                    if sheet.height >= tile_height * 2
+                    else None
+                )
         except (OSError, ValueError) as error:
             warnings.append(f"Surface tile not extracted for {item['asset_id']}: {error}")
-            return ""
-        surface_path = unity_path.rsplit(".", 1)[0] + "_surface.png"
-        self._write_mutable(
-            project_id,
-            self.UNITY_PROJECT_ROOT / surface_path,
-            output.getvalue(),
-        )
-        return surface_path
+            return {}
+
+        base = unity_path.rsplit(".", 1)[0]
+        fields: dict[str, Any] = {
+            "surface_tile_path": self._write_png(project_id, base + "_surface.png", surface),
+            "surface_top_inset": self._solid_top_inset(surface),
+        }
+        if fill is not None and fill.getchannel("A").getextrema()[0] == 255:
+            fields["surface_fill_path"] = self._write_png(project_id, base + "_fill.png", fill)
+        return fields
+
+    def _stage_scroll_background(
+        self,
+        project_id: str,
+        item: AssetGenerationItem,
+        unity_path: str,
+        content: bytes,
+        warnings: list[str],
+    ) -> dict[str, Any]:
+        """Stage a seamlessly repeatable copy of the stage background.
+
+        Generated backgrounds rarely match left and right edges, which shows a hard seam
+        every time the background repeats. Placing a mirrored copy next to the original
+        makes both joins continuous by construction.
+        """
+
+        if item["asset_id"] != STAGE_BACKGROUND_ASSET_ID or item["asset_type"] != "image":
+            return {}
+        try:
+            with Image.open(io.BytesIO(content)) as source:
+                image = source.convert("RGBA")
+        except OSError as error:
+            warnings.append(f"Scrolling background not prepared: {error}")
+            return {}
+        strip = Image.new("RGBA", (image.width * 2, image.height))
+        strip.paste(image, (0, 0))
+        strip.paste(image.transpose(Image.Transpose.FLIP_LEFT_RIGHT), (image.width, 0))
+        base = unity_path.rsplit(".", 1)[0]
+        return {"scroll_tile_path": self._write_png(project_id, base + "_scroll.png", strip)}
+
+    def _write_png(self, project_id: str, unity_path: str, image: Image.Image) -> str:
+        output = io.BytesIO()
+        image.save(output, format="PNG")
+        self._write_mutable(project_id, self.UNITY_PROJECT_ROOT / unity_path, output.getvalue())
+        return unity_path
+
+    SURFACE_SOLID_COVERAGE = 0.95
+    SURFACE_MAX_TOP_INSET = 0.6
+
+    @classmethod
+    def _solid_top_inset(cls, tile: Image.Image) -> float:
+        """Fraction of the tile above the first (nearly) fully opaque row."""
+
+        alpha = tile.getchannel("A")
+        width, height = tile.size
+        for row in range(height):
+            opaque = sum(1 for x in range(width) if alpha.getpixel((x, row)) >= 128)
+            if opaque >= width * cls.SURFACE_SOLID_COVERAGE:
+                inset = row / height
+                return round(inset, 4) if inset <= cls.SURFACE_MAX_TOP_INSET else 0.0
+        return 0.0
 
     SURFACE_SKY_THRESHOLD = 40
     SURFACE_SKY_MAX_FRACTION = 0.5
@@ -362,7 +425,36 @@ class UnityAssetApplicator:
         bottom_intact = all(alpha.getpixel((x, height - 1)) == 255 for x in range(width))
         if not bottom_intact or removed > width * height * cls.SURFACE_SKY_MAX_FRACTION:
             return tile
-        return cleared
+        return cls._trim_above_surface(cleared)
+
+    SURFACE_EDGE_COVERAGE = 0.95
+    SURFACE_MAX_DECORATION = 0.6
+
+    @classmethod
+    def _trim_above_surface(cls, tile: Image.Image) -> Image.Image:
+        """Clear rocks, plants and props that stick up above the solid ground edge.
+
+        The ground edge is the first row that is (nearly) fully opaque. Anything drawn
+        above it would repeat on every platform as a row of identical decorations, so the
+        repeated surface keeps only a flat top edge, whatever the model drew.
+        """
+
+        width, height = tile.size
+        alpha = tile.getchannel("A")
+        edge = next(
+            (
+                row
+                for row in range(height)
+                if sum(1 for x in range(width) if alpha.getpixel((x, row)) >= 128)
+                >= width * cls.SURFACE_EDGE_COVERAGE
+            ),
+            None,
+        )
+        if edge is None or edge == 0 or edge > height * cls.SURFACE_MAX_DECORATION:
+            return tile
+        trimmed = tile.copy()
+        trimmed.paste((0, 0, 0, 0), (0, 0, width, edge))
+        return trimmed
 
     @staticmethod
     def _binding_entry(item: AssetGenerationItem, unity_path: str) -> AssetBindingEntry:

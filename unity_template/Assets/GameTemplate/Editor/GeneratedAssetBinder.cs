@@ -38,6 +38,9 @@ namespace TeamIdle.GameTemplate.Editor
             public float spatial_blend;
             public string audio_cue = string.Empty;
             public string surface_tile_path = string.Empty;
+            public float surface_top_inset;
+            public string surface_fill_path = string.Empty;
+            public string scroll_tile_path = string.Empty;
         }
 
         [Serializable]
@@ -79,7 +82,24 @@ namespace TeamIdle.GameTemplate.Editor
                 if (entry.asset_type == "image")
                 {
                     ConfigureTexture(entry, manifest.image_style, warnings);
-                    ConfigureSurfaceTile(entry, manifest.image_style, warnings);
+                    ConfigureDerivedSprite(
+                        entry.surface_tile_path,
+                        entry,
+                        manifest.image_style,
+                        warnings
+                    );
+                    ConfigureDerivedSprite(
+                        entry.surface_fill_path,
+                        entry,
+                        manifest.image_style,
+                        warnings
+                    );
+                    ConfigureDerivedSprite(
+                        entry.scroll_tile_path,
+                        entry,
+                        manifest.image_style,
+                        warnings
+                    );
                 }
                 else if (entry.asset_type == "sound")
                 {
@@ -122,7 +142,7 @@ namespace TeamIdle.GameTemplate.Editor
                     }
 
                     registryAssets.Add((entry.asset_id, sprite));
-                    if (BindSprite(entry, sprite, generatedRoot))
+                    if (BindSprite(entry, sprite, generatedRoot, report.warnings))
                     {
                         report.scene_bound_asset_ids.Add(entry.asset_id);
                     }
@@ -187,26 +207,25 @@ namespace TeamIdle.GameTemplate.Editor
                 ?? new BindingReport();
         }
 
-        // The tileset's ground tile is staged as its own single sprite by the Python
-        // applicator, so platforms never depend on sprite-sheet slicing succeeding.
-        private static void ConfigureSurfaceTile(
+        // Derived single sprites staged by the Python applicator next to the validated asset:
+        // tileset surface/fill tiles (so platforms never depend on sprite-sheet slicing) and
+        // the mirrored, seamlessly repeatable stage background.
+        private static void ConfigureDerivedSprite(
+            string path,
             BindingEntry entry,
             string imageStyle,
             List<string> warnings
         )
         {
-            if (string.IsNullOrEmpty(entry.surface_tile_path))
+            if (string.IsNullOrEmpty(path))
             {
                 return;
             }
 
-            AssetDatabase.ImportAsset(
-                entry.surface_tile_path,
-                ImportAssetOptions.ForceSynchronousImport
-            );
-            if (AssetImporter.GetAtPath(entry.surface_tile_path) is not TextureImporter importer)
+            AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+            if (AssetImporter.GetAtPath(path) is not TextureImporter importer)
             {
-                warnings.Add($"Surface tile importer unavailable: {entry.asset_id}");
+                warnings.Add($"Derived sprite importer unavailable: {path}");
                 return;
             }
 
@@ -402,7 +421,12 @@ namespace TeamIdle.GameTemplate.Editor
             importer.SaveAndReimport();
         }
 
-        private static bool BindSprite(BindingEntry entry, Sprite sprite, Transform generatedRoot)
+        private static bool BindSprite(
+            BindingEntry entry,
+            Sprite sprite,
+            Transform generatedRoot,
+            List<string> warnings
+        )
         {
             var names = SceneObjectNames(entry.asset_id);
             var bound = false;
@@ -412,16 +436,30 @@ namespace TeamIdle.GameTemplate.Editor
                 {
                     if (entry.kind == "tileset")
                     {
-                        var surface = LoadSurfaceTile(entry);
-                        AssignTiledSurface(renderer, surface != null ? surface : sprite);
+                        var surface = LoadDerivedSprite(entry.surface_tile_path);
+                        AssignTiledSurface(
+                            renderer,
+                            surface != null ? surface : sprite,
+                            LoadDerivedSprite(entry.surface_fill_path),
+                            surface != null ? entry.surface_top_inset : 0f
+                        );
                     }
                     else if (entry.asset_id == StageBackgroundAssetId)
                     {
-                        AssignScrollingBackground(renderer, sprite, generatedRoot);
+                        var repeatable = LoadDerivedSprite(entry.scroll_tile_path);
+                        AssignScrollingBackground(
+                            renderer,
+                            repeatable != null ? repeatable : sprite,
+                            generatedRoot
+                        );
                     }
                     else
                     {
                         AssignSprite(renderer, sprite, entry);
+                        if (GroundedAssetIds.Contains(entry.asset_id))
+                        {
+                            ReportGroundedAlignment(renderer, warnings);
+                        }
                     }
                     bound = true;
                 }
@@ -432,10 +470,34 @@ namespace TeamIdle.GameTemplate.Editor
         private const string StageBackgroundAssetId = "stage_background";
         private const float SideViewBackgroundParallax = 0.25f;
 
-        private static Sprite LoadSurfaceTile(BindingEntry entry) =>
-            string.IsNullOrEmpty(entry.surface_tile_path)
-                ? null
-                : AssetDatabase.LoadAssetAtPath<Sprite>(entry.surface_tile_path);
+        private static Sprite LoadDerivedSprite(string path) =>
+            string.IsNullOrEmpty(path) ? null : AssetDatabase.LoadAssetAtPath<Sprite>(path);
+
+        private const float GroundedAlignmentTolerance = 0.05f;
+
+        // Grounded art must start at the collider's bottom edge. Record any mismatch in the
+        // binding report so placement problems can be traced to data or rendering.
+        private static void ReportGroundedAlignment(SpriteRenderer renderer, List<string> warnings)
+        {
+            var collider = renderer.GetComponent<Collider2D>();
+            if (collider == null)
+            {
+                return;
+            }
+
+            Physics2D.SyncTransforms();
+            var visualBottom = renderer.bounds.min.y;
+            var colliderBottom = collider.bounds.min.y;
+            if (Mathf.Abs(visualBottom - colliderBottom) > GroundedAlignmentTolerance)
+            {
+                warnings.Add(
+                    $"Visual bottom of {renderer.name} is {visualBottom - colliderBottom:F2} from "
+                        + $"its collider (visual {visualBottom:F2}, collider {colliderBottom:F2}, "
+                        + $"position {renderer.transform.position.y:F2}, "
+                        + $"drawMode {renderer.drawMode}, size {renderer.size})"
+                );
+            }
+        }
 
         // Tileset sheets are sliced into frames named "{asset_id}_{index}" from the top-left.
         // The top row holds the walkable ground surface tiles, so frame 0 is the surface tile.
@@ -460,26 +522,39 @@ namespace TeamIdle.GameTemplate.Editor
             return AssetDatabase.LoadAssetAtPath<Sprite>(entry.unity_path);
         }
 
-        // Ground and platforms are a 1x1-unit placeholder stretched to the platform size.
-        // Stretching a tile over a long platform smears it, so the object is rescaled to a
-        // uniform tile size and the tile is repeated with SpriteDrawMode.Tiled. Box colliders
-        // are resized in local space so their world footprint stays exactly the same.
-        private static void AssignTiledSurface(SpriteRenderer renderer, Sprite tile)
+        private const string SurfaceTilesName = "SurfaceTiles";
+        private const string SurfaceFillName = "SurfaceFill";
+        private const float MaximumSurfaceTopInset = 0.6f;
+
+        // Ground and platforms are a 1x1-unit placeholder stretched to the platform size and
+        // their colliders were sized from it. The object, its scale and its colliders are
+        // left untouched: its own renderer is hidden and child renderers repeat the tiles.
+        //
+        // The surface tile has sky and grass decorations above its solid ground edge
+        // (topInset of its height). One surface row is placed so that solid edge lines up
+        // with the collider top, letting decorations rise above it; thick ground is filled
+        // below the surface row with the fill tile. Characters then stand on the ground
+        // edge instead of floating over transparent sky.
+        private static void AssignTiledSurface(
+            SpriteRenderer renderer,
+            Sprite surface,
+            Sprite fill,
+            float topInset
+        )
         {
             var previous = renderer.sprite;
             var transform = renderer.transform;
-            var colliders = renderer.GetComponents<Collider2D>();
+            var scale = transform.localScale;
             if (
                 previous == null
-                || transform.childCount > 0
-                || colliders.Any(collider => collider is not BoxCollider2D)
+                || Mathf.Approximately(scale.x, 0f)
+                || Mathf.Approximately(scale.y, 0f)
             )
             {
-                renderer.sprite = tile;
+                renderer.sprite = surface;
                 return;
             }
 
-            var scale = transform.localScale;
             var previousSize =
                 renderer.drawMode == SpriteDrawMode.Simple
                     ? (Vector2)previous.bounds.size
@@ -488,34 +563,88 @@ namespace TeamIdle.GameTemplate.Editor
                 previousSize.x * Mathf.Abs(scale.x),
                 previousSize.y * Mathf.Abs(scale.y)
             );
-            var tileHeight = tile.bounds.size.y;
+            var tileHeight = surface.bounds.size.y;
             if (world.x <= 0f || world.y <= 0f || tileHeight <= 0f)
             {
-                renderer.sprite = tile;
+                renderer.sprite = surface;
                 return;
             }
 
-            // Fit a whole number of tile rows into the platform height so the surface edge
-            // of the top row is always visible; thin platforms use one smaller row.
-            var rows = Mathf.Max(1f, Mathf.Round(world.y / tileHeight));
-            var tileScale = world.y / (rows * tileHeight);
-            foreach (var box in colliders.Cast<BoxCollider2D>())
+            var solidFraction = 1f - Mathf.Clamp(topInset, 0f, MaximumSurfaceTopInset);
+            // One surface row whose solid part covers the platform height. Thick ground keeps
+            // the tile's own size and is filled below; without a fill tile the row grows.
+            var tileScale = world.y / (tileHeight * solidFraction);
+            if (fill != null)
             {
-                box.size = new Vector2(
-                    box.size.x * Mathf.Abs(scale.x) / tileScale,
-                    box.size.y * Mathf.Abs(scale.y) / tileScale
-                );
-                box.offset = new Vector2(
-                    box.offset.x * scale.x / tileScale,
-                    box.offset.y * scale.y / tileScale
+                tileScale = Mathf.Min(tileScale, 1f);
+            }
+            var rowHeight = tileHeight * tileScale;
+            var solidHeight = rowHeight * solidFraction;
+            var top = world.y * 0.5f;
+
+            RemoveChild(transform, SurfaceTilesName);
+            RemoveChild(transform, SurfaceFillName);
+            CreateTiledChild(
+                renderer,
+                SurfaceTilesName,
+                surface,
+                tileScale,
+                new Vector2(world.x, rowHeight),
+                top - solidHeight + rowHeight * 0.5f
+            );
+            var fillHeight = world.y - solidHeight;
+            if (fill != null && fillHeight > 0.001f)
+            {
+                CreateTiledChild(
+                    renderer,
+                    SurfaceFillName,
+                    fill,
+                    tileScale,
+                    new Vector2(world.x, fillHeight),
+                    -top + fillHeight * 0.5f
                 );
             }
 
-            transform.localScale = new Vector3(tileScale, tileScale, scale.z);
-            renderer.sprite = tile;
+            renderer.sprite = surface;
+            renderer.enabled = false;
+        }
+
+        // Child renderer with uniform world tile scale despite the parent's non-uniform scale.
+        private static void CreateTiledChild(
+            SpriteRenderer parentRenderer,
+            string name,
+            Sprite sprite,
+            float tileScale,
+            Vector2 worldSize,
+            float worldCenterY
+        )
+        {
+            var parent = parentRenderer.transform;
+            var parentScale = parent.localScale;
+            var child = new GameObject(name, typeof(SpriteRenderer));
+            child.transform.SetParent(parent, false);
+            child.transform.localPosition = new Vector3(0f, worldCenterY / parentScale.y, 0f);
+            child.transform.localScale = new Vector3(
+                tileScale / parentScale.x,
+                tileScale / parentScale.y,
+                1f
+            );
+            var renderer = child.GetComponent<SpriteRenderer>();
+            renderer.sprite = sprite;
             renderer.drawMode = SpriteDrawMode.Tiled;
             renderer.tileMode = SpriteTileMode.Continuous;
-            renderer.size = world / tileScale;
+            renderer.size = worldSize / tileScale;
+            renderer.sortingLayerID = parentRenderer.sortingLayerID;
+            renderer.sortingOrder = parentRenderer.sortingOrder;
+        }
+
+        private static void RemoveChild(Transform parent, string name)
+        {
+            var existing = parent.Find(name);
+            if (existing != null)
+            {
+                UnityEngine.Object.DestroyImmediate(existing.gameObject);
+            }
         }
 
         // The stage background must cover the whole camera route, not just the scene origin,

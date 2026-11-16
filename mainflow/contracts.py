@@ -711,6 +711,12 @@ class AssetBindingEntry(TypedDict):
     audio_cue: str  # gameplay event that plays a sound; empty for images
     # Tilesets only: separate top-left ground tile repeated on platforms.
     surface_tile_path: NotRequired[str]
+    # Fraction of the surface tile above its solid ground edge.
+    surface_top_inset: NotRequired[float]
+    # Tilesets only: fill tile repeated under the surface on thick ground.
+    surface_fill_path: NotRequired[str]
+    # Stage background only: original plus mirrored copy, repeatable without seams.
+    scroll_tile_path: NotRequired[str]
 
 
 class AssetBindingManifest(TypedDict):

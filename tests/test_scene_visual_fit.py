@@ -144,14 +144,28 @@ class UnityPlacementTest(unittest.TestCase):
     def test_ground_tiles_and_background_scroll_instead_of_stretching(self) -> None:
         binder = BINDER.read_text(encoding="utf-8")
 
-        self.assertIn("AssignTiledSurface(renderer, surface != null ? surface : sprite)", binder)
+        self.assertIn("var surface = LoadDerivedSprite(entry.surface_tile_path);", binder)
+        # Platforms keep their object and collider; child renderers draw the tiles with the
+        # solid ground edge on the collider top and fill tiles below on thick ground.
+        self.assertIn('SurfaceTilesName = "SurfaceTiles"', binder)
+        self.assertIn('SurfaceFillName = "SurfaceFill"', binder)
+        self.assertIn("top - solidHeight + rowHeight * 0.5f", binder)
+        self.assertIn("renderer.enabled = false;", binder)
+        self.assertNotIn("box.size = new Vector2(", binder)
+        # The stage background repeats its mirrored copy, and grounded art is checked.
+        self.assertIn("LoadDerivedSprite(entry.scroll_tile_path)", binder)
+        self.assertIn("ReportGroundedAlignment(renderer, warnings)", binder)
         self.assertIn("SpriteDrawMode.Tiled", binder)
         self.assertIn("AddComponent<PrototypeBackgroundScroller>", binder)
         self.assertIn('$"{entry.asset_id}_0"', binder)
         # Platforms use the separately staged ground tile, not the whole sheet.
         self.assertIn("public string surface_tile_path", binder)
-        self.assertIn("ConfigureSurfaceTile(entry, manifest.image_style, warnings)", binder)
-        self.assertIn("LoadSurfaceTile(entry)", binder)
+        compact = re.sub(r"\s+", "", binder)
+        for field in ("surface_tile_path", "surface_fill_path", "scroll_tile_path"):
+            self.assertIn(
+                f"ConfigureDerivedSprite(entry.{field},entry,manifest.image_style,warnings)",
+                compact,
+            )
 
     def test_background_scroller_is_a_dedicated_runtime_script(self) -> None:
         source = SCROLLER.read_text(encoding="utf-8")
