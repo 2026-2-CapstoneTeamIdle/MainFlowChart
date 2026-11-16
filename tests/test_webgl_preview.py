@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,21 @@ class _FakeUnityProcess:
     def wait(self, timeout: float | None = None) -> int:
         del timeout
         return self.return_code
+
+
+class _LingeringStdoutUnityProcess(_FakeUnityProcess):
+    """Model a Unity child process that keeps the inherited stdout pipe open."""
+
+    def __init__(self, command: list[str], **kwargs: object) -> None:
+        super().__init__(command, **kwargs)
+        output_root = Path(command[command.index("-webGLPreviewOutput") + 1])
+        never_closed = threading.Event()
+
+        def output_lines():
+            yield f"{webgl_preview.WEBGL_SUCCESS_MARKER}{output_root}\n"
+            never_closed.wait(60)
+
+        self.stdout = output_lines()
 
 
 def _unity_project(tmp_path: Path) -> Path:
@@ -91,6 +107,32 @@ def test_webgl_preview_failure_preserves_previous_output(
     assert (output / "index.html").read_text(encoding="utf-8") == "old preview"
 
 
+def test_webgl_preview_publishes_when_child_keeps_stdout_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project = _unity_project(tmp_path)
+    editor = tmp_path / "Unity.exe"
+    editor.write_bytes(b"")
+    output = tmp_path / "published" / "webgl"
+    monkeypatch.setattr(
+        webgl_preview.UnityProjectValidator,
+        "find_unity_editor",
+        lambda _version: editor,
+    )
+    monkeypatch.setattr(webgl_preview, "_has_webgl_support", lambda _editor: True)
+    monkeypatch.setattr(webgl_preview, "_POST_EXIT_OUTPUT_GRACE_SECONDS", 0.01)
+    monkeypatch.setattr(
+        webgl_preview.subprocess,
+        "Popen",
+        lambda command, **kwargs: _LingeringStdoutUnityProcess(command, **kwargs),
+    )
+
+    result = webgl_preview.build_webgl_preview(project, output, timeout_seconds=2)
+
+    assert result.output_root == output.resolve()
+    assert (output / "index.html").is_file()
+
+
 def test_webgl_build_command_targets_webgl(tmp_path: Path):
     editor = tmp_path / "Unity.exe"
     project = tmp_path / "project"
@@ -114,7 +156,11 @@ def test_webgl_preview_syncs_project_local_template(tmp_path: Path):
 
     builder = project / "Assets/GameTemplate/Editor/WebGLPreviewBuilder.cs"
     template = project / "Assets/WebGLTemplates/TeamIdlePreview/index.html"
-    assert "PROJECT:TeamIdlePreview" in builder.read_text(encoding="utf-8")
+    builder_source = builder.read_text(encoding="utf-8")
+    assert "PROJECT:TeamIdlePreview" in builder_source
+    assert "WasmCodeOptimization.BuildTimes" in builder_source
+    assert "BuildOptions.Development" in builder_source
+    assert '"UI/Default Font"' in builder_source
     assert "LOADER_FILENAME" in template.read_text(encoding="utf-8")
 
 

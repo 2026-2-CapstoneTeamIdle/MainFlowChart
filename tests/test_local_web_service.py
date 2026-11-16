@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import time
 from pathlib import Path
 from typing import cast
 from unittest.mock import Mock, patch
@@ -50,6 +51,14 @@ def test_web_ui_exposes_completion_notifications() -> None:
     assert 'notifyJobMilestone(job, "feature")' in script
     assert 'notifyJobMilestone(job, "terminal")' in script
     assert "playNotificationTone" in script
+
+
+def test_web_ui_downloads_host_unity_launcher_for_docker() -> None:
+    script = (LOCAL_WEB_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert 'result.status === "launcher_required"' in script
+    assert "result.launcher_url" in script
+    assert "다운로드된 .cmd 파일을 실행하세요" in script
 
 
 def test_web_ui_exposes_provider_specific_harness_settings() -> None:
@@ -254,6 +263,33 @@ def test_recovers_project_id_from_failed_workflow_report(
     assert service._project_id_from_unity_report(report) == "20261105_77"
 
 
+def test_docker_mountinfo_resolves_windows_workspace_path() -> None:
+    service = _load_service_module()
+    mountinfo = (
+        "486 476 0:68 /Users/leedo/Documents/CapstonDesignII/feat-WebManage/workspace "
+        "/app/workspace rw,noatime - 9p C:\\134 rw,aname=drvfs;path=C:\\;uid=0"
+    )
+
+    result = service._host_workspace_from_mountinfo(mountinfo, Path("/app/workspace"))
+
+    assert str(result) == (r"C:\Users\leedo\Documents\CapstonDesignII\feat-WebManage\workspace")
+
+
+def test_windows_unity_launcher_targets_host_project() -> None:
+    service = _load_service_module()
+
+    launcher = service._windows_unity_launcher(
+        service.PureWindowsPath(
+            r"C:\Users\leedo\Documents\CapstonDesignII\feat-WebManage\workspace\20261114_02\game\unity_project"
+        ),
+        "6000.0.71f1",
+    )
+
+    assert "6000.0.71f1\\Editor\\Unity.exe" in launcher
+    assert "workspace\\20261114_02\\game\\unity_project" in launcher
+    assert 'start "" "%MAINFLOW_UNITY%" -projectPath "%MAINFLOW_PROJECT%"' in launcher
+
+
 def test_cancel_stops_running_process_tree_and_preserves_cancelled_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -314,6 +350,32 @@ def test_workflow_progress_tracks_agent_and_validation_milestones(tmp_path: Path
     assert snapshot["progress_label"] == "Unity 컴파일·실행 검증"
     assert snapshot["elapsed_seconds"] >= 0
     assert snapshot["estimated_total_seconds"] >= 1200
+
+
+def test_webgl_preview_progress_tracks_compile_link_and_publish(tmp_path: Path):
+    service = _load_service_module()
+    job_root = tmp_path / "preview-progress"
+    job_root.mkdir()
+    job = service.WorkflowJob(
+        job_id="preview-progress-job",
+        mode="generate",
+        request_file=job_root / "request.json",
+        job_root=job_root,
+        status="failed",
+        preview_status="building",
+        preview_progress_percent=3,
+        preview_started_at=time.monotonic() - 20,
+    )
+
+    job.append_log("WEBGL_PREVIEW_STAGE:script_conversion")
+    job.append_log("[42/248] C_WebGL_wasm generated.o")
+    job.append_log("emcc -O0 -o build.js")
+    snapshot = job.snapshot()
+
+    assert snapshot["preview_progress_percent"] == 78
+    assert snapshot["preview_progress_label"] == "WebAssembly 링크"
+    assert snapshot["preview_elapsed_seconds"] >= 20
+    assert snapshot["preview_estimated_total_seconds"] >= 360
 
 
 def test_cancel_awaiting_confirmation_does_not_need_process(tmp_path: Path):

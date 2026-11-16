@@ -28,8 +28,16 @@ h2 { margin-bottom: 0; font-size: 1.45rem; }
 .panel-heading-actions { display: flex; align-items: center; gap: 10px; }
 .section-help, .mode-help { color: #8996ad; line-height: 1.6; }
 .phase-badge, .key-state { padding: 7px 10px; border: 1px solid #344159; border-radius: 999px; color: #9eacc4; font-size: .75rem; }
+.phase-badge--ready { border-color: #245d43; color: #6fe5a4; }
+.phase-badge--error { border-color: #713647; color: #ffb9c2; }
 .key-state { margin-left: 5px; padding: 3px 7px; color: #ffb9c2; }
 .key-state--ready { color: #6fe5a4; border-color: #245d43; }
+.codex-auth-panel { border-color: #29466d; background: linear-gradient(145deg, #11213af5, #0c1422f5); }
+.link-button { display: inline-flex; min-height: 46px; align-items: center; justify-content: center; padding: 0 18px; border-radius: 11px; background: #1a2740; color: #a9c1ef; font-weight: 800; text-decoration: none; }
+.codex-device-details { margin-top: 18px; padding: 18px; border: 1px solid #2b3e5d; border-radius: 14px; background: #080f1b; }
+.codex-device-details p { margin-bottom: 12px; color: #aab7cb; }
+.device-code { display: inline-block; padding: 10px 14px; border: 1px solid #43628f; border-radius: 9px; background: #111e33; color: #c9ddff; font: 800 1.15rem ui-monospace, monospace; letter-spacing: .12em; }
+.codex-auth-output { max-height: 150px; margin: 14px 0 0; padding: 12px; overflow: auto; border-radius: 9px; background: #050a12; color: #91a5c4; font: 500 .76rem/1.55 ui-monospace, monospace; white-space: pre-wrap; }
 .model-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .model-card { padding: 17px; border: 1px solid #253047; border-radius: 16px; background: #0c1423; }
 .model-card__heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -118,5 +126,6 @@ kbd { padding: 2px 6px; border: 1px solid #344159; border-bottom-width: 2px; bor
   .wide-field { grid-column: 1; }
   .action-row { flex-direction: column; }
   .notification-toggle { justify-content: center; margin-left: 0; }
+  .link-button { width: 100%; }
   .panel-heading { align-items: flex-start; flex-direction: column; }
 }

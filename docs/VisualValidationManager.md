@@ -91,10 +91,12 @@ docker compose -f compose.yaml -f LocalAI/compose.yaml up -d --force-recreate Lo
 
 ## Unity와 Docker 제한
 
-캡처 프로세스는 `-nographics`를 사용하지 않는다. 현재 Docker mainflow 컨테이너에는 Unity
-Editor와 그래픽 세션이 없으므로 실제 캡처는 `UNITY_EDITOR_PATH`가 설정된 호스트에서 실행한다.
-완전한 서버 배포에서는 Unity Linux Editor 라이선스, GPU/가상 디스플레이가 있는 별도 Unity
-worker로 같은 캡처 명령을 옮겨야 한다. VLM은 LocalAI Docker 안에서 계속 실행할 수 있다.
+캡처 프로세스는 `-nographics`를 사용하지 않는다. 기본 `compose.yaml`의 mainflow 컨테이너에는
+Unity Editor와 그래픽 세션이 없으므로 실제 캡처를 실행할 수 없다. LocalWeb 전용 Compose는
+Unity Linux Editor, WebGL Build Support와 Xvfb를 포함하며, 컨테이너에서 Unity 라이선스를
+활성화하면 같은 캡처 명령을 Docker 안에서 실행한다. 호스트 Python 실행 방식에서는
+`UNITY_EDITOR_PATH`가 설정된 호스트 Editor를 사용한다. VLM은 LocalAI Docker에서 독립적으로
+실행할 수 있다.
 
 ## 결과 파일
 

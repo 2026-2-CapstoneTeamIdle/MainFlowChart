@@ -238,7 +238,9 @@ LOCALAI_DEFAULT_MODEL=gemma4-e2b-q4, LOCAL_LLM_MODEL=gemma4-e2b-q4로 설정하�
 현재 Play Mode 검사는 예외, 모듈 초기화/바인딩, 좌표 유효성, 플랫포머 좌우 이동을 검사한다.
 벽 타기/대시 등 개별 기능의 모든 의미적 조건을 검증하지는 않는다.
 static 모드는 구조 검사만 수행한다. 성공해도 컴파일/플레이 성공으로 해석하면 안 된다.
-Docker Linux 컨테이너에는 Windows Unity가 없으므로 실제 반복 검증은 호스트 Python에서 실행한다.
+기본 mainflow Docker 컨테이너에는 Unity Editor가 없으므로 실제 반복 검증은 호스트 Python에서
+실행한다. `CI/CD/LocalWeb/compose.yaml`은 별도로 Unity Linux Editor, WebGL 모듈과 Xvfb를
+포함하므로 컨테이너 Unity 라이선스를 활성화한 뒤 Docker 내부 반복 검증을 실행할 수 있다.
 .env.example은 자동 로드하지 않는다. PowerShell 환경 변수로 설정하거나 실행 환경에 주입한다.
 
 요청 계약은 game_pipeline/feature_contract.py에서 실제 템플릿 API 소스로 구성하고

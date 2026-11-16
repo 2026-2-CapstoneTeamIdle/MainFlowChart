@@ -22,6 +22,42 @@
         </div>
       </header>
 
+      <section id="codex-auth-panel" class="panel codex-auth-panel" aria-labelledby="codex-auth-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="section-label">CODEX IN DOCKER</p>
+            <h2 id="codex-auth-heading">Codex 연결</h2>
+          </div>
+          <span id="codex-auth-state" class="phase-badge">확인 중</span>
+        </div>
+        <p id="codex-auth-message" class="section-help">
+          Docker 내부 Codex CLI 로그인 상태를 확인하고 있습니다.
+        </p>
+        <div class="action-row">
+          <button id="codex-login-button" class="primary-button" type="button" disabled>
+            Device Code로 로그인
+          </button>
+          <button id="codex-logout-button" class="danger-button" type="button" hidden>
+            Codex 로그아웃
+          </button>
+          <a
+            id="codex-auth-link"
+            class="link-button is-hidden"
+            target="_blank"
+            rel="noopener noreferrer"
+          >로그인 페이지 열기</a>
+        </div>
+        <div id="codex-device-details" class="codex-device-details" hidden>
+          <p>표시된 페이지에서 다음 일회용 코드를 입력하세요.</p>
+          <code id="codex-device-code" class="device-code">코드 대기 중</code>
+          <pre id="codex-auth-output" class="codex-auth-output" aria-live="polite"></pre>
+        </div>
+        <p class="security-note">
+          로그인 캐시는 Git이나 이미지가 아닌 Docker의 <code>codex-auth</code> 전용 볼륨에만
+          저장됩니다. Device Code와 인증 출력은 서버 메모리에만 유지됩니다.
+        </p>
+      </section>
+
       <section class="panel" aria-labelledby="models-heading">
         <div class="panel-heading">
           <div>
@@ -162,9 +198,9 @@
           <p class="mode-help wide-field">
             Generate는 이미지·사운드 적용을 포함한 전체 Flow입니다. test-Generate는 이미지·사운드
             생성 및 적용을 제외하고 모듈 합성·컴파일·기능·시각 검증을 실행합니다. Codex CLI는
-            API 키 대신 현재 Windows 사용자의 Codex 로그인을 사용하며 생성된 Unity 프로젝트
-            내부에서만 작업합니다. Claude Code도 현재 Windows 사용자의 Claude 로그인을
-            사용하고 동일한 Unity 검증·수정 루프를 실행합니다.
+            Docker의 전용 로그인 볼륨을 사용하며 생성된 Unity 프로젝트 내부에서만 작업합니다.
+            Claude Code는 별도 설치와 로그인이 있는 실행 환경에서 동일한 Unity 검증·수정 루프를
+            실행합니다.
           </p>
         </form>
       </section>
