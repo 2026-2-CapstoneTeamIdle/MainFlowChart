@@ -12,6 +12,7 @@ from typing import Any
 from game_pipeline import UnityProjectGenerator, UnityProjectValidator
 from game_pipeline.agent_harness_repair import repair_with_configured_agent_harness
 from game_pipeline.design_catalog import GENRE_ALIASES
+from game_pipeline.feature_evidence_audit import audit_feature_evidence
 from game_pipeline.feature_planner import plan_feature_mechanics
 from game_pipeline.game_quality import parse_playtest_metrics
 from game_pipeline.runtime_invariants import REQUIRED_CAUSAL_TRANSITIONS
@@ -332,6 +333,16 @@ def final_validation_node(
                 and not report.get("missing_required_asset_ids", []),
                 "Every applied asset must be imported, registered and scene-bound",
             )
+            animated = {
+                entry["asset_id"]
+                for entry in entries
+                if entry["asset_type"] == "image" and entry.get("animation_metadata_path")
+            }
+            check(
+                "integration.character_animation_bindings",
+                animated <= set(report.get("animation_bound_asset_ids", [])),
+                "Every staged character sprite sheet must have a scene-bound Animator controller",
+            )
             telemetry = parse_playtest_metrics(outcome.unity_log)
             plan = json.loads(
                 manager.read_project_file(
@@ -368,6 +379,7 @@ def final_validation_node(
                     + ", ".join(sorted(expected_transitions - passed_transitions))
                 ),
             )
+            unresolved_feature_criteria: list[dict[str, Any]] = []
             for criterion in logic["criteria"]:
                 # Semantic criteria require their own explicit checks, never a broad target status.
                 matching = [
@@ -380,14 +392,24 @@ def final_validation_node(
                 if criterion["target"] == "integration":
                     matching = [c for c in checks if c["criterion_id"] == criterion["criterion_id"]]
                 satisfied = bool(matching) and all(c["passed"] for c in matching)
-                fallback_waiver = False
+                waiver_reason = None
                 if (criterion["target"] == "image" and suppressed_placeholder_images) or (
                     criterion["target"] == "sound"
                     and fallback_sound_assets
                     and set(draft["required_sound_asset_ids"]) <= fallback_sound_assets
                 ):
                     satisfied = True
-                    fallback_waiver = True
+                    waiver_reason = "no real asset provider configured"
+                if (
+                    not matching
+                    and criterion["target"] == "image"
+                    and criterion["criterion_id"] == "visual-style"
+                ):
+                    if visual["status"] == "passed":
+                        satisfied = True
+                    elif visual["mode"] == "disabled" and visual["status"] == "skipped":
+                        satisfied = True
+                        waiver_reason = "visual validation disabled"
                 if criterion["target"] == "game" and not matching:
                     feature = next(
                         (
@@ -424,13 +446,81 @@ def final_validation_node(
                     (
                         criterion["description"]
                         + (
-                            " (skipped: no real asset provider configured)"
-                            if fallback_waiver
+                            f" (skipped: {waiver_reason})"
+                            if waiver_reason
                             else " (explicit evidence required)"
                         )
                     ),
                     required=criterion["required"],
                 )
+                if (
+                    not satisfied
+                    and criterion["target"] == "game"
+                    and any(
+                        criterion["criterion_id"] == "logic-" + feature["feature_id"]
+                        for feature in logic["features"]
+                    )
+                ):
+                    unresolved_feature_criteria.append(criterion)
+            builder = os.environ.get("MAINFLOW_GAME_BUILDER", "").strip().lower()
+            if (
+                unresolved_feature_criteria
+                and builder in {"codex_cli", "claude_code"}
+                and outcome.status == "passed"
+                and runtime_plan_passed
+            ):
+                log(
+                    "실행 검증에서 직접 증명되지 않은 Feature "
+                    f"{len(unresolved_feature_criteria)}개의 Unity 소스 연결을 Agent가 항목별로 검토합니다."
+                )
+                try:
+                    audited = audit_feature_evidence(
+                        builder=builder,
+                        project_root=root,
+                        audit_root=manager.ensure_project(state["project_id"])
+                        / "validation"
+                        / "feature_evidence_audit"
+                        / (artifact_variant or "final_validation"),
+                        criteria=unresolved_feature_criteria,
+                        features=logic["features"],
+                    )
+                    evidence.append(
+                        manager.write_json(
+                            state["project_id"],
+                            "validation",
+                            f"feature_evidence_audit{artifact_suffix}.json",
+                            audited,
+                            producer="final_validation",
+                        )
+                    )
+                    for item in checks:
+                        audited_item = audited.get(item["criterion_id"])
+                        if audited_item is None:
+                            continue
+                        if audited_item["satisfied"]:
+                            item["passed"] = True
+                            citations = ", ".join(
+                                cited["path"] for cited in audited_item["evidence"]
+                            )
+                            item["message"] += f" (Unity source evidence: {citations})"
+                            issues[:] = [
+                                issue
+                                for issue in issues
+                                if issue.get("target_id") != item["criterion_id"]
+                            ]
+                        else:
+                            reason = audited_item["reason"] or "No verified Unity source evidence"
+                            item["message"] += f" (audit: {reason})"
+                            for issue in issues:
+                                if issue.get("target_id") == item["criterion_id"]:
+                                    issue["message"] = item["message"]
+                except Exception as audit_error:  # noqa: BLE001 - keep unmet criteria visible
+                    check(
+                        "final.feature_evidence_audit",
+                        False,
+                        f"Feature evidence audit could not complete: {audit_error}",
+                        required=False,
+                    )
             if not any(issue["severity"] == "error" for issue in issues):
                 package = manager.write_bytes(
                     state["project_id"],

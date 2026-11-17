@@ -153,5 +153,8 @@ def build_ui_contract(game_spec: GameSpec, design: DesignV2Bundle) -> dict[str, 
             "Every visible counter, bar, timer, and objective is bound to the corresponding runtime state and updates after a state transition.",
             "Every required screen appears at its activation condition and exposes functional primary actions.",
             "The HUD must not obstruct world interaction points or hide required progression objects.",
+            "Every HUD value and announcement has a dark translucent backing panel with high-contrast live text, not text painted into a generated image.",
+            "Generated HUD frames and icons are decorative uGUI Images behind live text; missing artwork keeps the readable panel fallback.",
+            "After asset import, capture the UI and inspect text contrast and screen clipping at the reference resolution.",
         ],
     }

@@ -161,9 +161,36 @@ def plan_assets(request: AssetGenerationRequest) -> list[ImageAssetPlan]:
 
 # Genres whose character sprites get animation sheets (see image_spritesheet).
 ANIMATED_GENRES: frozenset[GenreProfile] = frozenset({"Platformer", "SurvivorLike", "TowerDefense"})
-# Only character-like sprites are animated; projectiles, towers and items are
-# left as single images.
-ANIMATED_PURPOSE_KEYWORDS = ("플레이어", "player", "캐릭터", "character", "적", "enemy")
+# Asset descriptions often mention the player or enemy as a target. Those words
+# must not turn a sword, projectile, or pickup into a humanoid animation sheet.
+ANIMATED_PURPOSE_KEYWORDS = (
+    "플레이어",
+    "player",
+    "캐릭터",
+    "character",
+    "적",
+    "enemy",
+    "monster",
+    "boss",
+    "보스",
+)
+NON_CHARACTER_ROLE_KEYWORDS = (
+    "attack",
+    "weapon",
+    "sword",
+    "projectile",
+    "bullet",
+    "gem",
+    "pickup",
+    "collectible",
+    "tower",
+    "검",
+    "무기",
+    "투사체",
+    "보석",
+    "아이템",
+    "타워",
+)
 # Animation frames are derived from the base sprite, so it must show a pose
 # that can be animated: full body, legs and arms visible, props held close.
 ANIMATION_BASE_POSE_PROMPT = (
@@ -175,8 +202,10 @@ ANIMATION_BASE_POSE_PROMPT = (
 def is_animated_character(plan: ImageAssetPlan, genre: GenreProfile) -> bool:
     if plan.kind != "sprite" or genre not in ANIMATED_GENRES:
         return False
-    text = f"{plan.purpose} {plan.description}".lower()
-    return any(keyword in text for keyword in ANIMATED_PURPOSE_KEYWORDS)
+    role = f"{plan.asset_id} {plan.purpose}".lower()
+    if any(keyword in role for keyword in NON_CHARACTER_ROLE_KEYWORDS):
+        return False
+    return any(keyword in role for keyword in ANIMATED_PURPOSE_KEYWORDS)
 
 
 def build_prompt(plan: ImageAssetPlan, request: AssetGenerationRequest) -> str:

@@ -125,6 +125,46 @@ def test_web_ui_formats_fastapi_validation_errors() -> None:
     assert "new Error(formatApiError(payload, response.status))" in script
 
 
+@pytest.mark.parametrize(
+    ("mode", "expected_flag"),
+    [("generate", "--skip-visual-validation"), ("test-generate", "--game-test")],
+)
+def test_web_generation_only_skips_optional_vlm(
+    tmp_path: Path, mode: str, expected_flag: str
+) -> None:
+    service = _load_service_module()
+    job_root = tmp_path / mode
+    job_root.mkdir()
+    (job_root / "feature_preview.json").write_text(
+        json.dumps({"logic_analysis_path": str(job_root / "approved.json")}), encoding="utf-8"
+    )
+    request_file = job_root / "request.json"
+    request_file.write_text("{}", encoding="utf-8")
+    job = service.WorkflowJob(
+        job_id="test-job",
+        mode=mode,
+        request_file=request_file,
+        job_root=job_root,
+        status="running",
+        stage="workflow",
+    )
+    manager = object.__new__(service.WorkflowJobManager)
+    manager.settings = Mock()
+    manager.settings.process_environment.return_value = {}
+
+    with (
+        patch.object(manager, "_stream_process", return_value=1) as stream,
+        patch.object(service, "_summarize_workflow_result", return_value={"project_id": None}),
+        patch.object(service, "_append_workflow_summary"),
+    ):
+        manager._run_generation(job)
+
+    command = stream.call_args.args[1]
+    assert expected_flag in command
+    assert ("--game-test" in command) == (mode == "test-generate")
+    assert ("--skip-visual-validation" in command) == (mode == "generate")
+
+
 def test_settings_store_never_returns_api_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     service = _load_service_module()
     state_root = tmp_path / ".localweb"
@@ -185,9 +225,21 @@ def test_preview_and_confirmed_logic_use_identical_features(
 
     monkeypatch.setenv("MAINFLOW_WORKSPACE", str(workspace))
     monkeypatch.setenv("MAINFLOW_APPROVED_LOGIC_ANALYSIS", preview["logic_analysis_path"])
+    monkeypatch.setenv("MAINFLOW_CONDITION_FEATURE_PROVIDER", "local")
+    monkeypatch.setenv("MAINFLOW_GENRE_FEATURE_PROVIDER", "local")
     state = cast(WorkflowState, dict(_request_payload()))
-    for node in (user_input_node, parse_input_node, analysis_node, logic_analysis_node):
-        state.update(node(state))
+    with (
+        patch(
+            "mainflow.nodes.logic_analysis.create_condition_feature_analyzer_from_environment"
+        ) as condition_factory,
+        patch(
+            "mainflow.nodes.logic_analysis.create_genre_feature_enricher_from_environment"
+        ) as genre_factory,
+    ):
+        for node in (user_input_node, parse_input_node, analysis_node, logic_analysis_node):
+            state.update(node(state))
+    condition_factory.assert_not_called()
+    genre_factory.assert_not_called()
     actual = cast(LogicAnalysis, ArtifactManager().read_json(state["logic_analysis"]))
 
     assert actual["features"] == approved_logic["features"]
@@ -503,10 +555,11 @@ def test_preview_file_resolution_is_confined_to_webgl_output(
         service.resolve_webgl_preview_file("../escape")
 
 
-def test_codex_builder_environment_disables_api_backed_planning():
+def test_codex_builder_environment_preserves_feature_analysis_roles():
     service = _load_service_module()
     environment = {
         "MAINFLOW_CONDITION_FEATURE_PROVIDER": "openai",
+        "MAINFLOW_GENRE_FEATURE_PROVIDER": "local",
         "MAINFLOW_DESIGN_V2_PROVIDER": "local",
     }
     service._configure_game_builder_environment(
@@ -517,8 +570,8 @@ def test_codex_builder_environment_disables_api_backed_planning():
         fast_mode=True,
     )
     assert environment["MAINFLOW_GAME_BUILDER"] == "codex_cli"
-    assert environment["MAINFLOW_CONDITION_FEATURE_PROVIDER"] == "off"
-    assert environment["MAINFLOW_GENRE_FEATURE_PROVIDER"] == "off"
+    assert environment["MAINFLOW_CONDITION_FEATURE_PROVIDER"] == "openai"
+    assert environment["MAINFLOW_GENRE_FEATURE_PROVIDER"] == "local"
     assert environment["MAINFLOW_DESIGN_V2_PROVIDER"] == "deterministic"
     assert environment["MAINFLOW_BLUEPRINT_PROVIDER"] == "deterministic"
     assert environment["MAINFLOW_CODEX_STATIC_CHECKLISTS"] == "1"
@@ -529,7 +582,10 @@ def test_codex_builder_environment_disables_api_backed_planning():
 
 def test_claude_builder_environment_applies_model_and_effort():
     service = _load_service_module()
-    environment: dict[str, str] = {}
+    environment = {
+        "MAINFLOW_CONDITION_FEATURE_PROVIDER": "gemini",
+        "MAINFLOW_GENRE_FEATURE_PROVIDER": "openai",
+    }
 
     service._configure_game_builder_environment(
         environment,
@@ -540,6 +596,8 @@ def test_claude_builder_environment_applies_model_and_effort():
 
     assert environment["MAINFLOW_CLAUDE_MODEL"] == "opus"
     assert environment["MAINFLOW_CLAUDE_REASONING_EFFORT"] == "xhigh"
+    assert environment["MAINFLOW_CONDITION_FEATURE_PROVIDER"] == "gemini"
+    assert environment["MAINFLOW_GENRE_FEATURE_PROVIDER"] == "openai"
 
 
 def test_codex_default_model_defers_to_cli_configuration():

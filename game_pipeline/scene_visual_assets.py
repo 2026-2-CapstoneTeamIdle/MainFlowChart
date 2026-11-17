@@ -25,6 +25,7 @@ from game_pipeline.asset_specs import classify_image_kind
 from mainflow.contracts import AssetRequirement, GameSpec, LevelPlan
 
 STAGE_BACKGROUND_ASSET_ID = "stage_background"
+TOWER_BUILD_SLOT_ASSET_ID = "tower_build_slot"
 
 # (asset_id, level plan collection, purpose, description)
 _PLATFORMER_OBJECT_VISUALS: tuple[tuple[str, str, str, str], ...] = (
@@ -125,6 +126,17 @@ def scene_visual_requirements(
         goal_id, goal_purpose, goal_description = _PLATFORMER_GOAL
         if goal_id not in existing_ids:
             requirements.append(_requirement(goal_id, goal_purpose, goal_description))
+
+    if game_spec["genre"] == "TowerDefense" and TOWER_BUILD_SLOT_ASSET_ID not in existing_ids:
+        requirements.append(
+            _requirement(
+                TOWER_BUILD_SLOT_ASSET_ID,
+                "타워 배치 지점",
+                "비어 있는 타워 배치 칸 하나를 표시하는 탑다운 스프라이트. "
+                "중앙은 비워 두고 외곽은 선명하게 그려, 설치 전에는 클릭 가능한 지점으로 "
+                "보이고 설치 후에는 타워 그림을 가리지 않게",
+            )
+        )
 
     # Every genre gets a full-screen "Background" object. Genres whose preset already
     # requests a background image (visual novel, raising sim) bind that one instead.

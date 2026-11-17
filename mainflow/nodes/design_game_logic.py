@@ -31,11 +31,15 @@ from game_pipeline import (
     review_feedback,
 )
 from game_pipeline.feature_contract import build_feature_contract
+from game_pipeline.agent_visual_assets import with_agent_visual_assets
+from game_pipeline.agent_sound_assets import with_agent_sound_assets
+from game_pipeline.condition_visual_assets import with_condition_visual_assets
 from game_pipeline.gameplay_contracts import build_pacing_contract, build_ui_contract
 from game_pipeline.project_context_index import build_project_context_index
 from game_pipeline.repair_loop import validate_and_repair
 from game_pipeline.scene_visual_assets import with_scene_visual_assets
 from game_pipeline.presentation_sound_assets import with_presentation_sound_assets
+from game_pipeline.presentation_ui_assets import with_presentation_ui_assets
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -77,6 +81,7 @@ def design_game_logic_node(
             "mechanics": feature_plan.mechanics,
         },
     )
+    game_spec = with_condition_visual_assets(game_spec, request["condition"])
     variation_seed = os.environ.get("MAINFLOW_GENERATION_SEED", "").strip() or state["project_id"]
     log(f"이번 실행의 콘텐츠 변형 시드: {variation_seed}")
     design = build_game_logic_design(
@@ -150,16 +155,6 @@ def design_game_logic_node(
         sound_request,
         producer="design_game_logic",
     )
-    image_asset_ids = [
-        asset["asset_id"]
-        for asset in game_spec["asset_requirements"]
-        if asset["asset_type"] == "image"
-    ]
-    sound_asset_ids = [
-        asset["asset_id"]
-        for asset in game_spec["asset_requirements"]
-        if asset["asset_type"] == "sound"
-    ]
     request_references = [image_request_reference, sound_request_reference]
     feature_provider = resolve_feature_provider_from_environment()
     game_builder = resolve_game_builder()
@@ -232,6 +227,30 @@ def design_game_logic_node(
             game_spec, design["design_v2"], request["condition"]
         )
         ui_contract = build_ui_contract(game_spec, design["design_v2"])
+        if agent_harness_enabled:
+            image_request, hud_art_ids = with_presentation_ui_assets(image_request, ui_contract)
+            if hud_art_ids:
+                for item in image_request["assets"]:
+                    if item["asset_id"] in hud_art_ids:
+                        design["game_spec"]["asset_requirements"].append(
+                            {
+                                "asset_id": item["asset_id"],
+                                "asset_type": "image",
+                                "purpose": item["purpose"],
+                                "description": item["description"],
+                                "required": False,
+                            }
+                        )
+                image_request_reference = manager.write_json(
+                    state["project_id"],
+                    "game",
+                    "asset_requests/image_asset_request.json",
+                    image_request,
+                    producer="design_game_logic",
+                    overwrite=True,
+                )
+                request_references[0] = image_request_reference
+                log("HUD 패널·상태 아이콘 이미지 요청을 추가합니다: " + ", ".join(hud_art_ids))
 
         design["implementation_tasks"] = build_implementation_tasks(
             design,
@@ -476,6 +495,10 @@ def design_game_logic_node(
             ),
             evidence=lambda result: f"generated Unity project at {result.project_root}",
         )
+        if agent_harness_enabled:
+            _synchronize_agent_asset_contracts(
+                generation.project_root, design, image_request, sound_request
+            )
         generated_contract_directory = (
             generation.project_root / UnityProjectGenerator.DESIGN_DOCUMENT_ROOT
         )
@@ -490,6 +513,85 @@ def design_game_logic_node(
             )
         agent_harness = None
         agent_implementation = None
+
+        def add_agent_visuals(reports: list[dict[str, object]]) -> None:
+            nonlocal image_request, image_request_reference, design_reference
+            updated, added_ids = with_agent_visual_assets(image_request, reports)
+            if not added_ids:
+                return
+            image_request = updated
+            image_request_reference = manager.write_json(
+                state["project_id"],
+                "game",
+                "asset_requests/image_asset_request.json",
+                image_request,
+                producer="design_game_logic",
+                overwrite=True,
+            )
+            request_references[0] = image_request_reference
+            for item in image_request["assets"]:
+                if item["asset_id"] in added_ids:
+                    design["game_spec"]["asset_requirements"].append(
+                        {
+                            "asset_id": item["asset_id"],
+                            "asset_type": "image",
+                            "purpose": item["purpose"],
+                            "description": item["description"],
+                            "required": False,
+                        }
+                    )
+            design_reference = manager.write_json(
+                state["project_id"],
+                "game",
+                "game_logic_design.json",
+                design,
+                producer="design_game_logic",
+                overwrite=True,
+            )
+            _synchronize_agent_asset_contracts(
+                generation.project_root, design, image_request, sound_request
+            )
+            log("요청·구현 오브젝트 이미지 요청을 추가합니다: " + ", ".join(added_ids))
+
+        def add_agent_sounds(reports: list[dict[str, object]]) -> None:
+            nonlocal sound_request, sound_request_reference, design_reference
+            updated, added_ids = with_agent_sound_assets(sound_request, reports)
+            if not added_ids:
+                return
+            sound_request = updated
+            sound_request_reference = manager.write_json(
+                state["project_id"],
+                "game",
+                "asset_requests/sound_asset_request.json",
+                sound_request,
+                producer="design_game_logic",
+                overwrite=True,
+            )
+            request_references[1] = sound_request_reference
+            for item in sound_request["assets"]:
+                if item["asset_id"] in added_ids:
+                    design["game_spec"]["asset_requirements"].append(
+                        {
+                            "asset_id": item["asset_id"],
+                            "asset_type": "sound",
+                            "purpose": item["purpose"],
+                            "description": item["description"],
+                            "required": False,
+                        }
+                    )
+            design_reference = manager.write_json(
+                state["project_id"],
+                "game",
+                "game_logic_design.json",
+                design,
+                producer="design_game_logic",
+                overwrite=True,
+            )
+            _synchronize_agent_asset_contracts(
+                generation.project_root, design, image_request, sound_request
+            )
+            log("요청·구현 이벤트 사운드 요청을 추가합니다: " + ", ".join(added_ids))
+
         if agent_harness_enabled:
             is_claude = game_builder == "claude_code"
             agent_label = "Claude Code" if is_claude else "Codex CLI"
@@ -524,6 +626,8 @@ def design_game_logic_node(
                     f"{result.elapsed_seconds:.1f}s"
                 ),
             )
+            add_agent_visuals([agent_implementation.final_response])
+            add_agent_sounds([agent_implementation.final_response])
         if agent_harness_enabled:
             assert agent_implementation is not None
             context_review_report = {
@@ -761,6 +865,8 @@ def design_game_logic_node(
                     f"{len(result.repair_results)} repair iteration(s)"
                 ),
             )
+            add_agent_visuals([result.final_response for result in agent_result.repair_results])
+            add_agent_sounds([result.final_response for result in agent_result.repair_results])
             manager.write_json(
                 state["project_id"],
                 "validation",
@@ -874,6 +980,8 @@ def design_game_logic_node(
         notes.append(
             f"개발 작업 {len(design['implementation_tasks']['tasks'])}개 실행 및 증거 기록 완료"
         )
+        image_asset_ids = [item["asset_id"] for item in image_request["assets"]]
+        sound_asset_ids = [item["asset_id"] for item in sound_request["assets"]]
         draft: GameLogicDraft = {
             "contract_version": CONTRACT_VERSION,
             "draft_id": f"{game_spec['genre'].lower()}-game-logic-draft",
@@ -1027,6 +1135,8 @@ def design_game_logic_node(
                 f"{type(diagnostic_error).__name__}: {diagnostic_error}"
             )
             log(diagnostic_note)
+        image_asset_ids = [item["asset_id"] for item in image_request["assets"]]
+        sound_asset_ids = [item["asset_id"] for item in sound_request["assets"]]
         draft = {
             "contract_version": CONTRACT_VERSION,
             "draft_id": f"{game_spec['genre'].lower()}-game-logic-draft",
@@ -1066,6 +1176,41 @@ def design_game_logic_node(
         "image_asset_request": image_request_reference,
         "sound_asset_request": sound_request_reference,
     }
+
+
+def _synchronize_agent_asset_contracts(
+    project_root: Path,
+    design: dict,
+    image_request: dict,
+    sound_request: dict,
+) -> None:
+    """Keep host-owned Unity contracts aligned after an agent discovers new assets."""
+    requested = {
+        item["asset_id"]: item["asset_type"]
+        for request in (image_request, sound_request)
+        for item in request["assets"]
+    }
+    designed = {
+        item["asset_id"]: item["asset_type"] for item in design["game_spec"]["asset_requirements"]
+    }
+    if requested != designed:
+        raise ValueError(
+            "Agent asset contract mismatch: "
+            f"request_only={sorted(requested.keys() - designed.keys())}, "
+            f"design_only={sorted(designed.keys() - requested.keys())}"
+        )
+
+    manifest_path = project_root / UnityProjectGenerator.MANIFEST_PATH
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["asset_requirements"] = design["game_spec"]["asset_requirements"]
+    for path, payload in (
+        (project_root / UnityProjectGenerator.DESIGN_PATH, design),
+        (project_root / UnityProjectGenerator.IMAGE_ASSET_REQUEST_PATH, image_request),
+        (project_root / UnityProjectGenerator.SOUND_ASSET_REQUEST_PATH, sound_request),
+        (manifest_path, manifest),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def _available_context_review_backup(root: Path) -> Path:

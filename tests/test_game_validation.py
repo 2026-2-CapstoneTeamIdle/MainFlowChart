@@ -535,6 +535,24 @@ class GameFailureIsolationTest(unittest.TestCase):
                 "summary": "implemented",
                 "changed_files": ["Assets/Game.cs"],
                 "unresolved_requirements": [],
+                "visual_objects": [
+                    {
+                        "asset_id": "visual_time_gate",
+                        "scene_object_prefix": "TimeGate_",
+                        "purpose": "시간의 문",
+                        "description": "시간을 되돌리면 열리는 문 하나",
+                        "kind": "sprite",
+                    }
+                ],
+                "sound_events": [
+                    {
+                        "asset_id": "time_gate_open_sfx",
+                        "cue_id": "time_gate_open",
+                        "purpose": "시간의 문 개방음",
+                        "description": "시간의 문이 열릴 때 재생되는 종소리",
+                        "kind": "sfx",
+                    }
+                ],
             }
             harness.implement_project.return_value = implementation
             validation = MagicMock()
@@ -581,6 +599,7 @@ class GameFailureIsolationTest(unittest.TestCase):
 
                 draft = ArtifactManager().read_json(state["game_logic_draft"])
                 image_request = ArtifactManager().read_json(state["image_asset_request"])
+                sound_request = ArtifactManager().read_json(state["sound_asset_request"])
 
             self.assertEqual(draft["status"], "generated")
             image_ids = [item["asset_id"] for item in image_request["assets"]]
@@ -595,9 +614,63 @@ class GameFailureIsolationTest(unittest.TestCase):
                     "platformer_checkpoint",
                     "platformer_goal",
                     "stage_background",
+                    "hud_panel_frame",
+                    "hud_icon_health",
+                    "hud_icon_currency",
+                    "hud_icon_objective",
+                    "visual_time_gate",
                 ],
             )
-            self.assertEqual(set(draft["required_image_asset_ids"]), set(image_ids))
+            self.assertEqual(
+                set(draft["required_image_asset_ids"]),
+                set(image_ids),
+            )
+            self.assertEqual(
+                next(
+                    item["unity_binding_key"]
+                    for item in image_request["assets"]
+                    if item["asset_id"] == "hud_panel_frame"
+                ),
+                "ui_object_prefix:HudArt_",
+            )
+            sound_ids = [item["asset_id"] for item in sound_request["assets"]]
+            self.assertIn("time_gate_open_sfx", sound_ids)
+            self.assertEqual(set(draft["required_sound_asset_ids"]), set(sound_ids))
+            manifest = json.loads(
+                (
+                    workspace / state["project_id"] / "game/unity_project/GenerationManifest.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                {item["asset_id"] for item in manifest["asset_requirements"]},
+                set(image_ids) | set(sound_ids),
+            )
+            self.assertEqual(
+                sound_request["assets"][-1]["generation_spec"]["audio_cue"],
+                "time_gate_open",
+            )
+            self.assertEqual(
+                json.loads(
+                    (
+                        workspace
+                        / state["project_id"]
+                        / "game/unity_project/Assets/GameTemplate/Generated/AssetRequests/"
+                        "sound_asset_request.json"
+                    ).read_text(encoding="utf-8")
+                )["assets"][-1]["asset_id"],
+                "time_gate_open_sfx",
+            )
+            self.assertEqual(
+                json.loads(
+                    (
+                        workspace
+                        / state["project_id"]
+                        / "game/unity_project/Assets/GameTemplate/Generated/AssetRequests/"
+                        "image_asset_request.json"
+                    ).read_text(encoding="utf-8")
+                )["assets"][-1]["unity_binding_key"],
+                "scene_object_prefix:TimeGate_",
+            )
             harness.implement_project.assert_called_once()
             harness.validate_and_repair.assert_called_once()
 

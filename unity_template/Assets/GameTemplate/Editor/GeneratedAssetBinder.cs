@@ -5,6 +5,7 @@ using System.Linq;
 using TeamIdle.GameTemplate.Common;
 using TeamIdle.GameTemplate.Prototype;
 using UnityEditor;
+using UnityEditor.Animations;
 using UnityEditor.U2D.Sprites;
 using UnityEngine;
 
@@ -41,6 +42,23 @@ namespace TeamIdle.GameTemplate.Editor
             public float surface_top_inset;
             public string surface_fill_path = string.Empty;
             public string scroll_tile_path = string.Empty;
+            public string animation_sheet_path = string.Empty;
+            public string animation_metadata_path = string.Empty;
+        }
+
+        [Serializable]
+        private sealed class AnimationDefinition
+        {
+            public string name = string.Empty;
+            public int fps;
+            public bool loop;
+            public List<string> frame_paths = new();
+        }
+
+        [Serializable]
+        private sealed class AnimationManifest
+        {
+            public List<AnimationDefinition> animations = new();
         }
 
         [Serializable]
@@ -59,6 +77,7 @@ namespace TeamIdle.GameTemplate.Editor
         {
             public List<string> imported_asset_ids = new();
             public List<string> scene_bound_asset_ids = new();
+            public List<string> animation_bound_asset_ids = new();
             public List<string> registry_asset_ids = new();
             public List<string> missing_required_asset_ids = new();
             public List<string> warnings = new();
@@ -82,6 +101,7 @@ namespace TeamIdle.GameTemplate.Editor
                 if (entry.asset_type == "image")
                 {
                     ConfigureTexture(entry, manifest.image_style, warnings);
+                    ConfigureAnimation(entry, manifest.image_style, warnings);
                     ConfigureDerivedSprite(
                         entry.surface_tile_path,
                         entry,
@@ -145,6 +165,15 @@ namespace TeamIdle.GameTemplate.Editor
                     if (BindSprite(entry, sprite, generatedRoot, report.warnings))
                     {
                         report.scene_bound_asset_ids.Add(entry.asset_id);
+                        if (
+                            !string.IsNullOrEmpty(entry.animation_metadata_path)
+                            && AssetDatabase.LoadAssetAtPath<RuntimeAnimatorController>(
+                                AnimationControllerPath(entry)
+                            ) != null
+                        )
+                        {
+                            report.animation_bound_asset_ids.Add(entry.asset_id);
+                        }
                     }
                     BindGeneratedPrefab(entry, sprite, report);
                 }
@@ -175,6 +204,7 @@ namespace TeamIdle.GameTemplate.Editor
             }
 
             report.scene_bound_asset_ids = report.scene_bound_asset_ids.Distinct().ToList();
+            report.animation_bound_asset_ids = report.animation_bound_asset_ids.Distinct().ToList();
             WriteReport(report);
             Debug.Log(
                 $"UNITY_ASSET_BINDINGS_OK:{registryAssets.Count}:"
@@ -242,6 +272,118 @@ namespace TeamIdle.GameTemplate.Editor
             importer.filterMode =
                 imageStyle == "Pixel Art" ? FilterMode.Point : FilterMode.Bilinear;
             importer.SaveAndReimport();
+        }
+
+        private static string AnimationControllerPath(BindingEntry entry) =>
+            string.IsNullOrEmpty(entry.animation_metadata_path)
+                ? string.Empty
+                : Path.ChangeExtension(entry.animation_metadata_path, ".controller")
+                    .Replace('\\', '/');
+
+        private static void ConfigureAnimation(
+            BindingEntry entry,
+            string imageStyle,
+            List<string> warnings
+        )
+        {
+            if (string.IsNullOrEmpty(entry.animation_metadata_path))
+            {
+                return;
+            }
+            if (!File.Exists(entry.animation_metadata_path))
+            {
+                warnings.Add($"Animation metadata missing: {entry.asset_id}");
+                return;
+            }
+
+            AssetDatabase.ImportAsset(
+                entry.animation_sheet_path,
+                ImportAssetOptions.ForceSynchronousImport
+            );
+            var manifest = JsonUtility.FromJson<AnimationManifest>(
+                File.ReadAllText(entry.animation_metadata_path)
+            );
+            if (manifest == null || manifest.animations == null || manifest.animations.Count == 0)
+            {
+                warnings.Add($"Animation metadata invalid: {entry.asset_id}");
+                return;
+            }
+
+            var clips = new List<(string name, AnimationClip clip)>();
+            foreach (var animation in manifest.animations)
+            {
+                var sprites = new List<Sprite>();
+                foreach (var framePath in animation.frame_paths)
+                {
+                    ConfigureDerivedSprite(framePath, entry, imageStyle, warnings);
+                    var frame = AssetDatabase.LoadAssetAtPath<Sprite>(framePath);
+                    if (frame == null)
+                    {
+                        warnings.Add($"Animation frame missing: {framePath}");
+                        break;
+                    }
+                    sprites.Add(frame);
+                }
+                if (sprites.Count != animation.frame_paths.Count || sprites.Count == 0)
+                {
+                    continue;
+                }
+
+                var clipPath = Path.ChangeExtension(
+                        entry.animation_metadata_path,
+                        $".{animation.name}.anim"
+                    )
+                    .Replace('\\', '/');
+                AssetDatabase.DeleteAsset(clipPath);
+                var clip = new AnimationClip { frameRate = Mathf.Max(1, animation.fps) };
+                var keyframes = sprites
+                    .Select(
+                        (sprite, index) =>
+                            new ObjectReferenceKeyframe
+                            {
+                                time = index / clip.frameRate,
+                                value = sprite,
+                            }
+                    )
+                    .ToList();
+                keyframes.Add(
+                    new ObjectReferenceKeyframe
+                    {
+                        time = sprites.Count / clip.frameRate,
+                        value = animation.loop ? sprites[0] : sprites[sprites.Count - 1],
+                    }
+                );
+                AnimationUtility.SetObjectReferenceCurve(
+                    clip,
+                    EditorCurveBinding.PPtrCurve("", typeof(SpriteRenderer), "m_Sprite"),
+                    keyframes.ToArray()
+                );
+                var settings = AnimationUtility.GetAnimationClipSettings(clip);
+                settings.loopTime = animation.loop;
+                AnimationUtility.SetAnimationClipSettings(clip, settings);
+                AssetDatabase.CreateAsset(clip, clipPath);
+                clips.Add((animation.name, clip));
+            }
+            if (clips.Count == 0)
+            {
+                warnings.Add($"No usable animation clips: {entry.asset_id}");
+                return;
+            }
+
+            var controllerPath = AnimationControllerPath(entry);
+            AssetDatabase.DeleteAsset(controllerPath);
+            var controller = AnimatorController.CreateAnimatorControllerAtPath(controllerPath);
+            var stateMachine = controller.layers[0].stateMachine;
+            foreach (var (name, clip) in clips)
+            {
+                var state = stateMachine.AddState(name);
+                state.motion = clip;
+                if (stateMachine.defaultState == null || name == "idle")
+                {
+                    stateMachine.defaultState = state;
+                }
+            }
+            AssetDatabase.SaveAssets();
         }
 
         private static void ConfigureTexture(
@@ -428,11 +570,107 @@ namespace TeamIdle.GameTemplate.Editor
             List<string> warnings
         )
         {
-            var names = SceneObjectNames(entry.asset_id);
-            var bound = false;
-            foreach (var renderer in generatedRoot.GetComponentsInChildren<SpriteRenderer>(true))
+            var animationController = string.IsNullOrEmpty(entry.animation_metadata_path)
+                ? null
+                : AssetDatabase.LoadAssetAtPath<RuntimeAnimatorController>(
+                    AnimationControllerPath(entry)
+                );
+            const string uiPrefixKey = "ui_object_prefix:";
+            if (entry.unity_binding_key.StartsWith(uiPrefixKey, StringComparison.Ordinal))
             {
-                if (names.Any(name => RendererNameMatches(renderer.name, name)))
+                var prefix = entry.unity_binding_key.Substring(uiPrefixKey.Length);
+                var runtimeBinder = generatedRoot.GetComponent<GeneratedUiArtBinder>();
+                if (runtimeBinder == null)
+                {
+                    runtimeBinder = generatedRoot.gameObject.AddComponent<GeneratedUiArtBinder>();
+                }
+                runtimeBinder.Register(entry.asset_id, prefix, sprite);
+                var uiImages = generatedRoot
+                    .gameObject.scene.GetRootGameObjects()
+                    .SelectMany(root => root.GetComponentsInChildren<UnityEngine.UI.Image>(true));
+                foreach (var image in uiImages)
+                {
+                    if (!image.name.StartsWith(prefix, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+                    image.sprite = sprite;
+                    image.type = UnityEngine.UI.Image.Type.Simple;
+                    image.preserveAspect = entry.asset_id != "hud_panel_frame";
+                    image.raycastTarget = false;
+                    if (entry.asset_id == "hud_panel_frame")
+                    {
+                        image.color = new Color(1f, 1f, 1f, 0.3f);
+                    }
+                }
+                return true;
+            }
+            var names = SceneObjectNames(entry.asset_id);
+            const string dynamicPrefixKey = "scene_object_prefix:";
+            var dynamicPrefix = entry.unity_binding_key.StartsWith(
+                dynamicPrefixKey,
+                StringComparison.Ordinal
+            )
+                ? entry.unity_binding_key.Substring(dynamicPrefixKey.Length)
+                : string.Empty;
+            var registeredForRuntime = false;
+            if (!string.IsNullOrEmpty(dynamicPrefix))
+            {
+                var runtimeBinder = generatedRoot.GetComponent<GeneratedRuntimeSpriteBinder>();
+                if (runtimeBinder == null)
+                {
+                    runtimeBinder =
+                        generatedRoot.gameObject.AddComponent<GeneratedRuntimeSpriteBinder>();
+                }
+                runtimeBinder.Register(entry.asset_id, dynamicPrefix, sprite, animationController);
+                registeredForRuntime = true;
+            }
+            else if (
+                entry.asset_id == "player_sprite"
+                || entry.asset_id == "enemy_sprite"
+                || entry.asset_id == "primary_attack_visual"
+            )
+            {
+                var runtimeBinder = generatedRoot.GetComponent<GeneratedRuntimeSpriteBinder>();
+                if (runtimeBinder == null)
+                {
+                    runtimeBinder =
+                        generatedRoot.gameObject.AddComponent<GeneratedRuntimeSpriteBinder>();
+                }
+                if (entry.asset_id == "player_sprite")
+                {
+                    runtimeBinder.Register(entry.asset_id, "Player", sprite, animationController);
+                }
+                else if (entry.asset_id == "enemy_sprite")
+                {
+                    runtimeBinder.Register(entry.asset_id, "Enemy_", sprite, animationController);
+                    runtimeBinder.Register(
+                        entry.asset_id,
+                        "SurvivorEnemy",
+                        sprite,
+                        animationController
+                    );
+                }
+                else
+                {
+                    runtimeBinder.Register(entry.asset_id, "RotatingSword_", sprite);
+                }
+                registeredForRuntime = true;
+            }
+            var bound = false;
+            IEnumerable<SpriteRenderer> renderers = string.IsNullOrEmpty(dynamicPrefix)
+                ? generatedRoot.GetComponentsInChildren<SpriteRenderer>(true)
+                : generatedRoot
+                    .gameObject.scene.GetRootGameObjects()
+                    .SelectMany(root => root.GetComponentsInChildren<SpriteRenderer>(true));
+            foreach (var renderer in renderers)
+            {
+                if (
+                    (
+                        !string.IsNullOrEmpty(dynamicPrefix)
+                        && HasNamedAncestor(renderer.transform, generatedRoot, dynamicPrefix)
+                    ) || names.Any(name => RendererNameMatches(renderer.name, name))
+                )
                 {
                     if (entry.kind == "tileset")
                     {
@@ -456,6 +694,10 @@ namespace TeamIdle.GameTemplate.Editor
                     else
                     {
                         AssignSprite(renderer, sprite, entry);
+                        if (animationController != null)
+                        {
+                            AttachAnimation(renderer, animationController);
+                        }
                         if (GroundedAssetIds.Contains(entry.asset_id))
                         {
                             ReportGroundedAlignment(renderer, warnings);
@@ -464,7 +706,37 @@ namespace TeamIdle.GameTemplate.Editor
                     bound = true;
                 }
             }
-            return bound;
+            return bound || registeredForRuntime;
+        }
+
+        private static void AttachAnimation(
+            SpriteRenderer renderer,
+            RuntimeAnimatorController controller
+        )
+        {
+            var animator = renderer.GetComponent<Animator>();
+            if (animator == null)
+            {
+                animator = renderer.gameObject.AddComponent<Animator>();
+            }
+            animator.runtimeAnimatorController = controller;
+            if (renderer.GetComponent<GeneratedSpriteAnimationDriver>() == null)
+            {
+                renderer.gameObject.AddComponent<GeneratedSpriteAnimationDriver>();
+            }
+        }
+
+        private static bool HasNamedAncestor(Transform current, Transform root, string prefix)
+        {
+            while (current != null && current != root)
+            {
+                if (current.name.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+                current = current.parent;
+            }
+            return false;
         }
 
         private const string StageBackgroundAssetId = "stage_background";
@@ -742,6 +1014,7 @@ namespace TeamIdle.GameTemplate.Editor
                 "platformer_goal" => new[] { "StageGoal" },
                 "stage_background" => new[] { "Background" },
                 "tower_sprite" => new[] { "Tower" },
+                "tower_build_slot" => new[] { "TowerBuildSlot_", "BuildPoint_" },
                 "card_frame" or "card_art" => new[] { "CardSlot_" },
                 "novel_background" => new[] { "SceneBackground" },
                 "novel_character" => new[] { "CharacterLeft", "CharacterRight" },

@@ -12,6 +12,7 @@ from game_pipeline.visual_validation import (
     DEFAULT_VLM_MODEL,
     VISUAL_MODEL_ENV,
     VISUAL_PROJECT_ROOT,
+    UnityVisualCapture,
     VisualValidationWorkflow,
     build_visual_target_prompt,
     visual_attempt_limit,
@@ -103,6 +104,7 @@ def visual_validation_node(
 ) -> VisualValidationAgentOutput:
     manager = ArtifactManager()
     project_id = state["project_id"]
+    ui_readability = _audit_applied_ui(manager, state)
 
     if not visual_validation_enabled():
         log("시각 검증 모드가 꺼져 있어 VLM 캡처/수정 단계를 건너뜁니다.")
@@ -117,6 +119,8 @@ def visual_validation_node(
             "target_image": None,
             "summary": "MAINFLOW_VISUAL_VALIDATION is disabled.",
         }
+        if ui_readability is not None:
+            result["ui_readability"] = ui_readability
         return _write_result(manager, project_id, result)
 
     image_draft_reference = state.get("image_draft")
@@ -200,7 +204,86 @@ def visual_validation_node(
             "target_image": None,
             "summary": f"{type(error).__name__}: {error}",
         }
+    if ui_readability is not None:
+        result["ui_readability"] = ui_readability
     return _write_result(manager, project_id, result)
+
+
+def _audit_applied_ui(
+    manager: ArtifactManager,
+    state: VisualValidationAgentInput,
+    *,
+    artifact_suffix: str = "",
+) -> dict[str, object] | None:
+    """Capture the final imported art and inspect visible uGUI text and backing panels."""
+    integrated_reference = state.get("integrated_game")
+    if integrated_reference is None:
+        return None
+    integrated = manager.read_json(integrated_reference)
+    if not integrated.get("applied_image_asset_ids"):
+        return None
+    game_validation_reference = state.get("game_validation_result")
+    if (
+        game_validation_reference is None
+        or manager.read_json(game_validation_reference).get("status") != "passed"
+    ):
+        return None
+
+    project_id = state["project_id"]
+    try:
+        project_root = manager.resolve_project_path(project_id, VISUAL_PROJECT_ROOT)
+        required_version = UnityProjectValidator._read_project_version(project_root)
+        editor = UnityProjectValidator.find_unity_editor(required_version)
+        if editor is None:
+            raise RuntimeError("Matching graphical Unity Editor is unavailable")
+        capture = UnityVisualCapture(
+            editor,
+            int(os.environ.get("MAINFLOW_UNITY_VALIDATION_TIMEOUT_SECONDS", "300")),
+        )
+        screenshot, _ = capture.capture(project_root)
+        screenshot_reference = manager.write_bytes(
+            project_id,
+            "validation",
+            f"ui_readability_capture{artifact_suffix}.png",
+            screenshot,
+            producer="visual_validation",
+            media_type="image/png",
+        )
+        audit = capture.last_ui_audit or {}
+        issues = audit.get("issues", [])
+        visible_text = int(audit.get("visibleTextCount", 0))
+        result: dict[str, object] = {
+            "status": (
+                "unavailable"
+                if visible_text == 0 or not isinstance(issues, list)
+                else "needs_revision"
+                if issues
+                else "passed"
+            ),
+            "visible_text_count": visible_text,
+            "issues": issues if isinstance(issues, list) else [],
+            "screenshot": screenshot_reference,
+        }
+        if issues:
+            log(f"이미지 적용 후 HUD 가독성 검사에서 {len(issues)}개 문제를 발견했습니다.")
+        else:
+            log("이미지 적용 후 HUD 배치·텍스트 대비 캡처 검사를 완료했습니다.")
+    except Exception as error:  # noqa: BLE001 - keep optional capture diagnostic
+        result = {
+            "status": "unavailable",
+            "visible_text_count": 0,
+            "issues": [f"capture_unavailable:{type(error).__name__}:{error}"],
+            "screenshot": None,
+        }
+        log(f"이미지 적용 후 HUD 캡처 검사를 수행하지 못했습니다: {error}")
+    manager.write_json(
+        project_id,
+        "validation",
+        f"ui_readability_result{artifact_suffix}.json",
+        result,
+        producer="visual_validation",
+    )
+    return result
 
 
 def _write_result(

@@ -42,7 +42,7 @@ const codexDeviceDetails = document.querySelector("#codex-device-details");
 const codexDeviceCode = document.querySelector("#codex-device-code");
 const codexAuthOutput = document.querySelector("#codex-auth-output");
 
-const providerLabels = { local: "LocalAI", openai: "OpenAI API", gemini: "Gemini API", vastai: "Vast.ai", placeholder: "Placeholder", procedural: "Procedural", elevenlabs: "ElevenLabs API" };
+const providerLabels = { codex_cli: "Codex CLI", local: "LocalAI", openai: "OpenAI API", gemini: "Gemini API", vastai: "Vast.ai", placeholder: "Placeholder", procedural: "Procedural", elevenlabs: "ElevenLabs API" };
 const notificationSettingKey = "mainflow.completionNotifications";
 const agentHarnessCatalog = {
   codex_cli: {
@@ -480,6 +480,12 @@ function renderModelControl(card, role, selectedModel = "") {
     role.local_models.forEach((model) => select.add(new Option(model, model)));
     select.value = role.local_models.includes(selectedModel) ? selectedModel : role.local_models[0];
     host.append(select);
+  } else if (provider === "codex_cli") {
+    const input = document.createElement("input");
+    input.className = "model-input";
+    input.value = selectedModel && !role.local_models.includes(selectedModel) ? selectedModel : "builder";
+    input.title = "builder: 게임 구현 방식에서 선택한 Codex 모델 사용";
+    host.append(input);
   } else if (["placeholder", "procedural"].includes(provider)) {
     const input = document.createElement("input");
     input.className = "model-input";

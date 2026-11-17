@@ -160,9 +160,19 @@ GENRE_PRESETS: dict[GenreProfile, GameSpec] = {
         "lose_conditions": ["player_hp_is_zero"],
         "target_engine": "Unity",
         "asset_requirements": [
-            _asset("player_sprite", "image", "플레이어", "날개를 가진 플레이어 스프라이트"),
+            _asset(
+                "player_sprite",
+                "image",
+                "플레이어",
+                "사용자 조건에 묘사된 플레이어 캐릭터 스프라이트",
+            ),
             _asset("enemy_sprite", "image", "적", "플레이어를 추적하는 적 스프라이트"),
-            _asset("primary_attack_visual", "image", "공격", "사용자가 지정한 주 공격 수단"),
+            _asset(
+                "primary_attack_visual",
+                "image",
+                "공격 무기",
+                "사용자 조건에 묘사된 주 공격 무기만 단독으로 표현한 스프라이트. 캐릭터나 인물은 제외",
+            ),
             _asset("survivor_bgm", "sound", "배경음악", "반복 가능한 전투 배경음악"),
             _asset("primary_attack_sfx", "sound", "공격 효과음", "사용자가 지정한 공격 효과음"),
         ],

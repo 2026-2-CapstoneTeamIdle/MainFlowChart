@@ -34,6 +34,57 @@ COMPLETION_SCHEMA: dict[str, Any] = {
         "tests_run": {"type": "array", "items": {"type": "string"}},
         "unresolved_requirements": {"type": "array", "items": {"type": "string"}},
         "recommended_validation": {"type": "array", "items": {"type": "string"}},
+        "visual_objects": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "asset_id": {"type": "string"},
+                    "scene_object_prefix": {"type": "string"},
+                    "purpose": {"type": "string"},
+                    "description": {"type": "string"},
+                    "kind": {
+                        "type": "string",
+                        "enum": [
+                            "sprite",
+                            "ui",
+                            "background",
+                            "tileset",
+                            "illustration",
+                            "portrait",
+                        ],
+                    },
+                },
+                "required": [
+                    "asset_id",
+                    "scene_object_prefix",
+                    "purpose",
+                    "description",
+                    "kind",
+                ],
+                "additionalProperties": False,
+            },
+        },
+        "sound_events": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "asset_id": {"type": "string"},
+                    "cue_id": {"type": "string"},
+                    "purpose": {"type": "string"},
+                    "description": {"type": "string"},
+                    "kind": {
+                        "type": "string",
+                        "enum": ["bgm", "sfx", "ui", "voice", "ambience"],
+                    },
+                },
+                "required": ["asset_id", "cue_id", "purpose", "description", "kind"],
+                "additionalProperties": False,
+            },
+        },
     },
     "required": [
         "status",
@@ -43,6 +94,8 @@ COMPLETION_SCHEMA: dict[str, Any] = {
         "tests_run",
         "unresolved_requirements",
         "recommended_validation",
+        "visual_objects",
+        "sound_events",
     ],
     "additionalProperties": False,
 }
@@ -284,7 +337,11 @@ class CodexGameHarness:
             schema=COMPLETION_SCHEMA,
             audit_directory=self.audit_root / "implementation",
         )
-        _require_agent_completion(self.implementation, "initial implementation")
+        _require_agent_completion(
+            self.implementation,
+            "initial implementation",
+            allow_host_validation_pending=True,
+        )
         permission_report = _normalize_windows_project_permissions(project_root)
         self._record(f"{self.provider}_project_permissions_after_implementation", permission_report)
         _require_normalized_permissions(
@@ -735,7 +792,7 @@ def _require_agent_completion(
 
 
 def _only_host_validation_pending(response: dict[str, Any]) -> bool:
-    """Allow an edited repair to reach the host-owned Unity validation gate."""
+    """Allow edited source to reach the host-owned Unity validation gate."""
 
     changed = response.get("changed_files")
     unresolved = response.get("unresolved_requirements")
@@ -748,10 +805,13 @@ def _only_host_validation_pending(response: dict[str, Any]) -> bool:
             return False
         normalized = " ".join(item.lower().split())
         if (
-            "host" not in normalized
+            not any(word in normalized for word in ("host", "project instruction"))
             or "unity" not in normalized
-            or not any(word in normalized for word in ("validat", "test", "compil"))
-            or not any(word in normalized for word in ("pending", "remain", "required", "needed"))
+            or not any(word in normalized for word in ("validat", "test", "compil", "play mode"))
+            or not any(
+                word in normalized
+                for word in ("pending", "remain", "required", "needed", "not run", "not executed")
+            )
             or any(
                 word in normalized
                 for word in ("failed", "broken", "missing", "incomplete", "cannot", "unable")
@@ -855,9 +915,12 @@ countdown. Report estimated total playtime gaps as info-level findings, never as
 failure; a real-control timing trace is needed for a reliable duration judgment. Never recommend
 delaying progression at zone boundaries to meet a timer. Check every HUD region, state
 screen, live value binding, and primary action against runtime source and scene wiring.
-If the image backend deliberately produced placeholders and visual validation is marked skipped,
-record that only as an info-level limitation; do not emit a warning/error or fail the game solely
-because no real image asset was applied. Judge primitive fallback readability separately.
+Inspect `visual_validation_result.ui_readability` and its post-asset screenshot when present.
+Off-screen text, missing backing panels, and low contrast are concrete UI defects even if the
+optional VLM comparison is disabled. An unavailable capture is only missing evidence.
+If visual validation was deliberately disabled or skipped because the image backend produced
+placeholders, record the missing VLM comparison only as an info-level limitation; do not fail the
+game solely for that skip. Judge actual readability and visual defects separately.
 Check actual gameplay behavior independently of the hard smoke-test status. If post-quality
 Unity validation evidence exists, prefer it over the earlier pre-repair run.
 
@@ -962,6 +1025,11 @@ Read every file below before editing code:
   assembly code when necessary for a request-specific game. Preserve the host validation entry
   points, immutable generated contracts, asset binding keys, tests, and project/package identity.
 - Implement behavior in source files and connect it to actual scene objects, UI, progression, win/loss flow, and feedback.
+- Keep exactly one active Player object and one authoritative movement controller. The assembled
+  scene already contains Player and TopDownMovementModule: bind that module to the same
+  Rigidbody2D observed by the camera, health, enemies, and validation. Never create a second
+  Player from a timer, spawner, or presentation controller. Preserve WASD/arrow input through
+  InputAdapterModule instead of driving a different body in parallel.
 - Treat `presentation_plan.json` as an implementation contract, not mood-board text. Build a
   coherent Unity uGUI hierarchy for every specified HUD region and state screen, with anchored
   layout, `CanvasScaler.ScaleWithScreenSize`, readable typography, progress bars/counters, clear
@@ -970,6 +1038,24 @@ Read every file below before editing code:
   state source, every required state screen opens on its actual transition, and each primary
   action works. Inspect the game at both reference resolutions and keep world interaction
   points clickable outside HUD raycast areas.
+- For each HUD panel, use anchor and offset pairs that keep its visible RectTransform inside
+  the screen at 1280x720 and 1920x1080. In a top-left panel, both x offsets should be small
+  positive insets; do not combine a fractional-width anchor with a large positive right offset.
+  Give labels, health/XP bars, and timer separate non-overlapping rows inside their panels.
+- Put each live HUD text group and transient announcement inside an anchored uGUI panel with
+  a dark, translucent `UnityEngine.UI.Image` backing (alpha at least 0.7). Keep text colors
+  high contrast, padding around every label, and panels inside the visible screen at both
+  reference resolutions. Do not place white or warning text directly over world artwork.
+  Keep decorative Images `raycastTarget = false`; interactive Button graphics alone receive
+  raycasts. Counter text, bars, and button labels remain live Unity UI, never rasterized art.
+- Keep the player's sprite visible during hit feedback. Use a tint, outline, or alpha pulse
+  with a visible silhouette instead of disabling its only SpriteRenderer for repeated frames.
+- Add a non-interactive `UnityEngine.UI.Image` child named `HudArt_...` behind text within each
+  HUD panel; the host will bind the optional `hud_panel_frame` artwork after generation. Use
+  the exact `HudIconHealth`, `HudIconCurrency`, `HudIconWave`, `HudIconTimer`, and
+  `HudIconObjective` prefixes only for icons requested in `image_asset_request.json`. Their
+  Image components must stay within their panel and must not consume pointer input. Preserve
+  the dark panel fallback and legible text if generated artwork is unavailable or too bright.
 - Treat `pacing_contract.json` as the normal human-play contract. Author traversal, enemy,
   obstacle, wave, or decision content in each segment to reach its target duration. A long
   idle countdown, movement-against-a-wall gate, and a fast automated smoke test are not evidence
@@ -1008,6 +1094,35 @@ Read every file below before editing code:
   dependency is missing, build a visible degraded HUD and fail the action safely instead of
   throwing from `Update`. This is mandatory for tower-defense wave spawning and UI.
 - Preserve image and sound binding keys from the asset request files.
+- In the structured completion response, fill `visual_objects` with one entry per visually
+  distinct object explicitly requested by the user or newly authored in this game that is
+  absent from `image_asset_request.json`. Include enemies/variants, hazards, pickups,
+  landmarks, bases, projectiles, and interactive props when they need different artwork.
+  Use a stable lowercase ASCII `asset_id` (for example `visual_clockwork_drone`), a specific
+  `scene_object_prefix` matching the actual GameObject or prefab name, a concrete image
+  purpose/description, and an image kind. Repeated instances share one entry. Never list an
+  object solely because a genre preset mentions it; use the user's condition and authored
+  content. If no additional object art is needed, return an empty array.
+- For a request-specific UI icon or ornament absent from the image request, include it in
+  `visual_objects` with `kind="ui"` and make `scene_object_prefix` match the actual uGUI
+  Image name. The host binds UI art to Image components by that prefix; do not replace live
+  labels or buttons with a flattened screenshot.
+- For runtime-spawned objects, look up their `asset_id` with `AssetRegistryModule.TryGet<Sprite>`
+  when a sprite is available and retain a clean primitive fallback until import. The host
+  generates and imports `visual_objects` after implementation, so never invent a second
+  image service call inside Unity.
+- In the structured completion response, fill `sound_events` with distinct sounds needed by
+  the user's condition or the gameplay you authored but absent from `sound_asset_request.json`.
+  Use stable lowercase ASCII `asset_id` and `cue_id` values (for example
+  `clockwork_gate_open_sfx` and `clockwork_gate_open`), describe the audible event precisely,
+  and choose `bgm`, `sfx`, `ui`, `voice`, or `ambience`. Do not duplicate an existing sound ID
+  or audio cue. Wire `GameAudioCues.Raise("cue_id")` into the successful runtime transition,
+  once per event; a proposed sound without a reachable raise is incomplete. The host imports
+  these clips after implementation. Return an empty array when no new sound is needed.
+- For tower defense, give every unoccupied build slot the requested `tower_build_slot`
+  artwork. Keep its scene object name prefixed `TowerBuildSlot_` or `BuildPoint_` so the
+  post-generation asset binder can replace the temporary marker. An occupied slot must
+  display the built tower clearly rather than retaining the empty-slot appearance.
 - Put every public `MonoBehaviour` in its own `.cs` file whose filename exactly matches the class
   name. Generated game modules must derive from `GameModuleBehaviour`, implement
   `IGeneratedFeatureModule`, and declare the exact `[GeneratedGameModule("module_id")]` identity.
@@ -1052,6 +1167,19 @@ Viewpoint: {request["viewpoint"]}
 Agent-owned gameplay modules and mechanics: {json.dumps(requirements, ensure_ascii=False)}
 Feature requirements: {json.dumps(features, ensure_ascii=False)}
 
+The completion response must include `visual_objects`: request-specific visible object art
+that the current image asset request omits. Match every `scene_object_prefix` to an authored
+scene object/prefab (or to the name prefix used by runtime spawning code), and use the same
+`asset_id` when runtime code retrieves the generated sprite from AssetRegistryModule. Do not
+list each instance separately or duplicate existing image asset IDs.
+Treat UI artwork as separate optional panel or icon sprites. Name the corresponding
+`UnityEngine.UI.Image` elements with the requested `HudArt_` or `HudIcon...` prefixes, keep
+all live text and buttons above the decorative art, and make the fallback panels readable.
+The completion response must also include `sound_events`: distinct request-specific sounds
+missing from the sound asset request. Each `cue_id` must already be raised by actual gameplay
+code through `GameAudioCues.Raise` at the event it describes. Reuse existing cue IDs and omit
+duplicates. Return an empty array if the request needs no extra sound.
+
 Before coding, read `Assets/GameTemplate/Generated/Design/pacing_contract.json` and
 `Assets/GameTemplate/Generated/Design/ui_contract.json`. Preserve the requested normal
 playtime, connect every required collectible and checkpoint to the real traversable route,
@@ -1059,6 +1187,10 @@ and make each HUD value and result screen reflect the current runtime state.
 Keep timed or rising hazards local to their authored zone. A player teleported or respawned into
 an earlier zone must still take ordinary enemy and trap damage without the final-zone controller
 immediately overriding that contact or resetting the player.
+For SurvivorLike, reuse the assembled scene Player and its TopDownMovementModule. Do not turn
+GameTimerModule into a second player/world bootstrap or attach another movement loop to a
+different Rigidbody2D. Verify that InputAdapterModule movement changes the visible Player's
+position, then that the camera and enemies track that same transform.
 
 Follow {instruction_filename}. First inspect the project and all generated design contracts. Then implement the
 entire connected gameplay loop, not isolated sample scripts. Verify initialization values, scene
@@ -1084,6 +1216,10 @@ runtime dependency is missing. In particular, a tower-defense controller must ne
   must select the point, reveal the build menu, and a real UI pointer click on a tower button
   must deduct gold and create a tower. Hide the build menu until a point is selected so its
   raycast target cannot cover build points. Add hover or selection feedback to build points.
+  Anchor the build menu inside the bottom-right screen corner: for a fixed-size panel use
+  anchor and pivot `(1, 0)` with a negative X and positive Y inset. Keep every tower-choice
+  button fully within the 1280x720 viewport, visible, interactable, and unobstructed by
+  another UI Graphic. Do not rely on direct `TryBuild` calls as proof that the menu works.
   An enemy spawned by the wave must visibly traverse the path, and a built tower must damage
   and eventually defeat it. Preserve the public `WaveSpawnerModule` wave API when replacing
   the stock implementation, so the host can observe this sequence.
@@ -1108,6 +1244,12 @@ Repair iteration: {iteration}
 Validation phase: {phase}
 Evidence:
 {json.dumps(feedback, ensure_ascii=False, indent=2)}
+
+Return an updated `visual_objects` array for any new visible object categories introduced by
+this repair. Preserve IDs and scene name prefixes for objects already implemented; the host
+uses these IDs to request artwork after Unity validation.
+Return an updated `sound_events` array for newly implemented audible transitions. Preserve
+previously reported sound IDs and cues, and keep each cue wired to its runtime transition.
 
 Read the referenced source definitions before editing. Fix root causes across files and bindings,
 not only the first compiler line. Do not weaken tests or alter immutable generated design/manifest
@@ -1137,6 +1279,11 @@ that can move or respawn the player before the hazard's damage callback. Scope t
 hazard checks to their own zone and restore that zone's state on respawn. Confirm the ordinary
 hazard changes the authoritative player health; do not bypass contact damage or change the host
 smoke test to hide the failure.
+If `runtime.survivor_player_identity`, `runtime.survivor_player_binding`, or
+`runtime.survivor_movement` fails, inspect all Player creation paths and Rigidbody2D bindings.
+Keep one active scene Player, bind TopDownMovementModule, camera, health, enemy targets, and UI
+to its live transform/body, and remove competing movement logic. Confirm the test input reaches
+that exact body; changing only movement speed or timeout cannot repair a different-body binding.
 If validation reports that a selected action or upgrade changed no observable state, inspect module
 initialization order and reacquire late-bound dependencies when the action executes. Ensure every
 selectable option ID maps to a real state mutation, and keep one authoritative owner for the state
@@ -1146,6 +1293,10 @@ point inside the camera view and set its SpriteRenderer sorting order above the 
 If it reports `runtime.tower_build_clickability` or `runtime.tower_build_input`, check the
 build-point Collider2D, UI raycast coverage, EventSystem/input module, button listener, selected
 point state, and gold deduction as one end-to-end pointer flow.
+If it reports `runtime.tower_build_menu_visibility` or `runtime.tower_build_menu_clickability`,
+inspect the actual button RectTransform corners and UI raycast results at its screen center.
+For a bottom-right panel, align its pivot with `(1, 0)` and inset it from the screen edges;
+do not solve an off-screen button by invoking its callback directly.
   Decorative HUD panels and text must set `raycastTarget = false`; only interactive controls
   may consume pointer input. Keep the build menu inactive until a build point is selected.
 If it reports `runtime.tower_spawn`, inspect `StartNextWave`, the wave timer, enemy creation,

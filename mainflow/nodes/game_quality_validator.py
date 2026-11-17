@@ -89,7 +89,9 @@ def game_quality_validator_node(
             report = cast(
                 GameValidatorAIResult, {"contract_version": CONTRACT_VERSION, **ai_report}
             )
-        report = _normalize_placeholder_visual_limitation(report, final_result)
+        report = _normalize_placeholder_visual_limitation(
+            report, final_result, evidence.get("visual_validation_result")
+        )
         report = _normalize_duration_limitation(report, final_result)
         if (
             final_result.get("status") == "passed"
@@ -97,7 +99,9 @@ def game_quality_validator_node(
             and os.environ.get("MAINFLOW_GAME_BUILDER", "").strip().lower()
             in {"codex_cli", "claude_code"}
         ):
-            report = _repair_and_review_quality(state["project_id"], manager, evidence, report)
+            report = _repair_and_review_quality(
+                state["project_id"], manager, evidence, report, state=state
+            )
             if report.get("status") == "passed":
                 # Quality repair changes the Unity source after the original archive was built.
                 # Re-run the hard gate and package that exact repaired tree before returning success.
@@ -148,6 +152,8 @@ def _repair_and_review_quality(
     manager: ArtifactManager,
     evidence: dict[str, Any],
     initial_report: GameValidatorAIResult,
+    *,
+    state: GameValidatorAIAgentInput | None = None,
 ) -> GameValidatorAIResult:
     """Use the builder to fix evidenced quality gaps, with Unity as the safety gate."""
 
@@ -282,10 +288,24 @@ def _repair_and_review_quality(
                 "unity_log": outcome.unity_log[-12000:],
             }
             record(f"unity_validation_{attempt:02d}", evidence["post_quality_unity_validation"])
+            if state is not None and evidence.get("visual_validation_result", {}).get(
+                "ui_readability"
+            ):
+                from mainflow.nodes.visual_validation import _audit_applied_ui
+
+                refreshed_ui = _audit_applied_ui(
+                    manager, state, artifact_suffix=f"_quality_{attempt:02d}"
+                )
+                if refreshed_ui is not None:
+                    evidence["visual_validation_result"] = {
+                        **evidence["visual_validation_result"],
+                        "ui_readability": refreshed_ui,
+                    }
             reviewed = review(project_root=workspace, project_id=project_id, evidence=evidence)
             report = _normalize_placeholder_visual_limitation(
                 cast(GameValidatorAIResult, reviewed),
                 evidence.get("final_validation_result", {"status": "passed"}),
+                evidence.get("visual_validation_result"),
             )
             report = _normalize_duration_limitation(
                 report,
@@ -346,11 +366,18 @@ def _project_source_signature(project_root: Path) -> tuple[tuple[str, int, int],
 def _normalize_placeholder_visual_limitation(
     report: GameValidatorAIResult,
     final_result: dict[str, Any],
+    visual_result: dict[str, Any] | None = None,
 ) -> GameValidatorAIResult:
-    """Keep an unavailable real-art backend from becoming a standalone quality failure."""
+    """Keep an intentionally skipped VLM comparison from failing quality review alone."""
 
     if final_result.get("status") != "passed":
         return report
+
+    visual_disabled = (
+        isinstance(visual_result, dict)
+        and visual_result.get("mode") == "disabled"
+        and visual_result.get("status") == "skipped"
+    )
 
     def is_placeholder_visual(item: dict[str, Any]) -> bool:
         text = " ".join(
@@ -361,11 +388,18 @@ def _normalize_placeholder_visual_limitation(
                 *(str(value) for value in item.get("evidence", [])),
             ]
         ).lower()
-        return (
+        placeholder_skip = (
             "visual" in text
             and "placeholder" in text
             and any(marker in text for marker in ("skip", "disabled", "suppressed"))
         )
+        disabled_vlm_skip = (
+            visual_disabled
+            and any(marker in text for marker in ("visual validation", "vlm", "시각 검증"))
+            and any(marker in text for marker in ("skip", "disabled", "not run", "생략", "비활성"))
+            and not any(marker in text for marker in ("unreadable", "overlap", "가독성", "겹침"))
+        )
+        return placeholder_skip or disabled_vlm_skip
 
     findings: list[dict[str, Any]] = []
     for finding in report.get("findings", []):

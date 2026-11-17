@@ -57,13 +57,28 @@ namespace TeamIdle.GameTemplate.Editor
             collectibleText.rectTransform.offsetMin = new Vector2(22f, 12f);
             collectibleText.rectTransform.offsetMax = new Vector2(-22f, 52f);
 
-            var statusText = CreateText("FeedbackText", canvasObject.transform, 38, FontStyle.Bold);
+            var feedbackPanel = CreateImage(
+                "FeedbackPanel",
+                canvasObject.transform,
+                new Color(0.035f, 0.045f, 0.075f, 0.9f)
+            );
+            Anchor(feedbackPanel.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f));
+            feedbackPanel.rectTransform.pivot = new Vector2(0.5f, 1f);
+            feedbackPanel.rectTransform.anchoredPosition = new Vector2(0f, -46f);
+            feedbackPanel.rectTransform.sizeDelta = new Vector2(744f, 86f);
+            feedbackPanel.raycastTarget = false;
+
+            var statusText = CreateText(
+                "FeedbackText",
+                feedbackPanel.transform,
+                38,
+                FontStyle.Bold
+            );
             statusText.alignment = TextAnchor.MiddleCenter;
             statusText.color = new Color(1f, 0.9f, 0.35f, 1f);
-            Anchor(statusText.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f));
-            statusText.rectTransform.pivot = new Vector2(0.5f, 1f);
-            statusText.rectTransform.anchoredPosition = new Vector2(0f, -54f);
-            statusText.rectTransform.sizeDelta = new Vector2(720f, 70f);
+            Stretch(statusText.rectTransform);
+            statusText.rectTransform.offsetMin = new Vector2(12f, 8f);
+            statusText.rectTransform.offsetMax = new Vector2(-12f, -8f);
 
             var damageFlash = CreateImage(
                 "DamageFlash",

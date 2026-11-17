@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import tempfile
 import unittest
 import zipfile
@@ -261,6 +262,87 @@ class FinalValidationTest(unittest.TestCase):
             next(c for c in result["checks"] if c["criterion_id"] == "sound-mood")["passed"]
         )
 
+    def test_agent_source_audit_can_supply_missing_feature_evidence(self):
+        logic = self.manager.read_json(self.state["logic_analysis"])
+        logic["features"].append(
+            {
+                "feature_id": "user-feature-01",
+                "name": "Unique behavior",
+                "description": "A custom gameplay rule",
+                "source_text": "custom rule",
+            }
+        )
+        logic["criteria"].append(
+            {
+                "criterion_id": "logic-user-feature-01",
+                "target": "game",
+                "description": "A custom gameplay rule runs",
+                "required": True,
+            }
+        )
+        self.put("logic_analysis", logic)
+        with (
+            patch.dict(os.environ, {"MAINFLOW_GAME_BUILDER": "codex_cli"}),
+            patch("mainflow.nodes.final_validation.audit_feature_evidence") as audit,
+        ):
+            audit.return_value = {
+                "logic-user-feature-01": {
+                    "satisfied": True,
+                    "evidence": [
+                        {"path": "Assets/Runtime/Custom.cs", "quote": "ApplyCustomRule();"}
+                    ],
+                    "reason": "Bound and executed",
+                }
+            }
+            result = self.run_final()
+        self.assertEqual(result["status"], "passed")
+        self.assertTrue(
+            next(
+                item for item in result["checks"] if item["criterion_id"] == "logic-user-feature-01"
+            )["passed"]
+        )
+        self.assertEqual(audit.call_args.kwargs["builder"], "codex_cli")
+
+    def test_disabled_visual_validation_waives_only_visual_style_evidence(self):
+        logic = self.manager.read_json(self.state["logic_analysis"])
+        logic["criteria"].append(
+            {
+                "criterion_id": "visual-style",
+                "target": "image",
+                "description": "Pixel Art visual style",
+                "required": True,
+            }
+        )
+        self.put("logic_analysis", logic)
+        self.put("visual_validation_result", {"mode": "disabled", "status": "skipped"})
+
+        result = self.run_final()
+
+        self.assertEqual(result["status"], "passed")
+        style = next(c for c in result["checks"] if c["criterion_id"] == "visual-style")
+        self.assertTrue(style["passed"])
+        self.assertIn("visual validation disabled", style["message"])
+
+    def test_failed_visual_validation_still_fails_final_validation(self):
+        logic = self.manager.read_json(self.state["logic_analysis"])
+        logic["criteria"].append(
+            {
+                "criterion_id": "visual-style",
+                "target": "image",
+                "description": "Pixel Art visual style",
+                "required": True,
+            }
+        )
+        self.put("logic_analysis", logic)
+        self.put("visual_validation_result", {"mode": "enabled", "status": "failed"})
+
+        result = self.run_final()
+
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(
+            next(c for c in result["checks"] if c["criterion_id"] == "visual-style")["passed"]
+        )
+
     def test_procedural_sound_waives_provider_dependent_mood_evidence(self):
         payload = self.manager.read_json(self.state["sound_validation_result"])
         payload["checks"] = []
@@ -289,6 +371,62 @@ class FinalValidationTest(unittest.TestCase):
     def test_import_without_scene_binding_fails(self):
         self.report["scene_bound_asset_ids"] = []
         self.assertEqual(self.run_final()["status"], "failed")
+
+    def test_staged_character_sheet_requires_animator_binding(self):
+        image_path = "Assets/GameTemplate/Generated/AppliedAssets/Images/player_sprite.png"
+        image_artifact = self.manager.write_bytes(
+            self.project, "image", "player.png", b"player-image", producer="test"
+        )
+        self.write_project(image_path, b"player-image")
+        manifest = {
+            **self.manifest,
+            "entries": [
+                *self.manifest["entries"],
+                {
+                    "asset_id": "player_sprite",
+                    "asset_type": "image",
+                    "unity_path": image_path,
+                    "unity_binding_key": "asset_registry:player_sprite",
+                    "animation_metadata_path": (
+                        "Assets/GameTemplate/Generated/AppliedAssets/Animations/player_sprite_sheet.json"
+                    ),
+                },
+            ],
+        }
+        manifest_ref = self.manager.write_json(
+            self.project, "game", "animated_bindings.json", manifest, producer="test"
+        )
+        self.write_project(
+            "Assets/GameTemplate/Generated/AssetBindingManifest.json",
+            json.dumps(manifest).encode(),
+        )
+        integrated = self.manager.read_json(self.state["integrated_game"])
+        integrated["asset_binding_manifest"] = manifest_ref
+        integrated["applied_image_asset_ids"] = ["player_sprite"]
+        self.put("integrated_game", integrated)
+        image_result = self.manager.read_json(self.state["image_validation_result"])
+        image_result["validated_asset_ids"] = ["player_sprite"]
+        image_result["validated_assets"]["assets"] = [
+            {
+                "asset_id": "player_sprite",
+                "asset_type": "image",
+                "unity_binding_key": "asset_registry:player_sprite",
+                "artifact": image_artifact,
+                "file_format": "png",
+            }
+        ]
+        self.put("image_validation_result", image_result)
+        self.report = {
+            key: ["jump", "player_sprite"]
+            for key in ("scene_bound_asset_ids", "imported_asset_ids", "registry_asset_ids")
+        }
+        result = self.run_final()
+        animation_check = next(
+            item
+            for item in result["checks"]
+            if item["criterion_id"] == "integration.character_animation_bindings"
+        )
+        self.assertFalse(animation_check["passed"])
 
     def test_unity_unavailable_or_runtime_disabled_fails(self):
         self.outcome = UnityValidationOutcome(

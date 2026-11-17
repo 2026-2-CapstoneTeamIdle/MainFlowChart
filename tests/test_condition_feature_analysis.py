@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from collections.abc import Mapping
 from typing import Any
+from unittest.mock import patch
 
 from game_pipeline.condition_feature_analysis import (
     CONDITION_FEATURE_SCHEMA,
@@ -52,10 +53,59 @@ class ConditionFeatureAnalysisTest(unittest.TestCase):
             detected_features=[],
         )
 
-        self.assertEqual([feature["name"] for feature in result.features], ["보석 수집 완료"])
+        self.assertEqual(
+            [feature["name"] for feature in result.features],
+            ["보석 수집 완료", "사용자 지정 조건"],
+        )
+        self.assertIn("가시에 닿으면", result.features[1]["description"])
         self.assertEqual(result.report["successful_request_count"], 1)
         self.assertEqual(result.report["failed_request_count"], 1)
         self.assertEqual(result.report["failed_segments"][0]["segment_index"], 1)
+
+    def test_retains_unprocessed_custom_clauses_when_feature_limit_is_reached(self) -> None:
+        client = FakeStructuredClient(
+            {
+                "features": [
+                    {
+                        "name": "가시 피해",
+                        "description": "플레이어가 가시에 닿으면 체력이 감소한다.",
+                        "source_text": "가시에 닿으면 체력이 감소한다",
+                        "acceptance_criteria": "가시 접촉 전후 플레이어 체력이 감소한다.",
+                        "implementation_kind": "configure_existing",
+                    }
+                ]
+            }
+        )
+        detected: list[FeatureRequirement] = [
+            {
+                "feature_id": "feature-01",
+                "name": "사용자 지정 조건",
+                "description": "가시에 닿으면 체력이 감소한다",
+                "source_text": "가시에 닿으면 체력이 감소한다. 보석을 모으면 문이 열린다.",
+            },
+            {
+                "feature_id": "feature-02",
+                "name": "사용자 지정 조건",
+                "description": "보석을 모으면 문이 열린다",
+                "source_text": "가시에 닿으면 체력이 감소한다. 보석을 모으면 문이 열린다.",
+            },
+        ]
+
+        with patch("game_pipeline.condition_feature_analysis.MAX_EXPLICIT_FEATURES", 1):
+            result = ConditionFeatureAnalyzer(client, "test").analyze(
+                genre="플랫포머",
+                viewpoint="사이드뷰",
+                condition="가시에 닿으면 체력이 감소한다. 보석을 모으면 문이 열린다.",
+                detected_features=detected,
+            )
+
+        self.assertEqual(len(client.prompts), 1)
+        self.assertEqual(
+            [item["name"] for item in result.features], ["가시 피해", "사용자 지정 조건"]
+        )
+        self.assertEqual(result.features[1]["description"], "보석을 모으면 문이 열린다")
+        self.assertEqual(result.report["truncated_segment_count"], 1)
+        self.assertEqual(result.report["retained_fallback_feature_count"], 1)
 
     def test_replaces_vague_custom_clause_with_atomic_user_features(self) -> None:
         client = FakeStructuredClient(

@@ -295,6 +295,95 @@ def test_host_validation_pending_repair_runs_unity_before_acceptance(tmp_path: P
     assert source.read_text(encoding="utf-8") == "after"
 
 
+def test_initial_host_validation_pending_reaches_compile_repair(tmp_path: Path) -> None:
+    project = tmp_path / "unity"
+    source = project / "Assets" / "Game.cs"
+    source.parent.mkdir(parents=True)
+    source.write_text("uncompiled source", encoding="utf-8")
+    initial = {
+        **_completion(),
+        "status": "needs_attention",
+        "tests_run": [],
+        "unresolved_requirements": [
+            "Unity Editor compilation and Play Mode behavior were not run per project instruction."
+        ],
+    }
+    runner = MagicMock()
+    runner.run.side_effect = [
+        MagicMock(final_response=initial),
+        MagicMock(final_response=_completion()),
+    ]
+    harness = CodexGameHarness(
+        _settings(tmp_path / "codex.exe"),
+        audit_root=tmp_path / "audit",
+        runner=runner,
+        preflight_runner=lambda settings: CodexPreflightResult("codex", "test", "logged in"),
+    )
+    compile_error = "Assets/Game.cs(264,33): error CS0029: Cannot implicitly convert type"
+    failed = UnityValidationOutcome(
+        checks=[],
+        issues=[
+            {
+                "code": "UNITY_BATCH_VALIDATION_FAILED",
+                "severity": "error",
+                "message": compile_error,
+            }
+        ],
+        unity_log=compile_error,
+    )
+    passed = UnityValidationOutcome(checks=[], issues=[], unity_log="UNITY_TEMPLATE_BUILD_OK")
+    with (
+        patch(
+            "game_pipeline.codex_cli.harness._normalize_windows_project_permissions",
+            return_value={"status": "passed"},
+        ),
+        patch("game_pipeline.codex_cli.harness._require_normalized_permissions"),
+        patch("game_pipeline.codex_cli.harness._write_project_instructions"),
+        patch("game_pipeline.codex_cli.harness._implementation_prompt", return_value="implement"),
+        patch(
+            "game_pipeline.codex_cli.harness._validation_draft",
+            return_value={"status": "generated"},
+        ),
+        patch("game_pipeline.codex_cli.harness.UnityProjectValidator") as validator,
+    ):
+        validator.return_value.validate.side_effect = [failed, passed]
+        harness.implement_project(project_root=project, design={}, request={})  # type: ignore[arg-type]
+        result = harness.validate_and_repair(project_root=project, design={}, request={})  # type: ignore[arg-type]
+
+    assert validator.return_value.validate.call_count == 2
+    assert len(result.repair_results) == 1
+    assert compile_error in runner.run.call_args_list[1].kwargs["prompt"]
+
+
+@pytest.mark.parametrize(
+    "unresolved",
+    [
+        "Unity Editor compilation failed with CS0029; source remains broken.",
+        "Unity Editor compilation and Play Mode were not run per project instruction; movement is missing.",
+        "Player movement implementation is incomplete.",
+    ],
+)
+def test_initial_incomplete_work_is_not_host_validation_pending(
+    tmp_path: Path, unresolved: str
+) -> None:
+    response = {
+        **_completion(),
+        "status": "needs_attention",
+        "unresolved_requirements": [unresolved],
+    }
+    result = CodexCliResult(
+        exit_code=0,
+        elapsed_seconds=1.0,
+        final_response=response,
+        events=(),
+        audit_directory=tmp_path,
+    )
+    with pytest.raises(RuntimeError, match="AGENT_IMPLEMENTATION_INCOMPLETE"):
+        _require_agent_completion(
+            result, "initial implementation", allow_host_validation_pending=True
+        )
+
+
 def test_runner_rejects_non_jsonl_output(tmp_path: Path) -> None:
     project = tmp_path / "unity"
     project.mkdir()

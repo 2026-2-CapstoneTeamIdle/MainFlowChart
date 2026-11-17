@@ -99,6 +99,54 @@ class QualityProvider:
 
 
 class GameQualityValidatorAITest(unittest.TestCase):
+    def test_disabled_visual_validation_is_not_a_hard_failure(self) -> None:
+        GameQualityValidatorAI._enforce_hard_evidence(  # type: ignore[arg-type]
+            {"status": "passed"},
+            {"visual_validation_result": {"mode": "disabled", "status": "skipped"}},
+        )
+        with self.assertRaises(ValueError):
+            GameQualityValidatorAI._enforce_hard_evidence(  # type: ignore[arg-type]
+                {"status": "passed"},
+                {"visual_validation_result": {"mode": "enabled", "status": "failed"}},
+            )
+
+    def test_disabled_visual_limitation_does_not_hide_readability_failure(self) -> None:
+        report = {
+            "status": "needs_revision",
+            "requirement_coverage": [],
+            "findings": [
+                {
+                    "severity": "warning",
+                    "category": "evidence",
+                    "message": "VLM visual validation was skipped because it is disabled",
+                    "evidence": [],
+                },
+                {
+                    "severity": "warning",
+                    "category": "presentation",
+                    "message": "The HUD is unreadable because labels overlap",
+                    "evidence": ["Assets/UI.cs"],
+                },
+            ],
+        }
+
+        normalized = _normalize_placeholder_visual_limitation(  # type: ignore[arg-type]
+            report,
+            {"status": "passed"},
+            {"mode": "disabled", "status": "skipped"},
+        )
+
+        self.assertEqual(normalized["status"], "needs_revision")
+        self.assertEqual(normalized["findings"][0]["severity"], "info")
+        self.assertEqual(normalized["findings"][1]["severity"], "warning")
+
+        only_vlm = _normalize_placeholder_visual_limitation(  # type: ignore[arg-type]
+            {**report, "findings": report["findings"][:1]},
+            {"status": "passed"},
+            {"mode": "disabled", "status": "skipped"},
+        )
+        self.assertEqual(only_vlm["status"], "passed")
+
     def test_successful_quality_repair_replaces_final_package_reference(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             manager = ArtifactManager(Path(temporary_directory) / "workspace")

@@ -152,9 +152,14 @@ playtime informational because it has no reliable real-control measurement. Do n
 solely for estimated duration, and do not suggest a minimum-time gate. Judge missing gameplay
 mechanics, broken health/damage rules, unreachable content, and UI bindings separately.
 Do not pass a UI requirement on design claims alone.
-If visual validation was deliberately skipped because the configured image backend produced only
-placeholders, record that only as an info-level limitation. It must not create a warning/error or
-cause needs_revision by itself; evaluate primitive fallback readability separately.
+When `visual_validation_result.ui_readability` is present, inspect its post-asset screenshot
+and issues. Off-screen text, missing backing panels, and insufficient foreground/background
+contrast are material UI defects even if the optional VLM comparison is disabled. A capture
+that is unavailable is only an evidence limitation; do not invent a defect from that alone.
+If visual validation was deliberately disabled or skipped because the configured image backend
+produced only placeholders, record the missing VLM comparison only as an info-level limitation.
+It must not create a warning/error or cause needs_revision by itself. Evaluate actual visual
+defects and primitive fallback readability separately.
 
 HOST_EVIDENCE:
 {json.dumps(evidence, ensure_ascii=False, indent=2)}
@@ -343,7 +348,17 @@ Return only one JSON object with this exact shape:
             for name, payload in evidence.items()
             if name.endswith("validation_result") and isinstance(payload, Mapping)
         }
-        failed = sorted(name for name, status in hard_results.items() if status != "passed")
+        failed = sorted(
+            name
+            for name, status in hard_results.items()
+            if status != "passed"
+            and not (
+                name == "visual_validation_result"
+                and isinstance(evidence[name], Mapping)
+                and evidence[name].get("mode") == "disabled"
+                and status == "skipped"
+            )
+        )
         if failed and report["status"] == "passed":
             raise ValueError(
                 "Game Validator AI cannot pass failed hard validators: " + ", ".join(failed)

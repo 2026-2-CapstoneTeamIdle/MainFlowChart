@@ -45,9 +45,12 @@ countdown. Report estimated total playtime gaps as info-level findings, never as
 failure; a real-control timing trace is needed for a reliable duration judgment. Never recommend
 delaying progression at zone boundaries to meet a timer. Check every HUD region, state
 screen, live value binding, and primary action against runtime source and scene wiring.
-If the image backend deliberately produced placeholders and visual validation is marked skipped,
-record that only as an info-level limitation; do not emit a warning/error or fail solely because
-no real image asset was applied. Judge primitive fallback readability separately. Prefer post-quality
+Inspect `visual_validation_result.ui_readability` and its post-asset screenshot when present.
+Treat off-screen text, missing backing panels, and low contrast as concrete UI defects even if
+the optional VLM comparison is disabled. An unavailable capture is only missing evidence.
+If visual validation was deliberately disabled or skipped because the image backend produced
+placeholders, record the missing VLM comparison only as an info-level limitation; do not fail
+solely for that skip. Judge actual readability and visual defects separately. Prefer post-quality
 Unity validation evidence over the earlier pre-repair run when available.
 
 HOST EVIDENCE:

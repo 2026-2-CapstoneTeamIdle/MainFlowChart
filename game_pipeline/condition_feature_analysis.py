@@ -7,6 +7,7 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from game_pipeline.gemini_feature_generator import (
@@ -16,11 +17,15 @@ from game_pipeline.gemini_feature_generator import (
     StructuredJsonClient,
     resolve_feature_provider_from_environment,
 )
+from game_pipeline.codex_cli.structured_json_client import CodexStructuredJsonClient
 from mainflow.contracts import FeatureRequirement, GameGenre, Viewpoint
 
 DEFAULT_CONDITION_FEATURE_MODEL = "gemma4-12b-it-qat-q4-0"
 MAX_EXPLICIT_FEATURES = 20
 MAX_FEATURES_PER_REQUEST = 6
+CODEX_MAX_EXPLICIT_FEATURES = 60
+CODEX_SEGMENTS_PER_REQUEST = 4
+CODEX_MAX_FEATURES_PER_REQUEST = 12
 
 CONDITION_FEATURE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -93,8 +98,33 @@ class ConditionFeatureAnalyzer:
         accepted: list[FeatureRequirement] = []
         rejected: list[dict[str, str]] = []
         failed_segments: list[dict[str, object]] = []
+        truncated_segments: list[dict[str, object]] = []
         condition_segments = _split_condition(condition)
-        for segment_index, segment in enumerate(condition_segments, start=1):
+        if self.provider == "codex_cli":
+            request_segments = [
+                "\n".join(condition_segments[index : index + CODEX_SEGMENTS_PER_REQUEST])
+                for index in range(0, len(condition_segments), CODEX_SEGMENTS_PER_REQUEST)
+            ]
+            feature_limit = CODEX_MAX_EXPLICIT_FEATURES
+            request_feature_limit = CODEX_MAX_FEATURES_PER_REQUEST
+            schema = {
+                **CONDITION_FEATURE_SCHEMA,
+                "properties": {
+                    "features": {
+                        **CONDITION_FEATURE_SCHEMA["properties"]["features"],
+                        "maxItems": request_feature_limit,
+                    }
+                },
+            }
+        else:
+            request_segments = condition_segments
+            feature_limit = MAX_EXPLICIT_FEATURES
+            request_feature_limit = MAX_FEATURES_PER_REQUEST
+            schema = CONDITION_FEATURE_SCHEMA
+        for segment_index, segment in enumerate(request_segments, start=1):
+            if len(accepted) >= feature_limit:
+                truncated_segments.append({"segment_index": segment_index, "segment": segment})
+                continue
             try:
                 response = self.client.generate_json(
                     self._prompt(
@@ -103,10 +133,11 @@ class ConditionFeatureAnalyzer:
                         condition,
                         segment,
                         segment_index,
-                        len(condition_segments),
+                        len(request_segments),
                         detected_features,
+                        request_feature_limit,
                     ),
-                    CONDITION_FEATURE_SCHEMA,
+                    schema,
                 )
             except (RuntimeError, TypeError, ValueError) as error:
                 failed_segments.append(
@@ -120,8 +151,9 @@ class ConditionFeatureAnalyzer:
             raw_features = response.get("features")
             if not isinstance(raw_features, list):
                 raise TypeError("Condition feature analysis must return a features array")
-            for item in raw_features[:MAX_FEATURES_PER_REQUEST]:
-                if len(accepted) >= MAX_EXPLICIT_FEATURES:
+            for item in raw_features[:request_feature_limit]:
+                if len(accepted) >= feature_limit:
+                    truncated_segments.append({"segment_index": segment_index, "segment": segment})
                     break
                 if not isinstance(item, Mapping):
                     continue
@@ -150,7 +182,11 @@ class ConditionFeatureAnalyzer:
                     }
                 )
 
-        features = [*known_features, *accepted]
+        fallback_segments = [
+            str(item["segment"]) for item in [*failed_segments, *truncated_segments]
+        ]
+        fallback_features = _fallback_custom_features(detected_features, fallback_segments)
+        features = [*known_features, *accepted, *fallback_features]
         if not features:
             raise ValueError("Condition feature analysis produced no usable feature")
         return ConditionFeatureAnalysis(
@@ -161,11 +197,16 @@ class ConditionFeatureAnalyzer:
                 "detected_feature_count": len(detected_features),
                 "explicit_feature_count": len(features),
                 "added_feature_count": len(accepted),
-                "request_count": len(condition_segments),
-                "successful_request_count": len(condition_segments) - len(failed_segments),
+                "request_count": len(request_segments),
+                "successful_request_count": (
+                    len(request_segments) - len(failed_segments) - len(truncated_segments)
+                ),
                 "failed_request_count": len(failed_segments),
                 "failed_segments": failed_segments,
-                "request_segments": condition_segments,
+                "truncated_segment_count": len(truncated_segments),
+                "truncated_segments": truncated_segments,
+                "retained_fallback_feature_count": len(fallback_features),
+                "request_segments": request_segments,
                 "features": [
                     {
                         "feature_id": feature["feature_id"],
@@ -187,6 +228,7 @@ class ConditionFeatureAnalyzer:
         segment_index: int,
         segment_count: int,
         detected_features: list[FeatureRequirement],
+        request_feature_limit: int = MAX_FEATURES_PER_REQUEST,
     ) -> str:
         payload = {
             "genre": genre,
@@ -212,7 +254,7 @@ class ConditionFeatureAnalyzer:
             "source_text, and acceptance_criteria under 160 characters each. Preserve concrete "
             "qualifiers such as all items, patrol, "
             "checkpoint, unlock-on-button, destination, input key, direction count, and resource "
-            f"cost. Return no more than {MAX_FEATURES_PER_REQUEST} atomic features for this "
+            f"cost. Return no more than {request_feature_limit} atomic features for this "
             "segment. Choose generate_code only when the behavior is not represented by a detected "
             "feature; use scene_binding/configure_existing when wiring or data is sufficient. "
             "Return strict JSON only.\n\n"
@@ -254,7 +296,9 @@ def _split_condition(condition: str) -> list[str]:
     return segments
 
 
-def create_condition_feature_analyzer_from_environment() -> ConditionFeatureAnalyzer | None:
+def create_condition_feature_analyzer_from_environment(
+    project_root: Path | None = None,
+) -> ConditionFeatureAnalyzer | None:
     configured = os.environ.get("MAINFLOW_CONDITION_FEATURE_PROVIDER", "").strip().lower()
     if configured in {"off", "none", "disabled", "deterministic"}:
         return None
@@ -265,6 +309,15 @@ def create_condition_feature_analyzer_from_environment() -> ConditionFeatureAnal
     if not configured and not inherited and not os.environ.get("OPENAI_API_KEY", "").strip():
         return None
     provider = configured or inherited or resolve_feature_provider_from_environment()
+    if provider in {"codex", "codex_cli"}:
+        if project_root is None:
+            raise ValueError("Codex Condition analysis requires a project root")
+        return ConditionFeatureAnalyzer(
+            CodexStructuredJsonClient(
+                project_root, "condition_feature_analysis", "LLM_CONDITION_FEATURE_ANALYSIS_MODEL"
+            ),
+            "codex_cli",
+        )
     if provider == "local":
         client = LocalAIJsonClient.from_environment(
             node_name="condition_feature_analysis",
@@ -286,8 +339,39 @@ def create_condition_feature_analyzer_from_environment() -> ConditionFeatureAnal
             provider,
         )
     raise ValueError(
-        "MAINFLOW_CONDITION_FEATURE_PROVIDER must be 'openai', 'local', 'gemini', or 'off'"
+        "MAINFLOW_CONDITION_FEATURE_PROVIDER must be 'codex_cli', 'openai', 'local', 'gemini', or 'off'"
     )
+
+
+def _fallback_custom_features(
+    detected_features: list[FeatureRequirement], segments: list[str]
+) -> list[FeatureRequirement]:
+    """Retain original clauses that the bounded AI pass could not finish."""
+
+    fallback: list[FeatureRequirement] = []
+    for segment in segments:
+        normalized_segment = _normalize(segment)
+        matches = [
+            feature
+            for feature in detected_features
+            if feature["name"] == "사용자 지정 조건"
+            and (
+                _normalize(feature["description"]) in normalized_segment
+                or normalized_segment in _normalize(feature["description"])
+            )
+        ]
+        if matches:
+            fallback.extend(feature for feature in matches if feature not in fallback)
+            continue
+        fallback.append(
+            {
+                "feature_id": f"user-fallback-{len(fallback) + 1:02d}",
+                "name": "사용자 지정 조건",
+                "description": segment,
+                "source_text": segment,
+            }
+        )
+    return fallback
 
 
 def _validate_feature(item: Mapping[str, object], condition: str) -> dict[str, str]:

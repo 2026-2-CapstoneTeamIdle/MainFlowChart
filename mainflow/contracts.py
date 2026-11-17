@@ -717,6 +717,9 @@ class AssetBindingEntry(TypedDict):
     surface_fill_path: NotRequired[str]
     # Stage background only: original plus mirrored copy, repeatable without seams.
     scroll_tile_path: NotRequired[str]
+    # Character animation sheet and state metadata, staged after image validation.
+    animation_sheet_path: NotRequired[str]
+    animation_metadata_path: NotRequired[str]
 
 
 class AssetBindingManifest(TypedDict):
@@ -829,6 +832,7 @@ class VisualValidationResult(TypedDict):
     attempts: list[VisualValidationAttempt]
     target_image: ArtifactReference | None
     summary: str
+    ui_readability: NotRequired[dict[str, object]]
 
 
 # ---------------------------------------------------------------------------
