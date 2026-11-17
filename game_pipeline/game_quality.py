@@ -7,6 +7,7 @@ import re
 
 from mainflow.contracts import GameLogicDesign, GameQualityReport, PlaytestMetrics, QualityMetric
 from game_pipeline.runtime_invariants import REQUIRED_CAUSAL_TRANSITIONS
+from game_pipeline.gameplay_contracts import checkpoint_respawn_requested
 
 _METRICS_MARKER = re.compile(r"UNITY_PLAYTEST_METRICS:(\{.*\})")
 _SCENARIO_MARKER = re.compile(r"UNITY_VALIDATION_SCENARIO_OK:([^\r\n]+)")
@@ -85,6 +86,11 @@ def evaluate_game_quality(
         else 1.0
     )
     expected_transitions = set(REQUIRED_CAUSAL_TRANSITIONS[level["genre"]])
+    if level["genre"] == "Platformer" and checkpoint_respawn_requested(
+        bundle["game_design"]["player_experience"]
+    ):
+        expected_transitions.discard("platformer.fall_to_checkpoint")
+        expected_transitions.add("platformer.death_to_checkpoint")
     passed_transitions = set(telemetry["passed_transitions"])
     transition_ratio = (
         len(expected_transitions & passed_transitions) / len(expected_transitions)

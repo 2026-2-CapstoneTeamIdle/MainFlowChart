@@ -108,11 +108,16 @@ def game_quality_validator_node(
                 from mainflow.nodes.final_validation import final_validation_node
 
                 log("품질 수정본을 최종 검증하고 배포 ZIP을 다시 생성합니다.")
-                refreshed_final_validation = final_validation_node(
+                refreshed_output = final_validation_node(
                     state,
                     artifact_variant="post_quality",
-                )["final_validation_result"]
+                )
+                refreshed_final_validation = refreshed_output["final_validation_result"]
                 evidence["final_validation_result"] = manager.read_json(refreshed_final_validation)
+                if "game_validation_result" in refreshed_output:
+                    evidence["game_validation_result"] = manager.read_json(
+                        refreshed_output["game_validation_result"]
+                    )
                 if evidence["final_validation_result"].get("status") != "passed":
                     report = _hard_failure_report(evidence)
     except Exception as error:  # noqa: BLE001 - preserve a report at the final workflow boundary

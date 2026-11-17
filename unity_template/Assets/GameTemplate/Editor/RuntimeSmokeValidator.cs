@@ -1791,18 +1791,23 @@ namespace TeamIdle.GameTemplate.Editor
                 {
                     MarkCausalTransition("platformer.hazard_to_health");
                     playerHealth.Changed -= OnHazardHealthChanged;
-                    // Contact damage and death recovery are separate requirements. A normal
-                    // hazard may deal only one point, so force the remaining health to zero after
-                    // proving contact damage, then verify checkpoint recovery independently.
-                    if (
-                        playerHealth.IsAlive
-                        && Vector3.Distance(
-                            player.transform.position,
-                            stageController.CurrentCheckpoint
-                        ) > 0.75f
-                    )
+                    // Verify the requested recovery path after proving contact damage.
+                    if (stageController.RespawnOnDeath)
                     {
-                        playerHealth.Damage(playerHealth.Current);
+                        if (
+                            playerHealth.IsAlive
+                            && Vector3.Distance(
+                                player.transform.position,
+                                stageController.CurrentCheckpoint
+                            ) > 0.75f
+                        )
+                        {
+                            playerHealth.Damage(playerHealth.Current);
+                        }
+                    }
+                    else
+                    {
+                        TeleportPlayer(new Vector3(player.transform.position.x, -10f, 0f));
                     }
                     traversalPhase = 14;
                     phaseStartedAt = Time.realtimeSinceStartup;
@@ -1853,7 +1858,11 @@ namespace TeamIdle.GameTemplate.Editor
                     return;
                 }
                 MarkScenarioPassed("checkpoint_recovery");
-                MarkCausalTransition("platformer.death_to_checkpoint");
+                MarkCausalTransition(
+                    stageController.RespawnOnDeath
+                        ? "platformer.death_to_checkpoint"
+                        : "platformer.fall_to_checkpoint"
+                );
                 BeginAutoTraversalTest();
                 return;
             }

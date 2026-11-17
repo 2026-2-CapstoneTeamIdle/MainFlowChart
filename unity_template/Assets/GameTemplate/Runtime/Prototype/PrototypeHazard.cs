@@ -35,15 +35,6 @@ namespace TeamIdle.GameTemplate.Prototype
             }
 
             health.Damage(damage);
-            if (health != null && !health.IsAlive)
-            {
-                var stage = FindFirstObjectByType<PrototypePlatformerStageController>();
-                if (stage != null)
-                {
-                    stage.Respawn();
-                    health.SetMaximum(health.Maximum);
-                }
-            }
         }
     }
 }

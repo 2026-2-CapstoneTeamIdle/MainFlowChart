@@ -1032,6 +1032,7 @@ class FinalValidationAgentInput(TypedDict):
 
 class FinalValidationAgentOutput(TypedDict):
     final_validation_result: ArtifactReference
+    game_validation_result: NotRequired[ArtifactReference]
 
 
 class VisualValidationAgentInput(TypedDict):

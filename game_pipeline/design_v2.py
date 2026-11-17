@@ -81,7 +81,7 @@ def build_design_v2(
     content_plan = _content_plan(game_spec, level_plan, intent)
     balance_plan = _balance_plan(game_spec)
     presentation_plan = _presentation_plan(game_spec, image_ids, sound_ids, intent)
-    validation_plan = _validation_plan(game_spec, level_plan)
+    validation_plan = _validation_plan(game_spec, level_plan, intent)
     return {
         "game_design": game_design,
         "system_design": system_design,
@@ -1467,7 +1467,7 @@ def _survivor_stats() -> list[StatTuning]:
     ]
 
 
-def _validation_plan(game_spec: GameSpec, level_plan: LevelPlan) -> ValidationPlan:
+def _validation_plan(game_spec: GameSpec, level_plan: LevelPlan, intent: str) -> ValidationPlan:
     if level_plan["genre"] == "SurvivorLike":
         return {
             "plan_version": "2.0.0",
@@ -1599,7 +1599,13 @@ def _validation_plan(game_spec: GameSpec, level_plan: LevelPlan) -> ValidationPl
         {
             "scenario_id": "checkpoint_recovery",
             "title": "체크포인트 복구",
-            "steps": ["activate checkpoint", "touch hazard", "respawn"],
+            "steps": [
+                "activate checkpoint",
+                "take lethal damage"
+                if checkpoint_respawn_requested(intent)
+                else "fall below stage",
+                "respawn",
+            ],
             "assertions": ["respawn at latest checkpoint", "player control restored"],
         },
         {

@@ -16,6 +16,7 @@ from game_pipeline.feature_evidence_audit import audit_feature_evidence
 from game_pipeline.feature_planner import plan_feature_mechanics
 from game_pipeline.game_quality import parse_playtest_metrics
 from game_pipeline.runtime_invariants import REQUIRED_CAUSAL_TRANSITIONS
+from game_pipeline.gameplay_contracts import checkpoint_respawn_requested
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -47,6 +48,7 @@ def final_validation_node(
     issues: list[ValidationIssue] = []
     evidence: list[ArtifactReference] = []
     package: ArtifactReference | None = None
+    reconciled_game_validation_reference: ArtifactReference | None = None
 
     def check(criterion_id: str, passed: bool, message: str, *, required: bool = True) -> None:
         checks.append({"criterion_id": criterion_id, "passed": bool(passed), "message": message})
@@ -272,6 +274,7 @@ def final_validation_node(
                 )
             )
             if reconciled_game_validation:
+                original_game_validation = payloads["game_validation_result"]
                 evidence.append(
                     manager.write_json(
                         state["project_id"],
@@ -283,13 +286,34 @@ def final_validation_node(
                                 "earlier runtime-only game validation failure."
                             ),
                             "final_repair_applied": final_repair_applied,
-                            "upstream_status": payloads["game_validation_result"]["status"],
+                            "upstream_status": original_game_validation["status"],
                             "post_repair_unity_status": outcome.status,
                             "post_repair_checks": outcome.checks,
                         },
                         producer="final_validation",
                     )
                 )
+                evidence.append(state["game_validation_result"])
+                reconciled_game_validation_reference = manager.write_json(
+                    state["project_id"],
+                    "validation",
+                    f"game_validation_effective{artifact_suffix}.json",
+                    {
+                        **original_game_validation,
+                        "status": "passed",
+                        "checks": [
+                            item for item in original_game_validation["checks"] if item["passed"]
+                        ]
+                        + outcome.checks,
+                        "issues": [
+                            item
+                            for item in original_game_validation["issues"]
+                            if item["severity"] != "error"
+                        ],
+                    },
+                    producer="final_validation",
+                )
+                evidence.append(reconciled_game_validation_reference)
             check(
                 "final.unity_validation",
                 outcome.status == "passed",
@@ -369,6 +393,11 @@ def final_validation_node(
             expected_transitions = set(
                 REQUIRED_CAUSAL_TRANSITIONS.get(genre_profile, ()) if genre_profile else ()
             )
+            if genre_profile == "Platformer" and checkpoint_respawn_requested(
+                payloads["parsed_request"].get("condition", "")
+            ):
+                expected_transitions.discard("platformer.fall_to_checkpoint")
+                expected_transitions.add("platformer.death_to_checkpoint")
             check(
                 "final.causal_gameplay",
                 expected_transitions <= passed_transitions,
@@ -540,7 +569,7 @@ def final_validation_node(
         "evidence": evidence,
         "entry_artifact": package,
     }
-    return {
+    output: FinalValidationAgentOutput = {
         "final_validation_result": manager.write_json(
             state["project_id"],
             "validation",
@@ -549,6 +578,9 @@ def final_validation_node(
             producer="final_validation",
         )
     }
+    if result["status"] == "passed" and reconciled_game_validation_reference is not None:
+        output["game_validation_result"] = reconciled_game_validation_reference
+    return output
 
 
 _RECONCILABLE_GAME_VALIDATION_CODES = frozenset(

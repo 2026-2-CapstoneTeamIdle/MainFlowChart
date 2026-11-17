@@ -70,6 +70,7 @@ namespace TeamIdle.GameTemplate.Common
             {
                 foreach (var renderer in root.GetComponentsInChildren<SpriteRenderer>(true))
                 {
+                    SpriteBinding selected = null;
                     foreach (var binding in bindings)
                     {
                         if (
@@ -79,29 +80,54 @@ namespace TeamIdle.GameTemplate.Common
                         {
                             continue;
                         }
-
-                        if (binding.animationController != null)
+                        if (
+                            selected == null
+                            || binding.objectPrefix.Length > selected.objectPrefix.Length
+                        )
                         {
-                            var animator = renderer.GetComponent<Animator>();
-                            if (animator == null)
-                            {
-                                animator = renderer.gameObject.AddComponent<Animator>();
-                            }
-                            if (animator.runtimeAnimatorController != binding.animationController)
-                            {
-                                animator.runtimeAnimatorController = binding.animationController;
-                            }
-                            if (renderer.GetComponent<GeneratedSpriteAnimationDriver>() == null)
-                            {
+                            selected = binding;
+                        }
+                    }
+
+                    if (selected == null)
+                    {
+                        continue;
+                    }
+
+                    var driver = renderer.GetComponent<GeneratedSpriteAnimationDriver>();
+                    var animator = renderer.GetComponent<Animator>();
+                    if (selected.animationController != null)
+                    {
+                        if (animator == null)
+                        {
+                            animator = renderer.gameObject.AddComponent<Animator>();
+                        }
+                        if (animator.runtimeAnimatorController != selected.animationController)
+                        {
+                            animator.runtimeAnimatorController = selected.animationController;
+                        }
+                        if (driver == null)
+                        {
+                            driver =
                                 renderer.gameObject.AddComponent<GeneratedSpriteAnimationDriver>();
+                        }
+                        driver.enabled = true;
+                    }
+                    else
+                    {
+                        if (driver != null)
+                        {
+                            driver.enabled = false;
+                            if (animator != null)
+                            {
+                                animator.runtimeAnimatorController = null;
                             }
                         }
-                        else if (renderer.sprite != binding.sprite)
+                        if (renderer.sprite != selected.sprite)
                         {
-                            renderer.sprite = binding.sprite;
+                            renderer.sprite = selected.sprite;
                             renderer.color = Color.white;
                         }
-                        break;
                     }
                 }
             }

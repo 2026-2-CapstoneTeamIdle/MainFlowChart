@@ -37,5 +37,30 @@ namespace TeamIdle.GameTemplate.VisualTests
             Object.Destroy(sprite);
             Object.Destroy(texture);
         }
+
+        [UnityTest]
+        public IEnumerator PrefersTheMostSpecificEnemyPrefix()
+        {
+            var host = new GameObject("RuntimeSpriteBindingHost");
+            var binder = host.AddComponent<GeneratedRuntimeSpriteBinder>();
+            var texture = new Texture2D(4, 2);
+            var generic = Sprite.Create(texture, new Rect(0f, 0f, 2f, 2f), Vector2.zero);
+            var fast = Sprite.Create(texture, new Rect(2f, 0f, 2f, 2f), Vector2.zero);
+            binder.Register("enemy_sprite", "Enemy_", generic);
+            binder.Register("enemy_fast_sprite", "Enemy_Fast_", fast);
+
+            var enemy = new GameObject("Enemy_Fast_1");
+            var art = new GameObject("Art");
+            art.transform.SetParent(enemy.transform);
+            var renderer = art.AddComponent<SpriteRenderer>();
+            yield return null;
+
+            Assert.That(renderer.sprite, Is.EqualTo(fast));
+            Object.Destroy(enemy);
+            Object.Destroy(host);
+            Object.Destroy(generic);
+            Object.Destroy(fast);
+            Object.Destroy(texture);
+        }
     }
 }

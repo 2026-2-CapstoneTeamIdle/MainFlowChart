@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from game_pipeline.unity_project_validator import UnityValidationOutcome
+from game_pipeline.game_quality_validator_ai import GameQualityValidatorAI
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import CONTRACT_VERSION
 from mainflow.nodes.final_validation import final_validation_node
@@ -147,7 +148,7 @@ class FinalValidationTest(unittest.TestCase):
                 '"passed_transitions":['
                 '"platformer.collectible_to_progress",'
                 '"platformer.hazard_to_health",'
-                '"platformer.death_to_checkpoint",'
+                '"platformer.fall_to_checkpoint",'
                 '"platformer.requirements_to_clear"]}'
             ),
         )
@@ -443,7 +444,7 @@ class FinalValidationTest(unittest.TestCase):
         self.outcome.unity_log = (
             'UNITY_PLAYTEST_METRICS:{"completed":true,"passed_scenarios":["feature_binding"],'
             '"passed_transitions":["platformer.collectible_to_progress",'
-            '"platformer.hazard_to_health","platformer.death_to_checkpoint",'
+            '"platformer.hazard_to_health","platformer.fall_to_checkpoint",'
             '"platformer.requirements_to_clear"]}'
         )
         self.assertEqual(self.run_final()["status"], "failed")
@@ -469,6 +470,53 @@ class FinalValidationTest(unittest.TestCase):
         payload["status"] = "needs_revision"
         self.put("sound_validation_result", payload)
         self.assertEqual(self.run_final()["status"], "failed")
+
+    def test_reconciled_game_validation_reaches_quality_gate(self):
+        self.put(
+            "game_validation_result",
+            {
+                "status": "failed",
+                "checks": [
+                    {
+                        "criterion_id": "unity.runtime_smoke",
+                        "passed": False,
+                        "message": "earlier runtime failure",
+                    }
+                ],
+                "issues": [
+                    {
+                        "code": "UNITY_RUNTIME_TEST_FAILED",
+                        "severity": "error",
+                        "message": "earlier runtime failure",
+                    }
+                ],
+            },
+        )
+        original_reference = self.state["game_validation_result"]
+
+        def validate(*args):
+            self.write_project(
+                "Assets/GameTemplate/Generated/AssetBindingReport.json",
+                json.dumps(self.report).encode(),
+            )
+            return self.outcome
+
+        with (
+            patch("mainflow.nodes.final_validation.ArtifactManager", return_value=self.manager),
+            patch("mainflow.nodes.final_validation.UnityProjectValidator") as validator,
+        ):
+            validator.return_value.validate.side_effect = validate
+            output = final_validation_node(self.state)
+
+        final_result = self.manager.read_json(output["final_validation_result"])
+        effective = self.manager.read_json(output["game_validation_result"])
+        self.assertEqual(final_result["status"], "passed")
+        self.assertEqual(self.manager.read_json(original_reference)["status"], "failed")
+        self.assertEqual(effective["status"], "passed")
+        self.assertFalse(any(not item["passed"] for item in effective["checks"]))
+        GameQualityValidatorAI._enforce_hard_evidence(  # type: ignore[arg-type]
+            {"status": "passed"}, {"game_validation_result": effective}
+        )
 
     def test_corrupt_input_returns_failure_artifact(self):
         self.state["logic_analysis"]["sha256"] = "0" * 64

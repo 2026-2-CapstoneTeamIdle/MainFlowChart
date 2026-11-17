@@ -435,6 +435,9 @@ namespace TeamIdle.GameTemplate.Editor
             var stageController =
                 context.Ui.gameObject.AddComponent<PrototypePlatformerStageController>();
             stageController.Bind(player.transform);
+            stageController.ConfigureDeathRecovery(
+                !context.Presentation.ui_screens.Contains("failure")
+            );
             var cameraFollow = context.Camera.gameObject.AddComponent<PrototypeCameraFollow>();
             cameraFollow.Bind(player.transform);
             var groundCheck = new GameObject("GroundCheck").transform;
