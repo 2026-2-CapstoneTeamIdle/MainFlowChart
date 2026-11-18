@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from service import (
+    FeatureRejectRequest,
     GenerationRequest,
     LocalWebSettingsStore,
     ModelSettingsUpdate,
@@ -25,7 +26,7 @@ codex_auth_manager = CodexAuthManager()
 app = FastAPI(
     title="MainFlowChart Local Web",
     description="Local-only web shell for the MainFlowChart workflow.",
-    version="1.4.0",
+    version="1.5.0",
 )
 app.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
 
@@ -143,11 +144,11 @@ def confirm_job(job_id: str) -> dict[str, object]:
 
 
 @app.post("/api/jobs/{job_id}/reject", status_code=202)
-def reject_job(job_id: str) -> dict[str, object]:
-    """Discard the preview and rerun Condition-to-Feature analysis."""
+def reject_job(job_id: str, request: FeatureRejectRequest) -> dict[str, object]:
+    """Rerun Condition-to-Feature analysis with one user revision instruction."""
 
     try:
-        return job_manager.reject(job_id).snapshot()
+        return job_manager.reject(job_id, request.feedback).snapshot()
     except KeyError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:

@@ -208,19 +208,46 @@
       <section id="feature-panel" class="panel is-hidden" aria-labelledby="feature-heading">
         <div class="panel-heading">
           <div>
-            <p class="section-label">APPROVAL GATE</p>
+            <p id="feature-section-label" class="section-label">APPROVAL GATE</p>
             <h2 id="feature-heading">조합 예정 Feature</h2>
           </div>
-          <span id="feature-count" class="phase-badge">0개</span>
+          <div class="feature-heading-state">
+            <span id="feature-workflow-state" class="phase-badge">승인 전</span>
+            <span id="feature-count" class="phase-badge">0개</span>
+          </div>
         </div>
-        <p class="section-help">
+        <p id="feature-help" class="section-help">
           사용자 Condition, 요청 의존 기능, 장르 필수 기능을 확인하세요. Confirm하면 표시된
-          목록을 고정해 다음 단계로 진행하며, Reject하면 분석을 다시 수행합니다.
+          목록을 고정해 다음 단계로 진행합니다. Reject할 때 입력한 한마디는 다음 Feature
+          분석의 추가 조건으로 사용됩니다.
         </p>
         <div id="feature-list" class="feature-list"></div>
-        <div class="action-row">
-          <button id="confirm-button" class="primary-button" type="button">Confirm · 계속 생성</button>
-          <button id="reject-button" class="danger-button" type="button">Reject · 다시 분석</button>
+        <div id="game-assembly" class="game-assembly is-hidden" aria-live="polite">
+          <div class="game-assembly__core" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </div>
+          <div class="game-assembly__copy">
+            <p class="section-label">GAME ASSEMBLY</p>
+            <h3 id="game-assembly-title">검증된 Feature를 게임으로 조립합니다</h3>
+            <p id="game-assembly-status">게임 구성 준비</p>
+          </div>
+          <ol id="game-assembly-steps" class="game-assembly__steps">
+            <li data-stage="compose">게임 결합</li>
+            <li data-stage="assets">에셋 구성</li>
+            <li data-stage="finalize">최종 검증</li>
+            <li data-stage="preview">Preview</li>
+          </ol>
+        </div>
+        <div id="feature-decision-area" class="feature-decision">
+          <label class="wide-field" for="reject-feedback">
+            Reject 재분석 요청 한마디
+            <input id="reject-feedback" type="text" maxlength="300" placeholder="예: 공격 기능은 빼고 수집과 탐험 기능을 더 추가해줘" />
+          </label>
+          <p class="feature-decision__help">Reject를 누르면 이 내용을 원본 Condition과 함께 다음 Feature 분석에 반영합니다.</p>
+          <div class="action-row">
+            <button id="confirm-button" class="primary-button" type="button">Confirm · 계속 생성</button>
+            <button id="reject-button" class="danger-button" type="button">Reject · 피드백 반영</button>
+          </div>
         </div>
       </section>
 

@@ -240,6 +240,28 @@ AI 토큰 및 구조화 출력 경계에서 발생한 오류는 `validation/erro
 `날짜|시점|이유|상세` 계약으로 누적한다. 재시도로 정상 결과를 얻은 경우에도 원래 실패 행을
 삭제하지 않고 `*_RECOVERED` 행을 추가하여 발생과 복구를 함께 추적한다.
 
+### LocalWeb Feature 승인·진행 표시 계약
+
+LocalWeb의 Reject 요청은 `POST /api/jobs/{job_id}/reject`에 다음 JSON을 전달한다.
+
+```json
+{
+  "feedback": "공격은 빼고 탐험 기능을 추가해줘"
+}
+```
+
+- `feedback`은 공백 정리 후 1~300자의 한 줄 문자열이어야 한다.
+- 피드백은 원본 `condition`을 덮어쓰지 않고 Feature Preview 재분석 요청에 누적한다.
+- 승인된 `logic_analysis.json`은 재분석 결과를 그대로 사용하므로 다음 생성 단계가 화면에
+  표시된 Feature와 동일한 목록을 받는다.
+
+Job 조회 응답은 기존 `features`와 함께 `feature_cards`를 반환한다. 각 카드는
+`feature_id`, 설명과 출처, `status`, `activity`, `checklist_status`, `checklist_count`,
+`checklist`, `validation_attempt`을 포함한다. `status`는 `pending | working | retrying |
+passed | failed` 중 하나다. 동적 Checklist가 생성되면 각 항목은 `criterion_id`, 제목,
+분류, 준비, 동작, 기대 결과, 증거, 검증 상태와 메시지를 포함한다. 최상위
+`feature_validation_complete`는 모든 Feature 카드가 `passed`일 때만 `true`다.
+
 ### `final_validation` 판정
 
 최종 단계는 `pending` 대신 `passed` 또는 `failed`를 기록한다. 게임·이미지·사운드의 선행 검증,

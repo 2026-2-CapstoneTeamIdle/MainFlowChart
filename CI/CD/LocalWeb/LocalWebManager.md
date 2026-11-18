@@ -1,6 +1,6 @@
 # Local Web Manager
 
-버전: **1.4.0**
+버전: **1.5.0**
 
 `CI/CD/LocalWeb`은 MainFlowChart를 `http://127.0.0.1:8000`에서 설정하고 실행하는 로컬
 전용 웹 서비스다. 메인 LangGraph의 Edge는 바꾸지 않으며, 웹 계층이 Feature 승인 단계를
@@ -20,8 +20,11 @@
   (Procedural/ElevenLabs) 선택
 - 전체 **Generate**와 에셋 제외 **test-Generate**
 - Condition → Feature 분석 결과 확인
-- Confirm 시 표시된 Feature를 고정하여 생성 계속
-- Reject 시 Condition → Feature 분석 재실행
+- Confirm 시 표시된 Feature를 고정하고 카드 기반 작업 화면으로 생성 계속
+- Reject 시 사용자가 입력한 한마디를 누적 반영해 Condition → Feature 분석 재실행
+- Feature별 현재 작업, 30항목 Checklist, Unity 검증 결과와 재시도 횟수 표시
+- Checklist 성공/실패 카드 색상과 재검증 회전 표시
+- Feature 검증 완료 후 카드 결합 애니메이션과 간단한 게임 조립 단계 표시
 - 분석, 생성, 컴파일, 기능 검증, 시각 검증의 진행 로그 표시
 - 개발 로그 버튼 복사 및 로그 포커스 상태의 `Ctrl+C` 전체 복사
 - 종료 시 `프로젝트 ID / 실패 단계 / 실패 Feature / 오류 요약`만 화면에 표시하고 전체
@@ -273,11 +276,17 @@ WebGL Preview가 Docker 안에서 실행된다.
    - `사용자 요청`: Condition에서 직접 추출
    - `요청 의존`: 요청 기능이 동작하기 위한 선행 기능
    - `장르 필수`: 선택한 장르의 기본 플레이에 필요한 기능
-11. 목록이 맞으면 Confirm, 다시 분석하려면 Reject를 누른다.
-12. 완료 또는 실패까지 하단 로그를 확인한다.
-13. 생성 성공 후 WebGL 빌드가 끝나면 `Preview 플레이`를 눌러 새 탭에서 게임을 실행한다.
+11. 목록이 맞으면 Confirm을 누른다. 수정하려면 `Reject 재분석 요청 한마디`에 변경 방향을
+    입력하고 Reject를 누른다. 입력한 요청은 원본 Condition을 바꾸지 않고 다음 Feature
+    분석에 추가 조건으로 누적 적용된다.
+12. Confirm 후에도 Feature 카드는 유지된다. 카드를 누르면 Feature별 30개 Checklist와
+    Unity Test 결과를 펼쳐볼 수 있다. 작업 중·재시도·성공·실패 상태는 카드의 문구와 색으로
+    표시된다.
+13. 모든 Feature 검증이 끝나면 카드가 중앙으로 합쳐지고 같은 위치에 게임 결합, 에셋 구성,
+    최종 검증, Preview 단계를 간단히 표시한다. 상세 내용은 하단 개발 로그에서 확인한다.
+14. 생성 성공 후 WebGL 빌드가 끝나면 `Preview 플레이`를 눌러 새 탭에서 게임을 실행한다.
     빌드가 실패하거나 중단되면 같은 버튼으로 다시 빌드할 수 있다.
-14. 게임 검증이 실패했더라도 프로젝트 ID와 Unity 프로젝트가 남아 있으면
+15. 게임 검증이 실패했더라도 프로젝트 ID와 Unity 프로젝트가 남아 있으면
     `Preview 다시 빌드`를 눌러 현재 실패 상태의 게임을 직접 확인할 수 있다. 이 Preview는
     디버깅 편의 기능이며 실패한 검증 결과를 성공으로 바꾸지는 않는다.
 
@@ -299,6 +308,8 @@ workspace/
 │  ├─ secrets.env
 │  └─ jobs/{job_id}/
 │     ├─ request.json
+│     ├─ feature_revision_feedback.json  # Reject 피드백 누적 기록
+│     ├─ feature_request_{revision}.json # 피드백을 합친 재분석 전용 요청
 │     ├─ feature_preview.json
 │     ├─ workflow_result.json
 │     └─ workflow.log
@@ -311,7 +322,8 @@ workspace/
       └─ webgl_preview_build.json
 ```
 
-Reject할 때마다 분석 근거를 보존하기 위해 새로운 Preview 프로젝트가 생긴다. Confirm 이후
+Reject할 때마다 피드백 기록과 분석 근거를 보존하기 위해 새로운 Preview 프로젝트가 생긴다.
+`request.json`의 원본 Condition은 변경하지 않고 재분석 전용 요청 파일만 새로 만든다. Confirm 이후
 실제 생성 프로젝트는 승인된 Preview의 Feature 목록을 검증해서 복사하므로 두 번째 분석에서
 목록이 임의로 바뀌지 않는다.
 
@@ -332,7 +344,7 @@ Reject할 때마다 분석 근거를 보존하기 위해 새로운 Preview 프�
 | POST | `/api/jobs` | Feature 분석 작업 시작 |
 | GET | `/api/jobs/{job_id}` | 상태, Feature, 로그 조회 |
 | POST | `/api/jobs/{job_id}/confirm` | 승인된 Feature로 생성 계속 |
-| POST | `/api/jobs/{job_id}/reject` | Feature 분석 재실행 |
+| POST | `/api/jobs/{job_id}/reject` | `{ "feedback": "..." }`을 반영해 Feature 분석 재실행 |
 | POST | `/api/jobs/{job_id}/build-webgl` | 완료된 프로젝트의 Preview 빌드/재시도 |
 | GET | `/preview/{project_id}/` | 빌드된 WebGL 게임 실행 |
 

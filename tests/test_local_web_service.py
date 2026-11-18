@@ -125,6 +125,20 @@ def test_web_ui_formats_fastapi_validation_errors() -> None:
     assert "new Error(formatApiError(payload, response.status))" in script
 
 
+def test_web_ui_keeps_feature_cards_and_exposes_reject_feedback() -> None:
+    html = (LOCAL_WEB_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    script = (LOCAL_WEB_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="reject-feedback"' in html
+    assert 'id="game-assembly"' in html
+    assert "renderFeatureWorkspace(job)" in script
+    assert "feature_validation_complete" in script
+    assert "beginFeatureMerge(job)" in script
+    assert "JSON.stringify({ feedback })" in script
+    assert "feature-card--${escapeHtml(status)}" in script
+    assert "renderChecklistCriterion" in script
+
+
 @pytest.mark.parametrize(
     ("mode", "expected_flag"),
     [("generate", "--skip-visual-validation"), ("test-generate", "--game-test")],
@@ -316,6 +330,163 @@ def test_generation_request_rejects_explicit_conflicting_genre():
             viewpoint="사이드뷰",
             condition="붕괴하는 탑을 탈출하는 액션 플랫포머 게임",
         )
+
+
+def test_feature_reject_request_normalizes_one_line_feedback():
+    service = _load_service_module()
+
+    request = service.FeatureRejectRequest(feedback="  공격은 빼고\n탐험을 추가해줘  ")
+
+    assert request.feedback == "공격은 빼고 탐험을 추가해줘"
+
+
+def test_reject_keeps_cards_and_applies_feedback_to_preview_request(tmp_path: Path):
+    service = _load_service_module()
+    job_root = tmp_path / "job"
+    job_root.mkdir()
+    request_file = job_root / "request.json"
+    request_file.write_text(
+        json.dumps(_request_payload(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    features = [
+        {
+            "feature_id": "jump",
+            "name": "점프",
+            "description": "플레이어가 발판을 건넌다.",
+            "origin": "user",
+        }
+    ]
+    job = service.WorkflowJob(
+        job_id="job-id",
+        mode="generate",
+        request_file=request_file,
+        job_root=job_root,
+        status="awaiting_confirmation",
+        stage="feature_confirmation",
+        features=features,
+    )
+    manager = object.__new__(service.WorkflowJobManager)
+    manager.jobs = {job.job_id: job}
+    manager.lock = service.threading.RLock()
+
+    with patch.object(manager, "_start_preview") as start_preview:
+        result = manager.reject(job.job_id, "공격은 빼고 탐험 기능을 추가해줘")
+
+    start_preview.assert_called_once_with(job)
+    assert result.features == features
+    assert result.status == "analyzing_features"
+    assert result.feature_revision == 1
+    assert result.feature_revision_feedback == ["공격은 빼고 탐험 기능을 추가해줘"]
+    preview_request = manager._feature_preview_request(job)
+    payload = json.loads(preview_request.read_text(encoding="utf-8"))
+    assert _request_payload()["condition"] in payload["condition"]
+    assert "Feature 재구성 요청: 공격은 빼고 탐험 기능을 추가해줘" in payload["condition"]
+    feedback_record = json.loads(
+        (job_root / "feature_revision_feedback.json").read_text(encoding="utf-8")
+    )
+    assert feedback_record["revision"] == 1
+
+
+def test_feature_dashboard_reads_checklists_and_validation_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    service = _load_service_module()
+    workspace = tmp_path / "workspace"
+    project_id = "20261118_01"
+    checklist_root = workspace / project_id / "validation" / "feature_checklists"
+    generated = checklist_root / "generated"
+    checked = checklist_root / "checked"
+    generated.mkdir(parents=True)
+    checked.mkdir(parents=True)
+    criteria = [
+        {
+            "criterion_id": "DFC001_01",
+            "feature_ids": ["jump"],
+            "title": "점프 입력",
+            "category": "interaction",
+            "setup": "플레이어를 바닥에 둔다.",
+            "action": "점프 키를 누른다.",
+            "expected": "플레이어가 상승한다.",
+            "evidence": "플레이어 Y 좌표",
+        },
+        {
+            "criterion_id": "DFC001_02",
+            "feature_ids": ["jump"],
+            "title": "착지 복귀",
+            "category": "recovery",
+            "setup": "플레이어를 공중에 둔다.",
+            "action": "시간을 진행한다.",
+            "expected": "바닥에 착지한다.",
+            "evidence": "접지 상태",
+        },
+    ]
+    (generated / "checklist.json").write_text(
+        json.dumps(
+            {
+                "feature_checklists": [
+                    {
+                        "feature_id": "jump",
+                        "feature_name": "점프",
+                        "criteria": criteria,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (checked / "results.json").write_text(
+        json.dumps(
+            {
+                "attempts": [
+                    {
+                        "attempt": 0,
+                        "results": [
+                            {
+                                "feature_id": criterion["criterion_id"],
+                                "feature_name": criterion["title"],
+                                "status": "passed",
+                                "message": "Passed",
+                            }
+                            for criterion in criteria
+                        ],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(service, "WORKSPACE_ROOT", workspace.resolve())
+    job_root = tmp_path / "job-dashboard"
+    job_root.mkdir()
+    job = service.WorkflowJob(
+        job_id="dashboard-job",
+        mode="generate",
+        request_file=job_root / "request.json",
+        job_root=job_root,
+        status="running",
+        stage="workflow",
+        project_id=project_id,
+        features=[
+            {
+                "feature_id": "jump",
+                "name": "점프",
+                "description": "플레이어가 점프한다.",
+                "origin": "user",
+            }
+        ],
+    )
+
+    snapshot = job.snapshot()
+
+    assert snapshot["feature_validation_complete"] is True
+    card = snapshot["feature_cards"][0]
+    assert card["status"] == "passed"
+    assert card["checklist_status"] == "passed"
+    assert card["checklist_count"] == 2
+    assert card["checklist"][0]["status"] == "passed"
 
 
 def test_recovers_project_id_from_failed_workflow_report(

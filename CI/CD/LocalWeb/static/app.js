@@ -10,6 +10,15 @@ const modelSettingsToggle = document.querySelector("#model-settings-toggle");
 const featurePanel = document.querySelector("#feature-panel");
 const featureList = document.querySelector("#feature-list");
 const featureCount = document.querySelector("#feature-count");
+const featureHeading = document.querySelector("#feature-heading");
+const featureSectionLabel = document.querySelector("#feature-section-label");
+const featureHelp = document.querySelector("#feature-help");
+const featureWorkflowState = document.querySelector("#feature-workflow-state");
+const featureDecisionArea = document.querySelector("#feature-decision-area");
+const rejectFeedback = document.querySelector("#reject-feedback");
+const gameAssembly = document.querySelector("#game-assembly");
+const gameAssemblyStatus = document.querySelector("#game-assembly-status");
+const gameAssemblySteps = document.querySelector("#game-assembly-steps");
 const workflowLog = document.querySelector("#workflow-log");
 const phaseBadge = document.querySelector("#phase-badge");
 const jobState = document.querySelector("#job-state");
@@ -85,6 +94,9 @@ let notifiedMilestones = new Set();
 let toastTimer = null;
 let codexAuthPollTimer = null;
 let codexAuthenticated = false;
+let expandedFeatureIds = new Set();
+let featureViewMode = "cards";
+let featureMergeTimer = null;
 
 function showToast(message, error = false) {
   window.clearTimeout(toastTimer);
@@ -564,6 +576,10 @@ async function startJob(mode) {
     const job = await api("/api/jobs", { method: "POST", body: JSON.stringify(payload) });
     currentJobId = job.job_id;
     notifiedMilestones = new Set();
+    expandedFeatureIds = new Set();
+    featureViewMode = "cards";
+    window.clearTimeout(featureMergeTimer);
+    rejectFeedback.value = "";
     featurePanel.classList.add("is-hidden");
     phaseBadge.textContent = "Feature 분석 중";
     workflowLog.textContent = "";
@@ -611,10 +627,10 @@ function renderJob(job) {
   workflowLog.textContent = job.logs.length ? job.logs.join("\n") : "프로세스를 시작하는 중입니다...";
   workflowLog.scrollTop = workflowLog.scrollHeight;
   renderProgress(job);
-  if (job.status === "awaiting_confirmation") {
-    renderFeatures(job.features);
+  if (job.features?.length) {
+    renderFeatureWorkspace(job);
     featurePanel.classList.remove("is-hidden");
-    notifyJobMilestone(job, "feature");
+    if (job.status === "awaiting_confirmation") notifyJobMilestone(job, "feature");
   } else {
     featurePanel.classList.add("is-hidden");
   }
@@ -628,6 +644,7 @@ function renderJob(job) {
   stopButton.disabled = job.status === "cancelling";
   document.querySelector("#confirm-button").disabled = job.status !== "awaiting_confirmation";
   document.querySelector("#reject-button").disabled = job.status !== "awaiting_confirmation";
+  rejectFeedback.disabled = job.status !== "awaiting_confirmation";
   const canOpenUnity = ["completed", "failed"].includes(job.status) && Boolean(job.project_id) && !previewBuilding;
   openUnityButton.classList.toggle("is-hidden", !canOpenUnity);
   openUnityButton.disabled = !canOpenUnity;
@@ -739,27 +756,227 @@ async function openOrBuildPreview() {
   }
 }
 
+function renderFeatureWorkspace(job) {
+  const cards = job.feature_cards?.length ? job.feature_cards : job.features;
+  const awaiting = job.status === "awaiting_confirmation";
+  featureCount.textContent = `${cards.length}개`;
+  featureDecisionArea.classList.toggle("is-hidden", !awaiting);
+  featureHeading.textContent = awaiting ? "조합 예정 Feature" : "Feature 개발 현황";
+  featureSectionLabel.textContent = awaiting ? "APPROVAL GATE" : "FEATURE WORKSPACE";
+  featureHelp.textContent = awaiting
+    ? "목록을 승인하거나, 수정할 내용을 한마디로 입력한 뒤 Reject해 다시 분석하세요."
+    : "각 카드를 눌러 생성된 Checklist와 Unity 검증 결과를 확인할 수 있습니다.";
+
+  let workflowLabel = "Feature 작업 중";
+  let workflowClass = "phase-badge";
+  if (awaiting) workflowLabel = "승인 대기";
+  else if (job.status === "analyzing_features") workflowLabel = "피드백 반영 중";
+  else if (job.feature_validation_complete) {
+    workflowLabel = "기능 검증 완료";
+    workflowClass += " phase-badge--ready";
+  } else if (job.status === "failed") {
+    workflowLabel = "기능 검증 실패";
+    workflowClass += " phase-badge--error";
+  }
+  featureWorkflowState.textContent = workflowLabel;
+  featureWorkflowState.className = workflowClass;
+
+  const shouldAssemble = job.feature_validation_complete
+    && !["analyzing_features", "awaiting_confirmation"].includes(job.status);
+  if (!shouldAssemble) {
+    featureViewMode = "cards";
+    window.clearTimeout(featureMergeTimer);
+    featureList.classList.remove("is-hidden", "feature-list--merging");
+    gameAssembly.classList.add("is-hidden");
+    renderFeatures(cards);
+    return;
+  }
+  if (featureViewMode === "cards") {
+    renderFeatures(cards);
+    beginFeatureMerge(job);
+    return;
+  }
+  if (featureViewMode === "assembly") {
+    featureList.classList.add("is-hidden");
+    gameAssembly.classList.remove("is-hidden");
+    renderGameAssembly(job);
+  }
+}
+
 function renderFeatures(features) {
-  featureCount.textContent = `${features.length}개`;
   featureList.replaceChildren();
-  features.forEach((feature) => {
+  features.forEach((feature, index) => {
+    const featureId = String(feature.feature_id || "feature");
+    const status = feature.status || "pending";
+    const expanded = expandedFeatureIds.has(featureId);
+    const checklist = Array.isArray(feature.checklist) ? feature.checklist : [];
+    const checklistItems = checklist.length
+      ? checklist.map((criterion) => renderChecklistCriterion(criterion)).join("")
+      : `<p class="feature-checklist__empty">${checklistEmptyLabel(feature.checklist_status)}</p>`;
     const item = document.createElement("article");
-    item.className = "feature-card";
+    item.className = `feature-card feature-card--${escapeHtml(status)}`;
+    item.dataset.featureId = featureId;
+    item.style.setProperty("--card-index", String(index));
+    item.tabIndex = 0;
+    item.setAttribute("role", "button");
+    item.setAttribute("aria-expanded", String(expanded));
     item.innerHTML = `
-      <div><span class="origin origin--${escapeHtml(feature.origin)}">${originLabel(feature.origin)}</span><code>${escapeHtml(feature.feature_id)}</code></div>
-      <h3>${escapeHtml(feature.name)}</h3><p>${escapeHtml(feature.description)}</p>
-      ${feature.rationale ? `<small>${escapeHtml(feature.rationale)}</small>` : ""}`;
+      <div class="feature-card__top">
+        <span class="origin origin--${escapeHtml(feature.origin)}">${originLabel(feature.origin)}</span>
+        <code>${escapeHtml(featureId)}</code>
+      </div>
+      <div class="feature-card__status">
+        <span class="feature-status-dot${["working", "retrying"].includes(status) ? " feature-status-dot--spinning" : ""}" aria-hidden="true"></span>
+        <strong>${featureStatusLabel(status)}</strong>
+        ${feature.validation_attempt ? `<small>${escapeHtml(feature.validation_attempt)}차 검증</small>` : ""}
+      </div>
+      <h3>${escapeHtml(feature.name)}</h3>
+      <p>${escapeHtml(feature.description)}</p>
+      ${feature.rationale ? `<small class="feature-card__rationale">${escapeHtml(feature.rationale)}</small>` : ""}
+      <p class="feature-card__activity">${escapeHtml(feature.activity || "작업 준비")}</p>
+      <button class="feature-card__toggle" type="button" aria-expanded="${expanded}">
+        Checklist ${escapeHtml(feature.checklist_count || 0)}개 ${expanded ? "접기" : "보기"}
+      </button>
+      <div class="feature-checklist${expanded ? "" : " is-hidden"}">
+        <div class="feature-checklist__heading">
+          <strong>${checklistStatusLabel(feature.checklist_status)}</strong>
+          <span>${escapeHtml(feature.checklist_count || 0)} / 30</span>
+        </div>
+        <ol>${checklistItems}</ol>
+      </div>`;
     featureList.append(item);
+  });
+}
+
+function renderChecklistCriterion(criterion) {
+  const status = criterion.status || "pending";
+  return `<li class="checklist-item checklist-item--${escapeHtml(status)}">
+    <details>
+      <summary>
+        <span>${escapeHtml(criterion.criterion_id)} · ${escapeHtml(criterion.title)}</span>
+        <em>${checklistResultLabel(status)}</em>
+      </summary>
+      <dl>
+        <div><dt>준비</dt><dd>${escapeHtml(criterion.setup)}</dd></div>
+        <div><dt>동작</dt><dd>${escapeHtml(criterion.action)}</dd></div>
+        <div><dt>기대 결과</dt><dd>${escapeHtml(criterion.expected)}</dd></div>
+        <div><dt>증거</dt><dd>${escapeHtml(criterion.evidence)}</dd></div>
+        ${criterion.message ? `<div><dt>검증 결과</dt><dd>${escapeHtml(criterion.message)}</dd></div>` : ""}
+      </dl>
+    </details>
+  </li>`;
+}
+
+function featureStatusLabel(status) {
+  return {
+    pending: "승인 대기",
+    working: "작업 중",
+    retrying: "수정 후 재검증 중",
+    passed: "검증 성공",
+    failed: "검증 실패",
+  }[status] || "상태 확인 중";
+}
+
+function checklistStatusLabel(status) {
+  return {
+    pending: "Checklist 작성 대기",
+    writing: "Checklist 작성 중",
+    ready: "Checklist 작성 완료",
+    retrying: "실패 항목 재검증 중",
+    passed: "전체 Checklist 통과",
+    failed: "Checklist 검증 실패",
+    not_generated: "동적 Checklist 없음",
+  }[status] || "Checklist 상태 확인 중";
+}
+
+function checklistEmptyLabel(status) {
+  return status === "writing"
+    ? "Feature에 맞는 30개 검증 항목을 작성하고 있습니다."
+    : "Checklist가 생성되면 이 영역에서 바로 확인할 수 있습니다.";
+}
+
+function checklistResultLabel(status) {
+  return { passed: "통과", skipped: "통과", failed: "실패", error: "오류", pending: "대기" }[status] || status;
+}
+
+function toggleFeatureCard(card) {
+  const featureId = card.dataset.featureId;
+  if (!featureId) return;
+  if (expandedFeatureIds.has(featureId)) expandedFeatureIds.delete(featureId);
+  else expandedFeatureIds.add(featureId);
+  const expanded = expandedFeatureIds.has(featureId);
+  card.setAttribute("aria-expanded", String(expanded));
+  card.querySelector(".feature-card__toggle").setAttribute("aria-expanded", String(expanded));
+  card.querySelector(".feature-card__toggle").textContent = `Checklist ${card.querySelectorAll(".checklist-item").length}개 ${expanded ? "접기" : "보기"}`;
+  card.querySelector(".feature-checklist").classList.toggle("is-hidden", !expanded);
+}
+
+function beginFeatureMerge(job) {
+  featureViewMode = "merging";
+  featureDecisionArea.classList.add("is-hidden");
+  requestAnimationFrame(() => {
+    const listRect = featureList.getBoundingClientRect();
+    const centerX = listRect.left + listRect.width / 2;
+    const centerY = listRect.top + listRect.height / 2;
+    featureList.querySelectorAll(".feature-card").forEach((card) => {
+      const rect = card.getBoundingClientRect();
+      card.style.setProperty("--merge-x", `${centerX - (rect.left + rect.width / 2)}px`);
+      card.style.setProperty("--merge-y", `${centerY - (rect.top + rect.height / 2)}px`);
+    });
+    featureList.classList.add("feature-list--merging");
+  });
+  featureMergeTimer = window.setTimeout(() => {
+    if (currentJobId !== job.job_id) return;
+    featureViewMode = "assembly";
+    featureList.classList.add("is-hidden");
+    gameAssembly.classList.remove("is-hidden");
+    renderGameAssembly(currentJob || job);
+  }, 900);
+}
+
+function renderGameAssembly(job) {
+  const steps = ["compose", "assets", "finalize", "preview"];
+  let currentIndex = 0;
+  if (Number(job.progress_percent) >= 68) currentIndex = 1;
+  if (Number(job.progress_percent) >= 92) currentIndex = 2;
+  if (job.status === "completed" || ["building", "ready"].includes(job.preview_status)) currentIndex = 3;
+  const statusText = job.preview_status === "ready"
+    ? "게임이 완성되었습니다. Preview에서 바로 플레이할 수 있습니다."
+    : job.preview_status === "building"
+      ? "완성된 게임을 WebGL Preview로 빌드하고 있습니다."
+      : job.status === "failed"
+        ? "게임 조립 또는 최종 검증에서 문제가 발생했습니다."
+        : currentIndex === 2
+          ? "게임이 요구사항을 만족하는지 최종 확인하고 있습니다."
+          : currentIndex === 1
+            ? "게임 화면과 필요한 에셋을 구성하고 있습니다."
+            : "검증된 Feature를 하나의 게임으로 결합하고 있습니다.";
+  gameAssemblyStatus.textContent = statusText;
+  gameAssembly.classList.toggle("game-assembly--failed", job.status === "failed");
+  gameAssemblySteps.querySelectorAll("li").forEach((item) => {
+    const index = steps.indexOf(item.dataset.stage);
+    item.className = index < currentIndex ? "is-complete" : index === currentIndex ? "is-current" : "";
   });
 }
 
 async function decide(action) {
   if (!currentJobId) return;
-  if (action === "reject") notifiedMilestones.delete(`${currentJobId}:feature`);
+  let body = "{}";
+  if (action === "reject") {
+    const feedback = rejectFeedback.value.trim();
+    if (!feedback) {
+      rejectFeedback.focus();
+      showToast("Feature를 어떻게 바꿀지 한마디를 입력하세요.", true);
+      return;
+    }
+    body = JSON.stringify({ feedback });
+    notifiedMilestones.delete(`${currentJobId}:feature`);
+  }
   document.querySelector("#confirm-button").disabled = true;
   document.querySelector("#reject-button").disabled = true;
   try {
-    const job = await api(`/api/jobs/${currentJobId}/${action}`, { method: "POST", body: "{}" });
+    const job = await api(`/api/jobs/${currentJobId}/${action}`, { method: "POST", body });
+    if (action === "reject") rejectFeedback.value = "";
     renderJob(job);
     startPolling();
   } catch (error) { showToast(error.message, true); }
@@ -818,6 +1035,17 @@ workflowLog.addEventListener("keydown", (event) => {
     event.preventDefault();
     copyWorkflowLog();
   }
+});
+featureList.addEventListener("click", (event) => {
+  if (event.target.closest(".checklist-item")) return;
+  const card = event.target.closest(".feature-card");
+  if (card) toggleFeatureCard(card);
+});
+featureList.addEventListener("keydown", (event) => {
+  const card = event.target.closest(".feature-card");
+  if (!card || event.target !== card || !["Enter", " "].includes(event.key)) return;
+  event.preventDefault();
+  toggleFeatureCard(card);
 });
 requestForm.addEventListener("submit", (event) => event.preventDefault());
 document.querySelector("#save-models").addEventListener("click", () => saveModels().catch((error) => showToast(error.message, true)));
