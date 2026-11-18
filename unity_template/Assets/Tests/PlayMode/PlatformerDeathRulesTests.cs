@@ -61,5 +61,32 @@ namespace TeamIdle.GameTemplate.VisualTests
             Object.DestroyImmediate(stage.gameObject);
             Object.DestroyImmediate(player);
         }
+
+        [Test]
+        public void SerializedCheckpointRecoveryRebindsHealthWhenLoaded()
+        {
+            var player = new GameObject("Player", typeof(HealthComponent));
+            var health = player.GetComponent<HealthComponent>();
+            health.SetMaximum(3f);
+            var source = new GameObject("Stage").AddComponent<PrototypePlatformerStageController>();
+            source.Bind(player.transform);
+            source.ConfigureDeathRecovery(true);
+
+            // Instantiate copies serialized scene fields, then invokes OnEnable on the new component.
+            var restored = Object
+                .Instantiate(source.gameObject)
+                .GetComponent<PrototypePlatformerStageController>();
+            Object.DestroyImmediate(source.gameObject);
+            player.transform.position = Vector3.right * 3f;
+
+            health.Damage(3f);
+
+            Assert.That(restored.RespawnOnDeath, Is.True);
+            Assert.That(restored.CurrentCheckpoint, Is.EqualTo(Vector3.zero));
+            Assert.That(player.transform.position, Is.EqualTo(Vector3.zero));
+            Assert.That(health.Current, Is.EqualTo(3f));
+            Object.DestroyImmediate(restored.gameObject);
+            Object.DestroyImmediate(player);
+        }
     }
 }

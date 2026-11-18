@@ -15,6 +15,8 @@ namespace TeamIdle.GameTemplate.Prototype
 
         private Vector3 checkpoint;
         private HealthComponent playerHealth;
+
+        [SerializeField]
         private bool respawnOnDeath;
 
         public event Action<int, Vector3> CheckpointActivated;
@@ -24,6 +26,22 @@ namespace TeamIdle.GameTemplate.Prototype
         public Vector3 CurrentCheckpoint => checkpoint;
 
         public bool RespawnOnDeath => respawnOnDeath;
+
+        private void OnEnable()
+        {
+            if (Application.isPlaying)
+            {
+                Bind(player);
+            }
+        }
+
+        private void OnDisable()
+        {
+            if (playerHealth != null)
+            {
+                playerHealth.Changed -= HandleHealthChanged;
+            }
+        }
 
         public void ConfigureDeathRecovery(bool enabled)
         {
@@ -81,14 +99,6 @@ namespace TeamIdle.GameTemplate.Prototype
             if (respawnOnDeath && current <= 0f)
             {
                 Respawn();
-            }
-        }
-
-        private void OnDestroy()
-        {
-            if (playerHealth != null)
-            {
-                playerHealth.Changed -= HandleHealthChanged;
             }
         }
 
