@@ -270,6 +270,35 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
         "features": features,
         "criteria": criteria,
     }
+    if approved_logic is not None and os.environ.get("MAINFLOW_EARLY_FEATURE_CHECKLISTS") == "1":
+        from game_pipeline.dynamic_feature_checklist import (
+            create_checklist_generator_from_environment,
+            persist_generated_checklist,
+        )
+
+        project_root = manager.ensure_project(state["project_id"])
+        report = os.environ.get("MAINFLOW_FEATURE_CHECKLIST_PROJECT_REPORT", "")
+        if report:
+            Path(report).write_text(state["project_id"], encoding="utf-8")
+        log("승인된 Feature별 Checklist 30개 항목을 먼저 작성합니다.")
+
+        def publish(checklist):
+            persist_generated_checklist(checklist, workspace_root=project_root)
+            feature = checklist.feature_checklists[-1]
+            log(f"Feature Checklist 작성 완료: {feature.feature_id} · {feature.feature_name}")
+
+        create_checklist_generator_from_environment(project_root).generate(
+            project_id=state["project_id"],
+            logic_analysis=result,
+            source_root=Path(
+                os.environ.get(
+                    "MAINFLOW_FEATURE_CHECKLIST_SOURCE",
+                    str(Path(__file__).resolve().parents[2] / "docs"),
+                )
+            ),
+            on_feature_ready=publish,
+        )
+        log("모든 Feature Checklist 작성 완료 · 게임 구현을 시작합니다.")
     return {
         "logic_analysis": manager.write_json(
             state["project_id"],

@@ -1,6 +1,6 @@
 # Local Web Manager
 
-버전: **1.5.0**
+버전: **1.5.1**
 
 `CI/CD/LocalWeb`은 MainFlowChart를 `http://127.0.0.1:8000`에서 설정하고 실행하는 로컬
 전용 웹 서비스다. 메인 LangGraph의 Edge는 바꾸지 않으며, 웹 계층이 Feature 승인 단계를
@@ -21,6 +21,11 @@
 - 전체 **Generate**와 에셋 제외 **test-Generate**
 - Condition → Feature 분석 결과 확인
 - Confirm 시 표시된 Feature를 고정하고 카드 기반 작업 화면으로 생성 계속
+- Confirm 직후 각 Feature의 30항목 Checklist를 먼저 작성·저장한 후 게임 구현 시작.
+  완료된 Feature부터 카드에 표시한다. Codex CLI 제작 모드는 로그인된 Codex와 선택한
+  제작 모델을 사용하고, 나머지는 Feature Checklist 역할의 Provider/Model 설정을 사용한다.
+  작성 실패 시 게임 구현을 시작하지 않는다. Unity 검증에서는 저장된 Checklist로 테스트
+  코드만 생성하여 승인 이후의 검증 기준을 유지한다. 실행 중인 기존 작업에는 소급 적용되지 않는다.
 - Reject 시 사용자가 입력한 한마디를 누적 반영해 Condition → Feature 분석 재실행
 - Feature별 현재 작업, 30항목 Checklist, Unity 검증 결과와 재시도 횟수 표시
 - Checklist 성공/실패 카드 색상과 재검증 회전 표시

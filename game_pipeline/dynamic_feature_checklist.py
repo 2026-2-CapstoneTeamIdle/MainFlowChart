@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+from collections.abc import Callable
 
 from game_pipeline.gemini_feature_generator import (
     GeminiApiClient,
@@ -202,6 +203,7 @@ class DynamicFeatureChecklistGenerator:
         project_id: str,
         logic_analysis: LogicAnalysis,
         source_root: Path,
+        on_feature_ready: Callable[[ProjectFeatureChecklist], None] | None = None,
     ) -> ProjectFeatureChecklist:
         features = logic_analysis["features"]
         if not features:
@@ -265,6 +267,15 @@ class DynamicFeatureChecklistGenerator:
                     criteria=tuple(criteria),
                 )
             )
+            if on_feature_ready is not None:
+                on_feature_ready(
+                    ProjectFeatureChecklist(
+                        checklist_version="1.2.0",
+                        project_id=project_id,
+                        model_role=f"feature_checklist_generation:{self.provider}",
+                        feature_checklists=tuple(feature_checklists),
+                    )
+                )
         return ProjectFeatureChecklist(
             checklist_version="1.2.0",
             project_id=project_id,
@@ -440,22 +451,28 @@ class UnityChecklistTestGenerator:
         )
 
 
-def create_checklist_generator_from_environment() -> DynamicFeatureChecklistGenerator:
+def create_checklist_generator_from_environment(
+    project_root: Path | None = None,
+) -> DynamicFeatureChecklistGenerator:
     provider = _role_provider("feature_checklist_generation")
     client = _structured_client(
         provider,
         node_name="feature_checklist_generation",
         default_model=DEFAULT_CHECKLIST_MODEL,
+        project_root=project_root,
     )
     return DynamicFeatureChecklistGenerator(client, provider)
 
 
-def create_unity_test_generator_from_environment() -> UnityChecklistTestGenerator:
+def create_unity_test_generator_from_environment(
+    project_root: Path | None = None,
+) -> UnityChecklistTestGenerator:
     provider = _role_provider("unity_checklist_test_generation")
     client = _structured_client(
         provider,
         node_name="unity_checklist_test_generation",
         default_model=DEFAULT_TEST_CODE_MODEL,
+        project_root=project_root,
     )
     return UnityChecklistTestGenerator(client, provider)
 
@@ -464,7 +481,7 @@ def persist_generated_checklist(
     checklist: ProjectFeatureChecklist,
     *,
     workspace_root: Path,
-    project_root: Path,
+    project_root: Path | None = None,
 ) -> None:
     generated_root = workspace_root / "validation" / "feature_checklists" / "generated"
     generated_root.mkdir(parents=True, exist_ok=True)
@@ -486,6 +503,8 @@ def persist_generated_checklist(
             _feature_checklist_markdown(feature_checklist), encoding="utf-8"
         )
 
+    if project_root is None:
+        return
     test_root = project_root / GENERATED_TEST_DIRECTORY
     test_root.mkdir(parents=True, exist_ok=True)
     for stale in test_root.glob("GeneratedFeatureChecklist_DFC*.cs"):
@@ -571,12 +590,20 @@ def _feature_checklist_from_dict(payload: object, default_project_id: str) -> Fe
 def _role_provider(node_name: str) -> str:
     env_name = "LLM_" + node_name.upper() + "_PROVIDER"
     configured = os.environ.get(env_name, "").strip().lower()
+    if os.environ.get("MAINFLOW_GAME_BUILDER") == "codex_cli":
+        return "codex_cli"
     return configured or resolve_feature_provider_from_environment()
 
 
 def _structured_client(
-    provider: str, *, node_name: str, default_model: str
+    provider: str, *, node_name: str, default_model: str, project_root: Path | None = None
 ) -> StructuredJsonClient:
+    if provider == "codex_cli":
+        from game_pipeline.codex_cli.structured_json_client import CodexStructuredJsonClient
+
+        if project_root is None:
+            raise ValueError("Codex Checklist generation requires a project root")
+        return CodexStructuredJsonClient(project_root, node_name, "MAINFLOW_CODEX_MODEL")
     if provider == "local":
         return LocalAIJsonClient.from_environment(node_name=node_name, default_model=default_model)
     if provider == "openai":

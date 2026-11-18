@@ -408,6 +408,12 @@ class WorkflowJob:
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
             if self.project_id is None:
+                checklist_report = self.job_root / "checklist_project_id.txt"
+                if checklist_report.is_file():
+                    candidate = checklist_report.read_text(encoding="utf-8").strip()
+                    if PROJECT_ID_PATTERN.fullmatch(candidate):
+                        self.project_id = candidate
+            if self.project_id is None:
                 discovered_project_id = _project_id_from_unity_report(
                     self.job_root / "unity_project_path.txt"
                 )
@@ -949,6 +955,10 @@ class WorkflowJobManager:
             return
         environment = self.settings.process_environment()
         environment["MAINFLOW_APPROVED_LOGIC_ANALYSIS"] = str(approved_logic_path)
+        environment["MAINFLOW_EARLY_FEATURE_CHECKLISTS"] = "1"
+        environment["MAINFLOW_FEATURE_CHECKLIST_PROJECT_REPORT"] = str(
+            job.job_root / "checklist_project_id.txt"
+        )
         environment["MAINFLOW_UNITY_PROJECT_REPORT_FILE"] = str(unity_project_report)
         environment["MAINFLOW_OPEN_UNITY_EDITOR"] = "0"
         _configure_game_builder_environment(
@@ -1449,6 +1459,8 @@ def _feature_card_state(
         )
     if checklist_exists:
         return "working", "Checklist 작성 완료 · Unity 검증 준비", "ready"
+    if job.progress_percent < 24:
+        return "working", "승인된 Feature의 Checklist 작성 중", "writing"
     if job.progress_percent >= 58:
         return "working", "Feature Checklist 작성 및 테스트 준비", "writing"
     if job.progress_percent >= 24:

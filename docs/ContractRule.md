@@ -223,7 +223,11 @@ C# 컴파일, 전체 모듈 부착, Bootstrap 씬 조립까지 검사하고 로�
 결과·피드백·복구 흐름을 `requirement_dependency` Feature로 추가한다. 기존
 `FeatureRequirement` 필드는 변경하지 않는다.
 
-`validate_game`은 최종 `LogicAnalysis.features`의 Feature마다 Checklist를 정확히 하나씩 만들고,
+LocalWeb은 Confirm 이후 승인된 `LogicAnalysis.features`의 Feature마다 Checklist를 먼저 하나씩
+작성하고 `validation/feature_checklists/generated/`에 저장한다. 완료된 Feature부터 화면에 표시한다.
+`validate_game`은 저장된 Checklist를 재사용하며, 저장본이 없는 일반 CLI 실행에서는 직접 생성한다.
+Codex CLI 웹 실행도 이 절차에서는 동적 Checklist 및 테스트를 사용한다.
+각 Feature마다 Checklist를 정확히 하나씩 만들고,
 각 Checklist에 30개 기준을 생성한다. Gemma에는 30개를 한 번에 요구하지 않고 10개씩 3회 요청한
 뒤 중복을 검사하여 합친다. 따라서 전체 기준 수는 `Feature 수 × 30`이다. 각 기준은
 `DFC{Feature 순번}_{항목 순번}`, 관련 `feature_ids`, 준비, 동작, 기대 결과, 자동 증거를 갖는다.
