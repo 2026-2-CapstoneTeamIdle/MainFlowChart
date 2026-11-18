@@ -2,4 +2,4 @@
 
 
 def log(message: str) -> None:
-    print(f"[FLOW] {message}")
+    print(f"[FLOW] {message}", flush=True)

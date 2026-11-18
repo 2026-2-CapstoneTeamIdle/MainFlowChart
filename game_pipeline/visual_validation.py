@@ -366,15 +366,19 @@ class UnityVisualCapture:
     def __init__(self, editor: Path, timeout_seconds: int) -> None:
         self.editor = editor
         self.timeout_seconds = timeout_seconds
+        self.last_ui_audit: dict[str, Any] | None = None
 
     def capture(self, project_root: Path) -> tuple[bytes, str]:
         temporary = Path(tempfile.mkdtemp(prefix="mainflow-visual-capture-"))
         try:
             image_path = temporary / "gameplay.ppm"
+            audit_path = temporary / "ui_audit.json"
             results_path = temporary / "results.xml"
             log_path = temporary / "capture.log"
             environment = os.environ.copy()
             environment["MAINFLOW_VISUAL_CAPTURE_PATH"] = str(image_path)
+            environment["MAINFLOW_UI_AUDIT_PATH"] = str(audit_path)
+            self.last_ui_audit = None
             completed = subprocess.run(
                 [
                     str(self.editor),
@@ -407,6 +411,8 @@ class UnityVisualCapture:
                     "Unity visual capture failed "
                     f"(exit={completed.returncode}); run without -nographics and inspect: {log[-4000:]}"
                 )
+            if audit_path.is_file():
+                self.last_ui_audit = json.loads(audit_path.read_text(encoding="utf-8"))
             with Image.open(image_path) as image:
                 output = io.BytesIO()
                 image.convert("RGB").save(output, format="PNG", optimize=True)

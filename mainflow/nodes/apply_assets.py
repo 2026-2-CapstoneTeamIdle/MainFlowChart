@@ -24,9 +24,9 @@ APPLY_IMAGE_ASSETS_ENVIRONMENT_KEY = "MAINFLOW_APPLY_IMAGE_ASSETS"
 
 
 def image_application_enabled() -> bool:
-    """Return whether generated images are applied to Unity (default: off)."""
+    """Return whether generated images are applied to Unity (default: on)."""
 
-    value = os.environ.get(APPLY_IMAGE_ASSETS_ENVIRONMENT_KEY, "off").strip().lower()
+    value = os.environ.get(APPLY_IMAGE_ASSETS_ENVIRONMENT_KEY, "on").strip().lower()
     return value in {"on", "true", "1", "yes"}
 
 
@@ -85,7 +85,7 @@ def apply_assets_to_game_node(
     # 항상 .wav지만 ELEVENLABS_OUTPUT_FORMAT=mp3_*이면 실제 파일은 .mp3다.
     game_failed = game_draft["status"] == "failed"
     exclude_placeholder_images = placeholder_images_excluded()
-    # MAINFLOW_APPLY_IMAGE_ASSETS=on으로 켜기 전까지 이미지는 생성만 하고 Unity에 적용하지 않는다.
+    # 기본적으로 검증된 이미지를 적용한다. 명시적으로 off를 설정한 경우에만 생략한다.
     skip_image_application = not image_application_enabled()
     if skip_image_application:
         log(

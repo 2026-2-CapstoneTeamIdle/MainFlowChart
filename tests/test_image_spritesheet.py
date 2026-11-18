@@ -134,6 +134,10 @@ class AnimationSelectionTest(unittest.TestCase):
                 asset_item("hero", "플레이어", "좌우 이동과 점프 캐릭터 스프라이트"),
                 asset_item("slime", "적", "플레이어를 추적하는 적 스프라이트"),
                 asset_item("feather", "공격", "날개에서 발사되는 깃털 투사체"),
+                asset_item(
+                    "primary_attack_visual", "플레이어 주변을 회전하는 검 무기", "적을 때리는 검"
+                ),
+                asset_item("runtime_experience_gem", "XP collectible", "player가 획득하는 보석"),
                 asset_item("ground", "맵", "발판과 지형 타일셋"),
             ]
         )
@@ -147,6 +151,8 @@ class AnimationSelectionTest(unittest.TestCase):
                 "hero": ["idle", "run", "jump"],
                 "slime": ["idle", "run", "jump"],
                 "feather": [],
+                "primary_attack_visual": [],
+                "runtime_experience_gem": [],
                 "ground": [],
             },
         )

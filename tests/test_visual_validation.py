@@ -72,6 +72,57 @@ class _Repair:
 
 
 class VisualValidationTest(unittest.TestCase):
+    def test_disabled_vlm_still_audits_hud_after_real_image_application(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ArtifactManager(directory)
+            project_id = manager.create_project()
+            integrated = manager.write_json(
+                project_id,
+                "game",
+                "integrated_game.json",
+                {"applied_image_asset_ids": ["stage_background"]},
+                producer="test",
+            )
+            game_validation = manager.write_json(
+                project_id,
+                "validation",
+                "game_validation_result.json",
+                {"status": "passed"},
+                producer="test",
+            )
+            state = {
+                "project_id": project_id,
+                "integrated_game": integrated,
+                "game_validation_result": game_validation,
+            }
+            capture = MagicMock()
+            capture.capture.return_value = (b"captured-png", "capture log")
+            capture.last_ui_audit = {
+                "visibleTextCount": 3,
+                "issues": ["missing_backing:GoldLabel"],
+            }
+            with (
+                patch.dict("os.environ", {"MAINFLOW_VISUAL_VALIDATION": "0"}, clear=True),
+                patch("mainflow.nodes.visual_validation.ArtifactManager", return_value=manager),
+                patch(
+                    "mainflow.nodes.visual_validation.UnityProjectValidator._read_project_version",
+                    return_value="6000.0.71f1",
+                ),
+                patch(
+                    "mainflow.nodes.visual_validation.UnityProjectValidator.find_unity_editor",
+                    return_value=Path("Unity"),
+                ),
+                patch("mainflow.nodes.visual_validation.UnityVisualCapture", return_value=capture),
+            ):
+                reference = visual_validation_node(state)["visual_validation_result"]
+
+            result = manager.read_json(reference)
+            self.assertEqual(result["status"], "skipped")
+            self.assertEqual(result["ui_readability"]["status"], "needs_revision")
+            self.assertEqual(
+                manager.read_bytes(result["ui_readability"]["screenshot"]), b"captured-png"
+            )
+
     def test_placeholder_image_backend_skips_visual_provider_calls(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = ArtifactManager(directory)

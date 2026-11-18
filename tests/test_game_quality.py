@@ -27,7 +27,7 @@ class GameQualityTest(unittest.TestCase):
             "passed_transitions": [
                 "platformer.collectible_to_progress",
                 "platformer.hazard_to_health",
-                "platformer.death_to_checkpoint",
+                "platformer.fall_to_checkpoint",
                 "platformer.requirements_to_clear",
             ],
             "validation_failures": [],

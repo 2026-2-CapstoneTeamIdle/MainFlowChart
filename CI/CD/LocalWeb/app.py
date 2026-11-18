@@ -39,6 +39,17 @@ def index() -> FileResponse:
     )
 
 
+@app.get("/notification-sw.js", include_in_schema=False)
+def notification_service_worker() -> FileResponse:
+    """Serve the notification worker at the origin root so it can control the Web UI."""
+
+    return FileResponse(
+        STATIC_ROOT / "notification-sw.js",
+        media_type="text/javascript",
+        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"},
+    )
+
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
     """Report whether the local web server is available."""

@@ -68,8 +68,9 @@ def _completion() -> dict[str, object]:
 
 
 @pytest.mark.parametrize("unity_status", ["passed", "failed"])
+@pytest.mark.parametrize("agent_status", ["completed", "needs_attention"])
 def test_quality_repair_keeps_only_unity_validated_source(
-    tmp_path: Path, unity_status: str
+    tmp_path: Path, unity_status: str, agent_status: str
 ) -> None:
     project = tmp_path / "unity"
     source = project / "Assets/Game.cs"
@@ -83,7 +84,13 @@ def test_quality_repair_keeps_only_unity_validated_source(
     def edit_project(**kwargs):
         source.write_text("repaired", encoding="utf-8")
         asset.write_bytes(b"unvalidated-replacement")
-        return MagicMock(final_response=_completion())
+        response = _completion()
+        if agent_status == "needs_attention":
+            response["status"] = "needs_attention"
+            response["unresolved_requirements"] = [
+                "Unity Play Mode validation is pending host execution."
+            ]
+        return MagicMock(final_response=response)
 
     runner.run.side_effect = edit_project
     harness = CodexGameHarness(
@@ -230,6 +237,151 @@ def test_needs_attention_agent_result_is_not_accepted_as_implementation(tmp_path
 
     with pytest.raises(RuntimeError, match="AGENT_IMPLEMENTATION_INCOMPLETE.*bwrap"):
         _require_agent_completion(result, "initial implementation")
+    with pytest.raises(RuntimeError, match="AGENT_IMPLEMENTATION_INCOMPLETE.*bwrap"):
+        _require_agent_completion(
+            result, "design_game_logic repair 1", allow_host_validation_pending=True
+        )
+
+
+def test_host_validation_pending_repair_runs_unity_before_acceptance(tmp_path: Path) -> None:
+    project = tmp_path / "unity"
+    source = project / "Assets" / "Game.cs"
+    source.parent.mkdir(parents=True)
+    source.write_text("before", encoding="utf-8")
+    pending = {
+        **_completion(),
+        "status": "needs_attention",
+        "summary": "Fixed wall-jump input handling.",
+        "unresolved_requirements": ["Unity Play Mode validation is pending host execution."],
+    }
+    runner = MagicMock()
+
+    def edit_source(**kwargs):
+        source.write_text("after", encoding="utf-8")
+        return MagicMock(final_response=pending)
+
+    runner.run.side_effect = edit_source
+    harness = CodexGameHarness(
+        _settings(tmp_path / "codex.exe"),
+        audit_root=tmp_path / "audit",
+        runner=runner,
+    )
+    failed = UnityValidationOutcome(
+        checks=[],
+        issues=[{"code": "UNITY_RUNTIME_TEST_FAILED", "severity": "error", "message": "timeout"}],
+        unity_log="UNITY_RUNTIME_SMOKE_FAILED: runtime.timeout",
+    )
+    passed = UnityValidationOutcome(checks=[], issues=[], unity_log="UNITY_RUNTIME_SMOKE_OK")
+    with (
+        patch(
+            "game_pipeline.codex_cli.harness._normalize_windows_project_permissions",
+            return_value={"status": "passed"},
+        ),
+        patch("game_pipeline.codex_cli.harness._require_normalized_permissions"),
+        patch("game_pipeline.codex_cli.harness.UnityProjectValidator") as validator,
+    ):
+        validator.return_value.validate.side_effect = [failed, passed]
+        outcome, repairs, attempts = harness._run_validation_repair_loop(
+            project_root=project,
+            draft={"status": "generated"},  # type: ignore[arg-type]
+            request={"condition": "jump"},  # type: ignore[arg-type]
+            phase="design_game_logic",
+        )
+
+    assert outcome.status == "passed"
+    assert len(repairs) == 1
+    assert len(attempts) == 2
+    assert validator.return_value.validate.call_count == 2
+    assert source.read_text(encoding="utf-8") == "after"
+
+
+def test_initial_host_validation_pending_reaches_compile_repair(tmp_path: Path) -> None:
+    project = tmp_path / "unity"
+    source = project / "Assets" / "Game.cs"
+    source.parent.mkdir(parents=True)
+    source.write_text("uncompiled source", encoding="utf-8")
+    initial = {
+        **_completion(),
+        "status": "needs_attention",
+        "tests_run": [],
+        "unresolved_requirements": [
+            "Unity Editor compilation and Play Mode behavior were not run per project instruction."
+        ],
+    }
+    runner = MagicMock()
+    runner.run.side_effect = [
+        MagicMock(final_response=initial),
+        MagicMock(final_response=_completion()),
+    ]
+    harness = CodexGameHarness(
+        _settings(tmp_path / "codex.exe"),
+        audit_root=tmp_path / "audit",
+        runner=runner,
+        preflight_runner=lambda settings: CodexPreflightResult("codex", "test", "logged in"),
+    )
+    compile_error = "Assets/Game.cs(264,33): error CS0029: Cannot implicitly convert type"
+    failed = UnityValidationOutcome(
+        checks=[],
+        issues=[
+            {
+                "code": "UNITY_BATCH_VALIDATION_FAILED",
+                "severity": "error",
+                "message": compile_error,
+            }
+        ],
+        unity_log=compile_error,
+    )
+    passed = UnityValidationOutcome(checks=[], issues=[], unity_log="UNITY_TEMPLATE_BUILD_OK")
+    with (
+        patch(
+            "game_pipeline.codex_cli.harness._normalize_windows_project_permissions",
+            return_value={"status": "passed"},
+        ),
+        patch("game_pipeline.codex_cli.harness._require_normalized_permissions"),
+        patch("game_pipeline.codex_cli.harness._write_project_instructions"),
+        patch("game_pipeline.codex_cli.harness._implementation_prompt", return_value="implement"),
+        patch(
+            "game_pipeline.codex_cli.harness._validation_draft",
+            return_value={"status": "generated"},
+        ),
+        patch("game_pipeline.codex_cli.harness.UnityProjectValidator") as validator,
+    ):
+        validator.return_value.validate.side_effect = [failed, passed]
+        harness.implement_project(project_root=project, design={}, request={})  # type: ignore[arg-type]
+        result = harness.validate_and_repair(project_root=project, design={}, request={})  # type: ignore[arg-type]
+
+    assert validator.return_value.validate.call_count == 2
+    assert len(result.repair_results) == 1
+    assert compile_error in runner.run.call_args_list[1].kwargs["prompt"]
+
+
+@pytest.mark.parametrize(
+    "unresolved",
+    [
+        "Unity Editor compilation failed with CS0029; source remains broken.",
+        "Unity Editor compilation and Play Mode were not run per project instruction; movement is missing.",
+        "Player movement implementation is incomplete.",
+    ],
+)
+def test_initial_incomplete_work_is_not_host_validation_pending(
+    tmp_path: Path, unresolved: str
+) -> None:
+    response = {
+        **_completion(),
+        "status": "needs_attention",
+        "unresolved_requirements": [unresolved],
+    }
+    result = CodexCliResult(
+        exit_code=0,
+        elapsed_seconds=1.0,
+        final_response=response,
+        events=(),
+        audit_directory=tmp_path,
+    )
+    with pytest.raises(RuntimeError, match="AGENT_IMPLEMENTATION_INCOMPLETE"):
+        _require_agent_completion(
+            result, "initial implementation", allow_host_validation_pending=True
+        )
 
 
 def test_runner_rejects_non_jsonl_output(tmp_path: Path) -> None:
@@ -499,6 +651,26 @@ def test_codex_prompts_reserve_unity_process_ownership_for_host(tmp_path: Path) 
     assert "Do not launch Unity Editor" in repair
 
 
+def test_feature_checklist_repair_prompt_protects_tests() -> None:
+    prompt = _repair_prompt(
+        {
+            "issues": [
+                {
+                    "code": "FEATURE_CHECKLIST_FAILED",
+                    "message": "AutoTargetSystemModule must exist",
+                }
+            ],
+        },
+        1,
+        phase="feature_checklist_1",
+    )
+
+    assert "failed checklist assertion" in prompt
+    assert "acceptance criterion" in prompt
+    assert "Never edit, delete, disable, or weaken the checklist test itself" in prompt
+    assert "reacquire late-bound dependencies when the action executes" in prompt
+
+
 def test_downstream_validation_failure_is_repaired_and_revalidated(tmp_path: Path) -> None:
     project = tmp_path / "unity"
     (project / "Assets").mkdir(parents=True)
@@ -662,6 +834,156 @@ def test_runtime_failure_signature_uses_actual_failed_transition() -> None:
     assert _failure_severity(missing_module) > _failure_severity(collectible)
 
 
+def test_design_validation_extends_repair_budget_for_progressive_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "unity"
+    (project / "Assets").mkdir(parents=True)
+    settings = _settings(tmp_path / "codex.exe")
+    runner = MagicMock()
+    runner.run.return_value = MagicMock(final_response=_completion())
+    records: dict[str, object] = {}
+    harness = CodexGameHarness(
+        settings,
+        audit_root=tmp_path / "audit",
+        runner=runner,
+        record=lambda name, value: records.__setitem__(name, value),
+        preflight_runner=lambda current: CodexPreflightResult("codex", "test", "logged in"),
+    )
+
+    def failed(transition: str) -> UnityValidationOutcome:
+        return UnityValidationOutcome(
+            checks=[
+                {
+                    "criterion_id": "unity.runtime_smoke",
+                    "passed": False,
+                    "message": "Play Mode smoke tests failed; inspect log",
+                }
+            ],
+            issues=[
+                {
+                    "code": "UNITY_RUNTIME_TEST_FAILED",
+                    "severity": "error",
+                    "message": "Play Mode smoke tests failed; inspect log",
+                }
+            ],
+            unity_log=(
+                f'UNITY_PLAYTEST_METRICS:{{"failed_transition":"{transition}"}}\n'
+                f"UNITY_RUNTIME_SMOKE_FAILED: {transition}: failed"
+            ),
+        )
+
+    passed = UnityValidationOutcome(
+        checks=[
+            {
+                "criterion_id": "unity.runtime_smoke",
+                "passed": True,
+                "message": "Play Mode smoke tests passed",
+            }
+        ],
+        issues=[],
+        unity_log="UNITY_RUNTIME_SMOKE_OK",
+    )
+    outcomes = [
+        failed("runtime.spawn"),
+        failed("runtime.movement"),
+        failed("runtime.attack"),
+        failed("runtime.progression"),
+        passed,
+    ]
+    monkeypatch.setenv("MAINFLOW_AGENT_HARD_MAX_REPAIRS", "5")
+    monkeypatch.setenv("MAINFLOW_AGENT_REPAIR_EXTENSION", "2")
+    with (
+        patch(
+            "game_pipeline.codex_cli.harness._normalize_windows_project_permissions",
+            return_value={"status": "passed"},
+        ),
+        patch("game_pipeline.codex_cli.harness._require_normalized_permissions"),
+        patch("game_pipeline.codex_cli.harness._repair_is_regression", return_value=False),
+        patch("game_pipeline.codex_cli.harness.UnityProjectValidator") as validator,
+    ):
+        validator.return_value.validate.side_effect = outcomes
+        outcome, repairs, attempts = harness._run_validation_repair_loop(
+            project_root=project,
+            draft={"status": "generated"},  # type: ignore[arg-type]
+            request={"condition": "survive"},  # type: ignore[arg-type]
+            phase="design_game_logic",
+        )
+
+    assert outcome.status == "passed"
+    assert len(repairs) == 4
+    assert len(attempts) == 5
+    assert runner.run.call_count == 4
+    assert any("repair_budget_extended_2" in name for name in records)
+
+
+def test_same_failure_can_continue_when_agent_changes_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "unity"
+    source = project / "Assets" / "Game.cs"
+    source.parent.mkdir(parents=True)
+    source.write_text("version-0", encoding="utf-8")
+    settings = _settings(tmp_path / "codex.exe")
+    runner = MagicMock()
+    edit_count = 0
+
+    def edit_source(**kwargs):
+        nonlocal edit_count
+        edit_count += 1
+        source.write_text(f"version-{edit_count}", encoding="utf-8")
+        return MagicMock(final_response=_completion())
+
+    runner.run.side_effect = edit_source
+    harness = CodexGameHarness(
+        settings,
+        audit_root=tmp_path / "audit",
+        runner=runner,
+        record=lambda name, value: None,
+        preflight_runner=lambda current: CodexPreflightResult("codex", "test", "logged in"),
+    )
+    failed = UnityValidationOutcome(
+        checks=[],
+        issues=[
+            {
+                "code": "UNITY_RUNTIME_TEST_FAILED",
+                "severity": "error",
+                "message": "upgrade did not change state",
+            }
+        ],
+        unity_log="UNITY_RUNTIME_SMOKE_FAILED: runtime.survivor_upgrade_effect",
+    )
+    passed = UnityValidationOutcome(
+        checks=[],
+        issues=[],
+        unity_log="UNITY_RUNTIME_SMOKE_OK",
+    )
+    monkeypatch.setenv("MAINFLOW_AGENT_HARD_MAX_REPAIRS", "4")
+    monkeypatch.setenv("MAINFLOW_AGENT_REPAIR_EXTENSION", "2")
+    with (
+        patch(
+            "game_pipeline.codex_cli.harness._normalize_windows_project_permissions",
+            return_value={"status": "passed"},
+        ),
+        patch("game_pipeline.codex_cli.harness._require_normalized_permissions"),
+        patch("game_pipeline.codex_cli.harness._repair_is_regression", return_value=False),
+        patch("game_pipeline.codex_cli.harness.UnityProjectValidator") as validator,
+    ):
+        validator.return_value.validate.side_effect = [failed, failed, failed, passed]
+        outcome, repairs, attempts = harness._run_validation_repair_loop(
+            project_root=project,
+            draft={"status": "generated"},  # type: ignore[arg-type]
+            request={"condition": "survive"},  # type: ignore[arg-type]
+            phase="validate_game",
+            max_repairs=2,
+        )
+
+    assert outcome.status == "passed"
+    assert len(repairs) == 3
+    assert len(attempts) == 4
+    assert source.read_text(encoding="utf-8") == "version-3"
+
+
 def test_batch_exception_is_more_severe_than_missing_module() -> None:
     missing_module = UnityValidationOutcome(
         checks=[],
@@ -704,6 +1026,35 @@ def test_downstream_validation_failure_preserves_compile_fix() -> None:
     assert _failure_severity(downstream_failure) > _failure_severity(compiler_failure)
     assert _validation_progress(downstream_failure) > _validation_progress(compiler_failure)
     assert not _repair_is_regression(compiler_failure, downstream_failure)
+
+
+def test_runtime_route_failure_preserves_ui_quality_fix() -> None:
+    ui_failure = UnityValidationOutcome(
+        checks=[],
+        issues=[
+            {
+                "code": "UNITY_RUNTIME_TEST_FAILED",
+                "severity": "error",
+                "message": "Play Mode smoke tests failed; inspect log",
+            }
+        ],
+        unity_log=(
+            "UNITY_TEMPLATE_BUILD_OK\n"
+            "UNITY_RUNTIME_SMOKE_FAILED: runtime.ui_quality: IMGUI debug panel is enabled"
+        ),
+    )
+    route_failure = UnityValidationOutcome(
+        checks=ui_failure.checks,
+        issues=ui_failure.issues,
+        unity_log=(
+            "UNITY_TEMPLATE_BUILD_OK\n"
+            "UNITY_UI_QUALITY_OK:canvas=1:graphics=8:texts=4:buttons=2\n"
+            "UNITY_RUNTIME_SMOKE_FAILED: runtime.route_no_progress: player is stuck"
+        ),
+    )
+
+    assert _validation_progress(route_failure) > _validation_progress(ui_failure)
+    assert not _repair_is_regression(ui_failure, route_failure)
 
 
 def test_repair_that_loses_a_validation_milestone_is_rolled_back() -> None:

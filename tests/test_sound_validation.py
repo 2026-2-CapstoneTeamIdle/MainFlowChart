@@ -100,7 +100,16 @@ class AssetCheckTest(unittest.TestCase):
         ramp = (0.5 * np.sin(2 * np.pi * 110 * t) + 0.4 * (t / t[-1])).astype(np.float32)
         qc = qc_of(ramp[:, None], plan("amb", "ambience", 4.0, loop=True))
         self.assertEqual(qc.decision, "FIX")
-        self.assertIn("loop_crossfade_20ms", qc.applied_fixes)
+        self.assertIn("loop_crossfade_200ms", qc.applied_fixes)
+
+    def test_loop_level_mismatch_is_repaired_without_shortening_bgm(self):
+        t = np.arange(4 * RATE) / RATE
+        gain = np.linspace(0.1, 0.7, t.size)
+        samples = (gain * np.sin(2 * np.pi * 110 * t)).astype(np.float32)[:, None]
+        qc = qc_of(samples, plan("bgm", "bgm", 4.0, loop=True, kind="bgm"))
+        self.assertEqual(qc.decision, "FIX")
+        self.assertEqual(qc.failed, [])
+        self.assertAlmostEqual(qc.metrics["duration_s"], 4.0, delta=0.01)
 
     def test_placeholder_goes_to_review_not_pass(self):
         qc = qc_of(impact(), placeholder=True)

@@ -2,7 +2,8 @@
   "name": "TeamIdle.GameTemplate.FeatureTests",
   "rootNamespace": "TeamIdle.GameTemplate.FeatureTests",
   "references": [
-    "TeamIdle.GameTemplate.Runtime"
+    "TeamIdle.GameTemplate.Runtime",
+    "UnityEngine.UI"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],

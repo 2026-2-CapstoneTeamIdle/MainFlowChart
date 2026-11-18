@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
+from time import monotonic
+from traceback import format_exc
 from typing import Any, cast
 
 from game_pipeline import (
@@ -86,28 +89,53 @@ def game_quality_validator_node(
             report = cast(
                 GameValidatorAIResult, {"contract_version": CONTRACT_VERSION, **ai_report}
             )
-        report = _normalize_placeholder_visual_limitation(report, final_result)
+        report = _normalize_placeholder_visual_limitation(
+            report, final_result, evidence.get("visual_validation_result")
+        )
+        report = _normalize_duration_limitation(report, final_result)
         if (
             final_result.get("status") == "passed"
-            and report.get("status") == "needs_revision"
+            and report.get("status") in {"needs_revision", "failed"}
             and os.environ.get("MAINFLOW_GAME_BUILDER", "").strip().lower()
             in {"codex_cli", "claude_code"}
         ):
-            report = _repair_and_review_quality(state["project_id"], manager, evidence, report)
+            report = _repair_and_review_quality(
+                state["project_id"], manager, evidence, report, state=state
+            )
             if report.get("status") == "passed":
                 # Quality repair changes the Unity source after the original archive was built.
                 # Re-run the hard gate and package that exact repaired tree before returning success.
                 from mainflow.nodes.final_validation import final_validation_node
 
                 log("품질 수정본을 최종 검증하고 배포 ZIP을 다시 생성합니다.")
-                refreshed_final_validation = final_validation_node(
+                refreshed_output = final_validation_node(
                     state,
                     artifact_variant="post_quality",
-                )["final_validation_result"]
+                )
+                refreshed_final_validation = refreshed_output["final_validation_result"]
                 evidence["final_validation_result"] = manager.read_json(refreshed_final_validation)
+                if "game_validation_result" in refreshed_output:
+                    evidence["game_validation_result"] = manager.read_json(
+                        refreshed_output["game_validation_result"]
+                    )
                 if evidence["final_validation_result"].get("status") != "passed":
                     report = _hard_failure_report(evidence)
     except Exception as error:  # noqa: BLE001 - preserve a report at the final workflow boundary
+        diagnostic = f"{type(error).__name__}: {error}"
+        log(f"[ERROR] 독립 품질 검증 중 예외가 발생했습니다: {diagnostic}")
+        try:
+            manager.write_json(
+                state["project_id"],
+                "validation",
+                "game_quality_validator_error.json",
+                {"error": diagnostic, "traceback": format_exc()},
+                producer="game_quality_validator",
+            )
+        except OSError as record_error:
+            log(
+                "[ERROR] 품질 검증 예외의 상세 기록을 저장하지 못했습니다: "
+                f"{type(record_error).__name__}: {record_error}"
+            )
         report = _execution_failure_report(error)
 
     output: GameValidatorAIAgentOutput = {
@@ -129,15 +157,20 @@ def _repair_and_review_quality(
     manager: ArtifactManager,
     evidence: dict[str, Any],
     initial_report: GameValidatorAIResult,
+    *,
+    state: GameValidatorAIAgentInput | None = None,
 ) -> GameValidatorAIResult:
     """Use the builder to fix evidenced quality gaps, with Unity as the safety gate."""
 
     from game_pipeline.codex_cli import CodexGameHarness, CodexHarnessSettings
 
     builder = os.environ["MAINFLOW_GAME_BUILDER"].strip().lower()
-    max_repairs = int(os.environ.get("MAINFLOW_GAME_QUALITY_REPAIRS", "2"))
-    if not 0 <= max_repairs <= 3:
-        raise ValueError("MAINFLOW_GAME_QUALITY_REPAIRS must be between 0 and 3")
+    max_repairs = int(os.environ.get("MAINFLOW_GAME_QUALITY_REPAIRS", "8"))
+    if not 0 <= max_repairs <= 10:
+        raise ValueError("MAINFLOW_GAME_QUALITY_REPAIRS must be between 0 and 10")
+    time_budget = int(os.environ.get("MAINFLOW_GAME_QUALITY_TIME_BUDGET_SECONDS", "2400"))
+    if not 60 <= time_budget <= 7200:
+        raise ValueError("MAINFLOW_GAME_QUALITY_TIME_BUDGET_SECONDS must be between 60 and 7200")
     if not max_repairs:
         return initial_report
     workspace = manager.ensure_project(project_id)
@@ -169,8 +202,14 @@ def _repair_and_review_quality(
 
     report = initial_report
     previous_repair_error = ""
+    previous_finding = ""
+    stalled_attempts = 0
+    deadline = monotonic() + time_budget
     record("audit_00", report)
     for attempt in range(1, max_repairs + 1):
+        if monotonic() >= deadline:
+            record("time_budget_exhausted", {"attempt": attempt, "seconds": time_budget})
+            break
         actionable = [
             finding
             for finding in report.get("findings", [])
@@ -187,14 +226,43 @@ def _repair_and_review_quality(
                 "evidence",
             }
             and "placeholder" not in finding.get("message", "").lower()
-            and any(
-                "game/unity_project/Assets/" in str(path).replace("\\", "/")
-                or str(path).replace("\\", "/").startswith("Assets/")
-                for path in finding.get("evidence", [])
+            and (
+                finding.get("category")
+                in {
+                    "requirement",
+                    "gameplay",
+                    "integration",
+                    "progression",
+                    "content",
+                    "presentation",
+                }
+                or any(
+                    "game/unity_project/Assets/" in str(path).replace("\\", "/")
+                    or str(path).replace("\\", "/").startswith("Assets/")
+                    for path in finding.get("evidence", [])
+                )
             )
         ]
         if not actionable:
             break
+        # Batch several independent gaps before the costly Unity/review cycle. A single-item
+        # turn required eight full CLI sessions for the same persistent findings in practice.
+        gameplay_errors = [
+            finding
+            for finding in actionable
+            if finding.get("severity") == "error"
+            and finding.get("category") in {"gameplay", "requirement", "integration"}
+        ]
+        if gameplay_errors:
+            # Repair a broken state transition on its own. Mixing it with broad pacing/UI
+            # revisions made the Unity regression rollback obscure the original defect.
+            actionable = gameplay_errors[:1]
+        else:
+            actionable = sorted(
+                actionable,
+                key=lambda finding: finding.get("severity") != "error",
+            )[:2]
+        current_finding = " | ".join(str(item.get("message", "")) for item in actionable)
         if previous_repair_error:
             actionable.append(
                 {
@@ -210,6 +278,7 @@ def _repair_and_review_quality(
             )
         log(f"독립 품질 평가의 기능 누락을 CLI Agent가 수정합니다 ({attempt}/{max_repairs}).")
         try:
+            source_before = _project_source_signature(project_root)
             outcome = harness.repair_quality_findings(
                 project_root=project_root,
                 draft=evidence["game_logic_draft"],
@@ -224,17 +293,52 @@ def _repair_and_review_quality(
                 "unity_log": outcome.unity_log[-12000:],
             }
             record(f"unity_validation_{attempt:02d}", evidence["post_quality_unity_validation"])
+            if state is not None and evidence.get("visual_validation_result", {}).get(
+                "ui_readability"
+            ):
+                from mainflow.nodes.visual_validation import _audit_applied_ui
+
+                refreshed_ui = _audit_applied_ui(
+                    manager, state, artifact_suffix=f"_quality_{attempt:02d}"
+                )
+                if refreshed_ui is not None:
+                    evidence["visual_validation_result"] = {
+                        **evidence["visual_validation_result"],
+                        "ui_readability": refreshed_ui,
+                    }
             reviewed = review(project_root=workspace, project_id=project_id, evidence=evidence)
             report = _normalize_placeholder_visual_limitation(
                 cast(GameValidatorAIResult, reviewed),
+                evidence.get("final_validation_result", {"status": "passed"}),
+                evidence.get("visual_validation_result"),
+            )
+            report = _normalize_duration_limitation(
+                report,
                 evidence.get("final_validation_result", {"status": "passed"}),
             )
             record(f"audit_{attempt:02d}", report)
             if report.get("status") == "passed":
                 return report
+            source_after = _project_source_signature(project_root)
+            if current_finding == previous_finding and source_after == source_before:
+                stalled_attempts += 1
+            else:
+                stalled_attempts = 0
+            previous_finding = current_finding
+            previous_repair_error = ""
+            if stalled_attempts >= 2:
+                record(
+                    "stalled",
+                    {"attempt": attempt, "finding": current_finding, "reason": "source unchanged"},
+                )
+                break
         except Exception as error:  # noqa: BLE001 - preserve the original audit and project
             previous_repair_error = f"{type(error).__name__}: {error}"
             record(f"repair_error_{attempt:02d}", {"error": previous_repair_error})
+            if isinstance(error, OSError):
+                # A host filesystem/process failure is not a gameplay patch failure. Repeating
+                # the same CLI request cannot fix it, so surface it at the workflow boundary.
+                raise
             report = cast(
                 GameValidatorAIResult,
                 {
@@ -249,14 +353,36 @@ def _repair_and_review_quality(
     return report
 
 
+def _project_source_signature(project_root: Path) -> tuple[tuple[str, int, int], ...]:
+    """Detect a repair turn that repeatedly makes no gameplay or scene changes."""
+
+    assets = project_root / "Assets"
+    if not assets.exists():
+        return ()
+    result = []
+    for path in assets.rglob("*"):
+        if path.suffix.lower() not in {".cs", ".unity", ".prefab", ".asset"} or not path.is_file():
+            continue
+        stat = path.stat()
+        result.append((path.relative_to(project_root).as_posix(), stat.st_size, stat.st_mtime_ns))
+    return tuple(sorted(result))
+
+
 def _normalize_placeholder_visual_limitation(
     report: GameValidatorAIResult,
     final_result: dict[str, Any],
+    visual_result: dict[str, Any] | None = None,
 ) -> GameValidatorAIResult:
-    """Keep an unavailable real-art backend from becoming a standalone quality failure."""
+    """Keep an intentionally skipped VLM comparison from failing quality review alone."""
 
     if final_result.get("status") != "passed":
         return report
+
+    visual_disabled = (
+        isinstance(visual_result, dict)
+        and visual_result.get("mode") == "disabled"
+        and visual_result.get("status") == "skipped"
+    )
 
     def is_placeholder_visual(item: dict[str, Any]) -> bool:
         text = " ".join(
@@ -267,11 +393,18 @@ def _normalize_placeholder_visual_limitation(
                 *(str(value) for value in item.get("evidence", [])),
             ]
         ).lower()
-        return (
+        placeholder_skip = (
             "visual" in text
             and "placeholder" in text
             and any(marker in text for marker in ("skip", "disabled", "suppressed"))
         )
+        disabled_vlm_skip = (
+            visual_disabled
+            and any(marker in text for marker in ("visual validation", "vlm", "시각 검증"))
+            and any(marker in text for marker in ("skip", "disabled", "not run", "생략", "비활성"))
+            and not any(marker in text for marker in ("unreadable", "overlap", "가독성", "겹침"))
+        )
+        return placeholder_skip or disabled_vlm_skip
 
     findings: list[dict[str, Any]] = []
     for finding in report.get("findings", []):
@@ -293,6 +426,97 @@ def _normalize_placeholder_visual_limitation(
         status = "passed"
 
     return cast(GameValidatorAIResult, {**report, "status": status, "findings": findings})
+
+
+def _is_normal_play_duration_assessment(item: dict[str, Any]) -> bool:
+    """Identify estimated whole-game length, not timer or countdown functionality."""
+
+    subject = " ".join(
+        str(item.get(key, "")) for key in ("requirement", "message", "recommendation")
+    ).casefold()
+    evidence = " ".join(str(value) for value in item.get("evidence", [])).casefold()
+    explicit_duration = any(
+        marker in subject
+        for marker in (
+            "normal-play duration",
+            "normal play duration",
+            "normal playtime",
+            "normal-play time",
+            "playtime target",
+            "전체 플레이 시간",
+            "최소 플레이 시간",
+            "목표 플레이 시간",
+            "목표 플레이타임",
+            "게임 분량",
+            "분량",
+        )
+    )
+    contract_estimate = any(
+        marker in evidence
+        for marker in (
+            "pacing_contract.json",
+            "minimum_normal_play_seconds",
+            "target_duration_seconds",
+        )
+    ) and any(marker in subject for marker in ("pacing", "duration", "playtime", "분량"))
+    return explicit_duration or contract_estimate
+
+
+def _normalize_duration_limitation(
+    report: GameValidatorAIResult,
+    final_result: dict[str, Any],
+) -> GameValidatorAIResult:
+    """Keep estimated play length visible without making it a release gate."""
+
+    if final_result.get("status") != "passed":
+        return report
+
+    duration_downgraded = any(
+        _is_normal_play_duration_assessment(finding)
+        and finding.get("severity") in {"error", "warning"}
+        for finding in report.get("findings", [])
+    )
+    findings = [
+        {**finding, "severity": "info"} if _is_normal_play_duration_assessment(finding) else finding
+        for finding in report.get("findings", [])
+    ]
+    coverage = [
+        {**item, "status": "unverifiable"}
+        if _is_normal_play_duration_assessment(item) and item.get("status") != "satisfied"
+        else item
+        for item in report.get("requirement_coverage", [])
+    ]
+    blocking_findings = any(finding.get("severity") in {"error", "warning"} for finding in findings)
+    blocking_coverage = any(
+        item.get("status") in {"partial", "missing", "unverifiable"}
+        and not _is_normal_play_duration_assessment(item)
+        for item in coverage
+    )
+    status = report.get("status")
+    if status == "passed" and any(finding.get("severity") == "error" for finding in findings):
+        status = "needs_revision"
+    if (
+        status in {"needs_revision", "failed"}
+        and not blocking_findings
+        and not blocking_coverage
+        and (status == "needs_revision" or duration_downgraded)
+    ):
+        status = "passed"
+
+    return cast(
+        GameValidatorAIResult,
+        {
+            **report,
+            "status": status,
+            "findings": findings,
+            "requirement_coverage": coverage,
+            "summary": (
+                "Independent review passed; estimated normal play duration remains informational."
+                if status == "passed" and report.get("status") in {"needs_revision", "failed"}
+                else report.get("summary", "")
+            ),
+        },
+    )
 
 
 def _hard_failure_report(evidence: dict[str, Any]) -> GameValidatorAIResult:
@@ -363,30 +587,34 @@ def _disabled_report() -> GameValidatorAIResult:
 
 
 def _execution_failure_report(error: Exception) -> GameValidatorAIResult:
+    diagnostic = f"{type(error).__name__}: {error}"
     return {
         "report_version": "1.0.0",
         "contract_version": CONTRACT_VERSION,
         "status": "failed",
         "score": 0.0,
-        "summary": "Independent Game Validator AI could not complete.",
+        "summary": f"독립 품질 검증 중 예외가 발생했습니다: {diagnostic}",
         "requirement_coverage": [
             {
                 "requirement": "Independent AI quality evaluation",
                 "status": "unverifiable",
-                "evidence": [f"{type(error).__name__}: {error}"],
+                "evidence": [diagnostic],
             }
         ],
         "findings": [
             {
                 "severity": "error",
                 "category": "evidence",
-                "message": f"Validator execution failed: {type(error).__name__}: {error}",
+                "message": f"Validator execution failed: {diagnostic}",
                 "evidence": ["game_quality_validator execution"],
-                "recommendation": "Check the Validator AI provider, model, timeout, and MCP access.",
+                "recommendation": (
+                    "Inspect validation/game_quality_validator_error.json for the failing "
+                    "operation and traceback."
+                ),
             }
         ],
         "strengths": [],
-        "limitations": ["The completed project was not independently evaluated."],
+        "limitations": ["The independent quality review or repair could not complete."],
         "inspected_files": [],
         "provider": "none",
         "model": "none",

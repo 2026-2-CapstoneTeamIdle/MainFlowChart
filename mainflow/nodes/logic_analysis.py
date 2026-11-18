@@ -72,7 +72,13 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
         "status": "approved_preview" if approved_logic is not None else "disabled",
     }
     try:
-        condition_analyzer = create_condition_feature_analyzer_from_environment()
+        condition_analyzer = (
+            create_condition_feature_analyzer_from_environment(
+                manager.ensure_project(state["project_id"])
+            )
+            if approved_logic is None
+            else None
+        )
         if condition_analyzer is not None:
             log("사용자 Condition을 원자적인 구현 가능 기능으로 AI가 분해합니다.")
             condition_analysis = condition_analyzer.analyze(
@@ -92,6 +98,7 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
                 "status": (
                     "partial"
                     if condition_analysis.report.get("failed_request_count", 0)
+                    or condition_analysis.report.get("truncated_segment_count", 0)
                     else "passed"
                 ),
             }
@@ -133,7 +140,13 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
         "status": "approved_preview" if approved_logic is not None else "disabled",
     }
     try:
-        enricher = create_genre_feature_enricher_from_environment()
+        enricher = (
+            create_genre_feature_enricher_from_environment(
+                manager.ensure_project(state["project_id"])
+            )
+            if approved_logic is None
+            else None
+        )
         if enricher is not None:
             log("명시된 기능을 바탕으로 장르 필수 기능을 AI가 보강합니다.")
             baseline = normalize_game_spec(request["genre"], {"viewpoint": request["viewpoint"]})

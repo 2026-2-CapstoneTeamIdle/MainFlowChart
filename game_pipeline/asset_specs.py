@@ -133,10 +133,24 @@ SOUND_CUE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("card_play", ("카드", "card")),
     (
         "pickup",
-        ("xp_pickup", "획득", "수집", "아이템", "코인", "경험치", "pickup", "collect", "coin"),
+        (
+            "xp_pickup",
+            "collectible_pickup",
+            "획득",
+            "수집",
+            "아이템",
+            "코인",
+            "경험치",
+            "pickup",
+            "collect",
+            "coin",
+        ),
     ),
     ("enemy_hit", ("적 피격", "적이 맞", "적이 피해", "enemy hit", "enemy hurt", "enemy damage")),
-    ("player_hit", ("피격", "피해를 입", "피해 입", "데미지", "hit", "damage", "hurt")),
+    (
+        "player_hit",
+        ("player_hit", "피격", "피해를 입", "피해 입", "데미지", "hit", "damage", "hurt"),
+    ),
     ("attack", ("공격", "발사", "타격", "사격", "attack", "shoot", "fire")),
     ("activity", ("행동", "훈련", "활동", "activity", "train")),
     ("ui", ("ui", "선택", "클릭", "메뉴", "버튼", "결정", "확인", "click", "menu", "button")),
@@ -180,8 +194,10 @@ def build_image_generation_spec(
     purpose: str,
     description: str,
     asset_id: str | None = None,
+    *,
+    kind_override: ImageAssetKind | None = None,
 ) -> ImageGenerationSpec:
-    kind = classify_image_kind(purpose, description)
+    kind = kind_override or classify_image_kind(purpose, description)
     width, height = IMAGE_SIZES[kind]
     pixels_per_unit = 32
     footprint = _footprint_pixels(asset_id) if kind == "sprite" else None
@@ -210,8 +226,14 @@ def classify_sound_kind(purpose: str, description: str) -> SoundAssetKind:
     return "sfx"
 
 
-def build_sound_generation_spec(purpose: str, description: str) -> SoundGenerationSpec:
-    kind = classify_sound_kind(purpose, description)
+def build_sound_generation_spec(
+    purpose: str,
+    description: str,
+    *,
+    kind_override: SoundAssetKind | None = None,
+    cue_override: str | None = None,
+) -> SoundGenerationSpec:
+    kind = kind_override or classify_sound_kind(purpose, description)
     if kind == "bgm":
         duration, loop, channels, load_type, mixer = (
             90.0,
@@ -254,7 +276,9 @@ def build_sound_generation_spec(purpose: str, description: str) -> SoundGenerati
         )
     return {
         "kind": kind,
-        "audio_cue": classify_sound_cue(purpose, description, kind),
+        "audio_cue": cue_override
+        if cue_override is not None
+        else classify_sound_cue(purpose, description, kind),
         "target_duration_seconds": duration,
         "loop": loop,
         "channels": channels,  # type: ignore[typeddict-item]

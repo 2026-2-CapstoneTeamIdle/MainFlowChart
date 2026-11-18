@@ -86,12 +86,18 @@ MODEL_ROLES: dict[str, ModelRole] = {
         "사용자 조건을 원자적인 구현 기능으로 분해합니다.",
         "MAINFLOW_CONDITION_FEATURE_PROVIDER",
         "LLM_CONDITION_FEATURE_ANALYSIS_MODEL",
+        providers=("codex_cli", "local", "openai", "gemini"),
+        default_provider="codex_cli",
+        default_model="builder",
     ),
     "genre_feature_enrichment": ModelRole(
         "장르·의존 기능 보강",
         "장르 필수 기능과 요청 기능의 선행 기능을 보강합니다.",
         "MAINFLOW_GENRE_FEATURE_PROVIDER",
         "LLM_GENRE_FEATURE_ENRICHMENT_MODEL",
+        providers=("codex_cli", "local", "openai", "gemini"),
+        default_provider="codex_cli",
+        default_model="builder",
     ),
     "design_v2": ModelRole(
         "게임 설계 문서",
@@ -903,7 +909,7 @@ class WorkflowJobManager:
         if job.mode == "test-generate":
             command.append("--game-test")
         else:
-            command.append("--visual-validation")
+            command.append("--skip-visual-validation")
         return_code = self._stream_process(job, command, environment)
         summary = _summarize_workflow_result(result_path, return_code)
         if summary["project_id"] is None:
@@ -1063,8 +1069,6 @@ def _configure_game_builder_environment(
     environment["MAINFLOW_GAME_BUILDER"] = game_builder
     if game_builder not in {"codex_cli", "claude_code"}:
         return
-    environment["MAINFLOW_CONDITION_FEATURE_PROVIDER"] = "off"
-    environment["MAINFLOW_GENRE_FEATURE_PROVIDER"] = "off"
     environment["MAINFLOW_DESIGN_V2_PROVIDER"] = "deterministic"
     environment["MAINFLOW_BLUEPRINT_PROVIDER"] = "deterministic"
     environment["MAINFLOW_CODEX_STATIC_CHECKLISTS"] = "1"
@@ -1337,7 +1341,7 @@ def _windows_unity_launcher(project_root: PureWindowsPath, version: str) -> str:
             "  pause",
             "  exit /b 1",
             ")",
-            'start "" "%MAINFLOW_UNITY%" -projectPath "%MAINFLOW_PROJECT%"',
+            'start "" "%MAINFLOW_UNITY%" -projectPath "%MAINFLOW_PROJECT%" -buildTarget win64',
             "endlocal",
             "",
         ]

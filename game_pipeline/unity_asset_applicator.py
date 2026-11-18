@@ -42,6 +42,7 @@ class UnityAssetApplicationResult:
 # Only the side-view platformer scrolls its background horizontally alone; Unity's
 # PrototypeBackgroundScroller repeats every other genre's background in both directions.
 SIDE_VIEW_GENRE = "Platformer"
+SPRITE_SHEET_NOTE_PREFIX = "sprite_sheet:"
 
 
 class UnityAssetApplicator:
@@ -122,6 +123,7 @@ class UnityAssetApplicator:
             image_ids,
             entries,
             warnings,
+            sprite_sheets=self._sprite_sheet_artifacts(image_draft),
         )
         applied_sounds = self._stage_assets(
             project_id,
@@ -243,6 +245,7 @@ class UnityAssetApplicator:
         validated_ids: set[str],
         entries: list[AssetBindingEntry],
         warnings: list[str],
+        sprite_sheets: dict[str, tuple[str, str]] | None = None,
     ) -> list[str]:
         if request["asset_type"] != asset_type:
             raise ValueError(f"Expected {asset_type} request, got {request['asset_type']}")
@@ -285,6 +288,61 @@ class UnityAssetApplicator:
                 content,
             )
             entry = self._binding_entry(item, unity_path)
+            if asset_type == "image" and sprite_sheets and asset_id in sprite_sheets:
+                sheet_id, metadata_id = sprite_sheets[asset_id]
+                animation_folder = self.GENERATED_ASSET_ROOT / "Animations"
+                sheet_path = (animation_folder / f"{safe_id}_sheet.png").as_posix()
+                metadata_path = (animation_folder / f"{safe_id}_sheet.json").as_posix()
+                sheet_bytes = self.manager.read_bytes(
+                    self.manager.get_artifact(project_id, sheet_id)
+                )
+                self._write_mutable(
+                    project_id,
+                    self.UNITY_PROJECT_ROOT / sheet_path,
+                    sheet_bytes,
+                )
+                metadata = self.manager.read_json(
+                    self.manager.get_artifact(project_id, metadata_id)
+                )
+                animations = []
+                frame_width = int(metadata["frame_width"])
+                frame_height = int(metadata["frame_height"])
+                with Image.open(io.BytesIO(sheet_bytes)) as sheet:
+                    for name, animation in metadata["animations"].items():
+                        paths = []
+                        row = int(animation["row"])
+                        for frame_index in range(int(animation["frames"])):
+                            frame_path = (
+                                animation_folder / safe_id / f"{name}_{frame_index:02d}.png"
+                            ).as_posix()
+                            frame = sheet.crop(
+                                (
+                                    frame_index * frame_width,
+                                    row * frame_height,
+                                    (frame_index + 1) * frame_width,
+                                    (row + 1) * frame_height,
+                                )
+                            )
+                            self._write_png(project_id, frame_path, frame)
+                            paths.append(frame_path)
+                        animations.append({"name": name, **animation, "frame_paths": paths})
+                unity_metadata = {
+                    "asset_id": asset_id,
+                    "frame_width": metadata["frame_width"],
+                    "frame_height": metadata["frame_height"],
+                    "columns": metadata["columns"],
+                    "rows": metadata["rows"],
+                    "animations": animations,
+                }
+                self._write_mutable(
+                    project_id,
+                    self.UNITY_PROJECT_ROOT / metadata_path,
+                    (json.dumps(unity_metadata, ensure_ascii=False, indent=2) + "\n").encode(
+                        "utf-8"
+                    ),
+                )
+                entry["animation_sheet_path"] = sheet_path
+                entry["animation_metadata_path"] = metadata_path
             entry.update(self._stage_surface_tiles(project_id, item, unity_path, content, warnings))
             entry.update(
                 self._stage_scroll_background(
@@ -296,6 +354,20 @@ class UnityAssetApplicator:
             entries.append(entry)
             applied.append(asset_id)
         return applied
+
+    @staticmethod
+    def _sprite_sheet_artifacts(draft: ImageDraft) -> dict[str, tuple[str, str]]:
+        sheets: dict[str, tuple[str, str]] = {}
+        for note in draft["notes"]:
+            if not note.startswith(SPRITE_SHEET_NOTE_PREFIX):
+                continue
+            asset_id, separator, identifiers = note.removeprefix(
+                SPRITE_SHEET_NOTE_PREFIX
+            ).partition("=")
+            if separator and identifiers.count(",") == 1:
+                sheet_id, metadata_id = identifiers.split(",", 1)
+                sheets[asset_id] = (sheet_id, metadata_id)
+        return sheets
 
     def _stage_surface_tiles(
         self,

@@ -9,6 +9,7 @@ from game_pipeline import build_game_logic_design, normalize_game_spec
 from game_pipeline.asset_specs import build_image_generation_spec
 from game_pipeline.scene_visual_assets import (
     STAGE_BACKGROUND_ASSET_ID,
+    TOWER_BUILD_SLOT_ASSET_ID,
     scene_visual_requirements,
     with_scene_visual_assets,
 )
@@ -90,6 +91,19 @@ class SceneVisualAssetsTest(unittest.TestCase):
             if is_animated_character(plan, "Platformer")
         )
         self.assertEqual(animated, ["platformer_enemy"])
+
+    def test_tower_defense_requests_a_bindable_build_slot_sprite(self) -> None:
+        spec, design = _design("타워 디펜스")
+        additions = {
+            item["asset_id"]: _plan(item)
+            for item in scene_visual_requirements(spec, design["design_v2"]["level_plan"])
+        }
+
+        self.assertIn(TOWER_BUILD_SLOT_ASSET_ID, additions)
+        self.assertEqual(additions[TOWER_BUILD_SLOT_ASSET_ID].kind, "sprite")
+        self.assertFalse(additions[TOWER_BUILD_SLOT_ASSET_ID].required)
+        binder = BINDER_PATH.read_text(encoding="utf-8")
+        self.assertIn('"tower_build_slot" => new[] { "TowerBuildSlot_", "BuildPoint_" }', binder)
 
     def test_categories_absent_from_the_level_plan_are_not_requested(self) -> None:
         spec, design = _design("플랫포머")

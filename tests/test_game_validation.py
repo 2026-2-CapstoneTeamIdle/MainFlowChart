@@ -16,6 +16,11 @@ from game_pipeline import (
     build_game_logic_design,
     normalize_game_spec,
 )
+from game_pipeline.feature_checklist_validation import (
+    ChecklistResult,
+    FeatureChecklistOutcome,
+)
+from game_pipeline.unity_project_validator import UnityValidationOutcome
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -342,6 +347,182 @@ class ValidateGameNodeTest(unittest.TestCase):
                 self.assertEqual(result["status"], "passed")
                 self.assertGreaterEqual(len(result["checks"]), 8)
 
+    def test_failed_feature_checklist_is_repaired_by_agent_and_rerun(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory) / "workspace"
+            with patch.dict(
+                os.environ,
+                {
+                    "MAINFLOW_WORKSPACE": str(workspace),
+                    "MAINFLOW_UNITY_VALIDATION_MODE": "required",
+                    "MAINFLOW_FEATURE_CHECKLIST_VALIDATION": "1",
+                    "MAINFLOW_FEATURE_CHECKLIST_AGENT_REPAIRS": "1",
+                    "MAINFLOW_CODEX_STATIC_CHECKLISTS": "1",
+                    "MAINFLOW_GAME_BUILDER": "codex_cli",
+                },
+            ):
+                manager = ArtifactManager()
+                project_id = manager.create_project()
+                project_root = manager.ensure_project(project_id)
+                (project_root / "game" / "unity_project").mkdir(parents=True)
+                request: ParsedRequest = {
+                    "contract_version": CONTRACT_VERSION,
+                    "image_style": "Pixel Art",
+                    "mood_style": "Fantasy",
+                    "genre": "뱀서류",
+                    "viewpoint": "탑다운",
+                    "condition": "가장 가까운 적을 자동 공격한다.",
+                    "custom_image": None,
+                }
+                logic: LogicAnalysis = {
+                    "contract_version": CONTRACT_VERSION,
+                    "logic_analysis_id": "logic-survivor-checklist-repair",
+                    "genre": "뱀서류",
+                    "viewpoint": "탑다운",
+                    "mood_style": "Fantasy",
+                    "core_loop": "적을 자동 공격하고 생존한다.",
+                    "features": [
+                        {
+                            "feature_id": "FC03",
+                            "name": "자동 공격",
+                            "description": "가장 가까운 적을 자동 공격한다.",
+                            "source_text": "가장 가까운 적을 자동 공격한다.",
+                            "origin": "user",
+                            "acceptance_criteria": "AutoTargetSystemModule이 존재한다.",
+                        }
+                    ],
+                    "criteria": [],
+                }
+                draft: GameLogicDraft = {
+                    "contract_version": CONTRACT_VERSION,
+                    "draft_id": "survivor-checklist-repair-draft",
+                    "status": "generated",
+                    "engine": "Unity",
+                    "entry_scene": "game/unity_project/Assets/Scenes/Bootstrap.unity",
+                    "source_artifacts": [],
+                    "required_image_asset_ids": [],
+                    "required_sound_asset_ids": [],
+                    "notes": [],
+                }
+                state = {
+                    "project_id": project_id,
+                    "parsed_request": manager.write_json(
+                        project_id,
+                        "data",
+                        "parsed_request.json",
+                        request,
+                        producer="parse_input",
+                    ),
+                    "logic_analysis": manager.write_json(
+                        project_id,
+                        "data",
+                        "logic_analysis.json",
+                        logic,
+                        producer="logic_analysis",
+                    ),
+                    "game_logic_draft": manager.write_json(
+                        project_id,
+                        "game",
+                        "game_logic_draft.json",
+                        draft,
+                        producer="design_game_logic",
+                    ),
+                }
+
+                unity_passed = UnityValidationOutcome(
+                    checks=[
+                        {
+                            "criterion_id": "unity.batchmode",
+                            "passed": True,
+                            "message": "Unity validation passed",
+                        }
+                    ],
+                    issues=[],
+                    unity_log="UNITY_TEMPLATE_BUILD_OK\n",
+                )
+                checklist_failed = FeatureChecklistOutcome(
+                    status="failed",
+                    attempts=1,
+                    results=[
+                        ChecklistResult(
+                            feature_id="FC03",
+                            feature_name="자동 공격",
+                            status="failed",
+                            message="AutoTargetSystemModule must exist. Expected: not null",
+                            test_name="AutoAttackChecklist",
+                        )
+                    ],
+                    issues=[
+                        {
+                            "code": "FEATURE_CHECKLIST_FAILED",
+                            "severity": "error",
+                            "message": (
+                                "FC03 자동 공격: AutoTargetSystemModule must exist. "
+                                "Expected: not null"
+                            ),
+                        }
+                    ],
+                    log="FEATURE_CHECKLIST_FAILED: FC03 자동 공격\n",
+                )
+                checklist_passed = FeatureChecklistOutcome(
+                    status="passed",
+                    attempts=1,
+                    results=[
+                        ChecklistResult(
+                            feature_id="FC03",
+                            feature_name="자동 공격",
+                            status="passed",
+                            message="AutoTargetSystemModule exists",
+                            test_name="AutoAttackChecklist",
+                        )
+                    ],
+                    issues=[],
+                    log="FEATURE_CHECKLIST_PASSED: FC03 자동 공격\n",
+                )
+                validator = MagicMock()
+                validator.validate.return_value = unity_passed
+                validator._read_project_version.return_value = "6000.0.71f1"
+                validator.unity_editor = Path("C:/Unity/Unity.exe")
+                checklist_workflow = MagicMock()
+                checklist_workflow.run.side_effect = [checklist_failed, checklist_passed]
+                repair_result = MagicMock()
+                repair_result.outcome = unity_passed
+                repair_result.repair_results = [MagicMock()]
+                repair_result.to_dict.return_value = {"status": "passed"}
+
+                with (
+                    patch(
+                        "mainflow.nodes.validate_game.UnityProjectValidator",
+                        return_value=validator,
+                    ),
+                    patch(
+                        "mainflow.nodes.validate_game.FeatureChecklistWorkflow",
+                        return_value=checklist_workflow,
+                    ),
+                    patch(
+                        "mainflow.nodes.validate_game.repair_with_configured_agent_harness",
+                        return_value=repair_result,
+                    ) as repair,
+                ):
+                    output = validate_game_node(cast(ValidateGameAgentInput, state))
+
+                result = manager.read_json(output["game_validation_result"])
+                self.assertEqual(result["status"], "passed")
+                self.assertEqual(checklist_workflow.run.call_count, 2)
+                repair.assert_called_once()
+                repair_call = repair.call_args.kwargs
+                self.assertEqual(repair_call["phase"], "feature_checklist_1")
+                self.assertIn(
+                    "AutoTargetSystemModule must exist",
+                    repair_call["initial_outcome"].issues[0]["message"],
+                )
+                checklist_check = next(
+                    check
+                    for check in result["checks"]
+                    if check["criterion_id"] == "feature_checklist.fc03"
+                )
+                self.assertTrue(checklist_check["passed"])
+
 
 class GameFailureIsolationTest(unittest.TestCase):
     def test_codex_builder_does_not_complete_context_review_twice(self) -> None:
@@ -354,6 +535,24 @@ class GameFailureIsolationTest(unittest.TestCase):
                 "summary": "implemented",
                 "changed_files": ["Assets/Game.cs"],
                 "unresolved_requirements": [],
+                "visual_objects": [
+                    {
+                        "asset_id": "visual_time_gate",
+                        "scene_object_prefix": "TimeGate_",
+                        "purpose": "시간의 문",
+                        "description": "시간을 되돌리면 열리는 문 하나",
+                        "kind": "sprite",
+                    }
+                ],
+                "sound_events": [
+                    {
+                        "asset_id": "time_gate_open_sfx",
+                        "cue_id": "time_gate_open",
+                        "purpose": "시간의 문 개방음",
+                        "description": "시간의 문이 열릴 때 재생되는 종소리",
+                        "kind": "sfx",
+                    }
+                ],
             }
             harness.implement_project.return_value = implementation
             validation = MagicMock()
@@ -400,6 +599,7 @@ class GameFailureIsolationTest(unittest.TestCase):
 
                 draft = ArtifactManager().read_json(state["game_logic_draft"])
                 image_request = ArtifactManager().read_json(state["image_asset_request"])
+                sound_request = ArtifactManager().read_json(state["sound_asset_request"])
 
             self.assertEqual(draft["status"], "generated")
             image_ids = [item["asset_id"] for item in image_request["assets"]]
@@ -414,9 +614,63 @@ class GameFailureIsolationTest(unittest.TestCase):
                     "platformer_checkpoint",
                     "platformer_goal",
                     "stage_background",
+                    "hud_panel_frame",
+                    "hud_icon_health",
+                    "hud_icon_currency",
+                    "hud_icon_objective",
+                    "visual_time_gate",
                 ],
             )
-            self.assertEqual(set(draft["required_image_asset_ids"]), set(image_ids))
+            self.assertEqual(
+                set(draft["required_image_asset_ids"]),
+                set(image_ids),
+            )
+            self.assertEqual(
+                next(
+                    item["unity_binding_key"]
+                    for item in image_request["assets"]
+                    if item["asset_id"] == "hud_panel_frame"
+                ),
+                "ui_object_prefix:HudArt_",
+            )
+            sound_ids = [item["asset_id"] for item in sound_request["assets"]]
+            self.assertIn("time_gate_open_sfx", sound_ids)
+            self.assertEqual(set(draft["required_sound_asset_ids"]), set(sound_ids))
+            manifest = json.loads(
+                (
+                    workspace / state["project_id"] / "game/unity_project/GenerationManifest.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                {item["asset_id"] for item in manifest["asset_requirements"]},
+                set(image_ids) | set(sound_ids),
+            )
+            self.assertEqual(
+                sound_request["assets"][-1]["generation_spec"]["audio_cue"],
+                "time_gate_open",
+            )
+            self.assertEqual(
+                json.loads(
+                    (
+                        workspace
+                        / state["project_id"]
+                        / "game/unity_project/Assets/GameTemplate/Generated/AssetRequests/"
+                        "sound_asset_request.json"
+                    ).read_text(encoding="utf-8")
+                )["assets"][-1]["asset_id"],
+                "time_gate_open_sfx",
+            )
+            self.assertEqual(
+                json.loads(
+                    (
+                        workspace
+                        / state["project_id"]
+                        / "game/unity_project/Assets/GameTemplate/Generated/AssetRequests/"
+                        "image_asset_request.json"
+                    ).read_text(encoding="utf-8")
+                )["assets"][-1]["unity_binding_key"],
+                "scene_object_prefix:TimeGate_",
+            )
             harness.implement_project.assert_called_once()
             harness.validate_and_repair.assert_called_once()
 

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
 from typing import cast
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -26,6 +28,14 @@ from mainflow.contracts import (
     SoundDraft,
     SoundValidationResult,
 )
+from mainflow.nodes.apply_assets import image_application_enabled
+
+
+def test_image_application_is_on_by_default_and_can_be_disabled() -> None:
+    with patch.dict(os.environ, {}, clear=True):
+        assert image_application_enabled()
+    with patch.dict(os.environ, {"MAINFLOW_APPLY_IMAGE_ASSETS": "off"}):
+        assert not image_application_enabled()
 
 
 class UnityAssetApplicatorTest(unittest.TestCase):
@@ -219,6 +229,7 @@ class UnityAssetApplicatorTest(unittest.TestCase):
             ),
             b"corrected-wav",
         )
+
         self.assertTrue(bgm["loop"])
         self.assertEqual(bgm["unity_load_type"], "streaming")
         self.assertEqual(bgm["mixer_group"], "Music")
@@ -285,6 +296,109 @@ class UnityAssetApplicatorTest(unittest.TestCase):
         self.assertIn(
             "Image application is disabled",
             " ".join(skipped_result.manifest["warnings"]),
+        )
+
+    def test_validated_character_sheet_stages_runtime_frames_and_state_metadata(self) -> None:
+        base = Image.new("RGBA", (4, 4), (20, 40, 60, 255))
+        sheet = Image.new("RGBA", (8, 4), (0, 0, 0, 0))
+        sheet.paste(base, (0, 0))
+        sheet.paste(Image.new("RGBA", (4, 4), (80, 100, 120, 255)), (4, 0))
+
+        def png(image: Image.Image) -> bytes:
+            output = io.BytesIO()
+            image.save(output, format="PNG")
+            return output.getvalue()
+
+        base_ref = self.manager.write_bytes(
+            self.project_id, "image", "player.png", png(base), producer="test"
+        )
+        sheet_ref = self.manager.write_bytes(
+            self.project_id, "image", "player_sheet.png", png(sheet), producer="test"
+        )
+        metadata_ref = self.manager.write_json(
+            self.project_id,
+            "image",
+            "player_sheet.json",
+            {
+                "frame_width": 4,
+                "frame_height": 4,
+                "columns": 2,
+                "rows": 1,
+                "animations": {"idle": {"row": 0, "frames": 2, "fps": 6, "loop": True}},
+            },
+            producer="test",
+        )
+        image_asset = self._image_asset("player_sprite", base_ref)
+        image_request = cast(
+            AssetGenerationRequest,
+            {
+                "genre": "SurvivorLike",
+                "asset_type": "image",
+                "image_style": "Pixel Art",
+                "assets": [self._image_item("player_sprite", True)],
+            },
+        )
+        sound_request = cast(
+            AssetGenerationRequest,
+            {"genre": "SurvivorLike", "asset_type": "sound", "assets": []},
+        )
+        result = UnityAssetApplicator(self.manager).apply(
+            self.project_id,
+            image_request,
+            sound_request,
+            cast(
+                ImageDraft,
+                {
+                    "assets": [image_asset],
+                    "notes": [
+                        f"sprite_sheet:player_sprite={sheet_ref['artifact_id']},"
+                        f"{metadata_ref['artifact_id']}"
+                    ],
+                },
+            ),
+            cast(SoundDraft, {"assets": []}),
+            cast(
+                ImageValidationResult,
+                {
+                    "validated_asset_ids": ["player_sprite"],
+                    "validated_assets": {
+                        "manifest_version": "1.0.0",
+                        "contract_version": CONTRACT_VERSION,
+                        "assets": [
+                            {
+                                "asset_id": "player_sprite",
+                                "asset_type": "image",
+                                "unity_binding_key": "asset_registry:player_sprite",
+                                "artifact": base_ref,
+                                "file_format": "png",
+                            }
+                        ],
+                    },
+                },
+            ),
+            cast(
+                SoundValidationResult,
+                {
+                    "validated_asset_ids": [],
+                    "validated_assets": {
+                        "manifest_version": "1.0.0",
+                        "contract_version": CONTRACT_VERSION,
+                        "assets": [],
+                    },
+                },
+            ),
+        )
+        entry = result.manifest["entries"][0]
+        self.assertTrue(entry["animation_sheet_path"].endswith("player_sprite_sheet.png"))
+        staged = self.manager.read_project_file(
+            self.project_id, "game/unity_project/" + entry["animation_metadata_path"]
+        )
+        metadata = json.loads(staged)
+        frames = metadata["animations"][0]["frame_paths"]
+        self.assertEqual(len(frames), 2)
+        self.assertEqual(
+            self.manager.read_project_file(self.project_id, "game/unity_project/" + frames[1]),
+            png(Image.new("RGBA", (4, 4), (80, 100, 120, 255))),
         )
 
     def test_sound_cues_follow_purpose_and_description(self) -> None:

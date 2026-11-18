@@ -41,6 +41,10 @@ uv run --locked python -m mainflow.run_flow `
 
 환경 변수 방식은 `MAINFLOW_VISUAL_VALIDATION=1`이며,
 `MAINFLOW_VISUAL_VALIDATION_ATTEMPTS`는 1~3만 허용한다.
+현재 LocalWeb의 Generate는 목표 이미지용 로컬 서버 없이도 완료할 수 있도록
+`--skip-visual-validation`으로 실행한다. 이때 결과는 `mode=disabled`,
+`status=skipped`로 기록되며 VLM 비교 부재만으로 최종 검증이 실패하지 않는다.
+CLI에서 시각 비교를 사용하려면 `--visual-validation`을 명시한다.
 
 ### 이미지·사운드 없는 게임 테스트
 

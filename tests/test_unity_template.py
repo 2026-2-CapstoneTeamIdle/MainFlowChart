@@ -390,7 +390,6 @@ class UnityTemplateTest(unittest.TestCase):
         for transition_id in (
             "platformer.collectible_to_progress",
             "platformer.hazard_to_health",
-            "platformer.death_to_checkpoint",
             "platformer.requirements_to_clear",
             "tower.build_to_currency",
             "tower.spawn_to_path",
@@ -403,6 +402,8 @@ class UnityTemplateTest(unittest.TestCase):
             "survivor.choice_to_stat",
         ):
             self.assertIn(f'MarkCausalTransition("{transition_id}")', smoke)
+        self.assertIn('"platformer.death_to_checkpoint"', smoke)
+        self.assertIn('"platformer.fall_to_checkpoint"', smoke)
         self.assertIn('Debug.Log("UNITY_CAUSAL_TRANSITION_OK:" + transitionId)', smoke)
 
     def test_template_meta_guids_are_unique(self) -> None:

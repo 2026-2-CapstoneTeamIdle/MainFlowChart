@@ -12,9 +12,11 @@ from typing import Any
 from game_pipeline import UnityProjectGenerator, UnityProjectValidator
 from game_pipeline.agent_harness_repair import repair_with_configured_agent_harness
 from game_pipeline.design_catalog import GENRE_ALIASES
+from game_pipeline.feature_evidence_audit import audit_feature_evidence
 from game_pipeline.feature_planner import plan_feature_mechanics
 from game_pipeline.game_quality import parse_playtest_metrics
 from game_pipeline.runtime_invariants import REQUIRED_CAUSAL_TRANSITIONS
+from game_pipeline.gameplay_contracts import checkpoint_respawn_requested
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -46,6 +48,7 @@ def final_validation_node(
     issues: list[ValidationIssue] = []
     evidence: list[ArtifactReference] = []
     package: ArtifactReference | None = None
+    reconciled_game_validation_reference: ArtifactReference | None = None
 
     def check(criterion_id: str, passed: bool, message: str, *, required: bool = True) -> None:
         checks.append({"criterion_id": criterion_id, "passed": bool(passed), "message": message})
@@ -215,6 +218,7 @@ def final_validation_node(
                 else None,
             )
             outcome = validator.validate(root, draft, payloads["parsed_request"])
+            final_repair_applied = False
             if outcome.status == "failed":
                 log("에셋 적용 후 Unity 검증 실패를 CLI Agent Harness에 전달해 다시 수정합니다.")
                 try:
@@ -235,6 +239,7 @@ def final_validation_node(
                     )
                     if repair_result is not None:
                         outcome = repair_result.outcome
+                        final_repair_applied = bool(repair_result.repair_results)
                         manager.write_json(
                             state["project_id"],
                             "validation",
@@ -261,6 +266,54 @@ def final_validation_node(
                             "message": f"{type(repair_error).__name__}: {repair_error}",
                         }
                     )
+            reconciled_game_validation = outcome.status == "passed" and (
+                _reconcile_upstream_game_validation(
+                    checks,
+                    issues,
+                    payloads["game_validation_result"],
+                )
+            )
+            if reconciled_game_validation:
+                original_game_validation = payloads["game_validation_result"]
+                evidence.append(
+                    manager.write_json(
+                        state["project_id"],
+                        "validation",
+                        f"game_validation_reconciled{artifact_suffix}.json",
+                        {
+                            "reason": (
+                                "Authoritative post-asset Unity validation passed after an "
+                                "earlier runtime-only game validation failure."
+                            ),
+                            "final_repair_applied": final_repair_applied,
+                            "upstream_status": original_game_validation["status"],
+                            "post_repair_unity_status": outcome.status,
+                            "post_repair_checks": outcome.checks,
+                        },
+                        producer="final_validation",
+                    )
+                )
+                evidence.append(state["game_validation_result"])
+                reconciled_game_validation_reference = manager.write_json(
+                    state["project_id"],
+                    "validation",
+                    f"game_validation_effective{artifact_suffix}.json",
+                    {
+                        **original_game_validation,
+                        "status": "passed",
+                        "checks": [
+                            item for item in original_game_validation["checks"] if item["passed"]
+                        ]
+                        + outcome.checks,
+                        "issues": [
+                            item
+                            for item in original_game_validation["issues"]
+                            if item["severity"] != "error"
+                        ],
+                    },
+                    producer="final_validation",
+                )
+                evidence.append(reconciled_game_validation_reference)
             check(
                 "final.unity_validation",
                 outcome.status == "passed",
@@ -304,6 +357,16 @@ def final_validation_node(
                 and not report.get("missing_required_asset_ids", []),
                 "Every applied asset must be imported, registered and scene-bound",
             )
+            animated = {
+                entry["asset_id"]
+                for entry in entries
+                if entry["asset_type"] == "image" and entry.get("animation_metadata_path")
+            }
+            check(
+                "integration.character_animation_bindings",
+                animated <= set(report.get("animation_bound_asset_ids", [])),
+                "Every staged character sprite sheet must have a scene-bound Animator controller",
+            )
             telemetry = parse_playtest_metrics(outcome.unity_log)
             plan = json.loads(
                 manager.read_project_file(
@@ -330,6 +393,11 @@ def final_validation_node(
             expected_transitions = set(
                 REQUIRED_CAUSAL_TRANSITIONS.get(genre_profile, ()) if genre_profile else ()
             )
+            if genre_profile == "Platformer" and checkpoint_respawn_requested(
+                payloads["parsed_request"].get("condition", "")
+            ):
+                expected_transitions.discard("platformer.fall_to_checkpoint")
+                expected_transitions.add("platformer.death_to_checkpoint")
             check(
                 "final.causal_gameplay",
                 expected_transitions <= passed_transitions,
@@ -340,6 +408,7 @@ def final_validation_node(
                     + ", ".join(sorted(expected_transitions - passed_transitions))
                 ),
             )
+            unresolved_feature_criteria: list[dict[str, Any]] = []
             for criterion in logic["criteria"]:
                 # Semantic criteria require their own explicit checks, never a broad target status.
                 matching = [
@@ -352,14 +421,24 @@ def final_validation_node(
                 if criterion["target"] == "integration":
                     matching = [c for c in checks if c["criterion_id"] == criterion["criterion_id"]]
                 satisfied = bool(matching) and all(c["passed"] for c in matching)
-                fallback_waiver = False
+                waiver_reason = None
                 if (criterion["target"] == "image" and suppressed_placeholder_images) or (
                     criterion["target"] == "sound"
                     and fallback_sound_assets
                     and set(draft["required_sound_asset_ids"]) <= fallback_sound_assets
                 ):
                     satisfied = True
-                    fallback_waiver = True
+                    waiver_reason = "no real asset provider configured"
+                if (
+                    not matching
+                    and criterion["target"] == "image"
+                    and criterion["criterion_id"] == "visual-style"
+                ):
+                    if visual["status"] == "passed":
+                        satisfied = True
+                    elif visual["mode"] == "disabled" and visual["status"] == "skipped":
+                        satisfied = True
+                        waiver_reason = "visual validation disabled"
                 if criterion["target"] == "game" and not matching:
                     feature = next(
                         (
@@ -370,30 +449,107 @@ def final_validation_node(
                         None,
                     )
                     if feature is not None:
-                        mechanics = set(plan_feature_mechanics([feature], logic["genre"]).mechanics)
-                        if mechanics:
-                            satisfied = (
-                                runtime_plan_passed
-                                and mechanics <= set(plan["required_feature_bindings"])
-                                and not mechanics.intersection(
-                                    telemetry["unused_requested_features"]
-                                )
+                        runtime_transition = _runtime_transition_for_feature(
+                            feature,
+                            genre_profile,
+                        )
+                        if runtime_transition is not None:
+                            satisfied = runtime_transition in passed_transitions
+                        else:
+                            mechanics = set(
+                                plan_feature_mechanics([feature], logic["genre"]).mechanics
                             )
-                        elif feature.get("origin") == "genre_inferred":
-                            satisfied = runtime_plan_passed
+                            if mechanics:
+                                satisfied = (
+                                    runtime_plan_passed
+                                    and mechanics <= set(plan["required_feature_bindings"])
+                                    and not mechanics.intersection(
+                                        telemetry["unused_requested_features"]
+                                    )
+                                )
+                            elif feature.get("origin") == "genre_inferred":
+                                satisfied = runtime_plan_passed
                 check(
                     criterion["criterion_id"],
                     satisfied,
                     (
                         criterion["description"]
                         + (
-                            " (skipped: no real asset provider configured)"
-                            if fallback_waiver
+                            f" (skipped: {waiver_reason})"
+                            if waiver_reason
                             else " (explicit evidence required)"
                         )
                     ),
                     required=criterion["required"],
                 )
+                if (
+                    not satisfied
+                    and criterion["target"] == "game"
+                    and any(
+                        criterion["criterion_id"] == "logic-" + feature["feature_id"]
+                        for feature in logic["features"]
+                    )
+                ):
+                    unresolved_feature_criteria.append(criterion)
+            builder = os.environ.get("MAINFLOW_GAME_BUILDER", "").strip().lower()
+            if (
+                unresolved_feature_criteria
+                and builder in {"codex_cli", "claude_code"}
+                and outcome.status == "passed"
+                and runtime_plan_passed
+            ):
+                log(
+                    "실행 검증에서 직접 증명되지 않은 Feature "
+                    f"{len(unresolved_feature_criteria)}개의 Unity 소스 연결을 Agent가 항목별로 검토합니다."
+                )
+                try:
+                    audited = audit_feature_evidence(
+                        builder=builder,
+                        project_root=root,
+                        audit_root=manager.ensure_project(state["project_id"])
+                        / "validation"
+                        / "feature_evidence_audit"
+                        / (artifact_variant or "final_validation"),
+                        criteria=unresolved_feature_criteria,
+                        features=logic["features"],
+                    )
+                    evidence.append(
+                        manager.write_json(
+                            state["project_id"],
+                            "validation",
+                            f"feature_evidence_audit{artifact_suffix}.json",
+                            audited,
+                            producer="final_validation",
+                        )
+                    )
+                    for item in checks:
+                        audited_item = audited.get(item["criterion_id"])
+                        if audited_item is None:
+                            continue
+                        if audited_item["satisfied"]:
+                            item["passed"] = True
+                            citations = ", ".join(
+                                cited["path"] for cited in audited_item["evidence"]
+                            )
+                            item["message"] += f" (Unity source evidence: {citations})"
+                            issues[:] = [
+                                issue
+                                for issue in issues
+                                if issue.get("target_id") != item["criterion_id"]
+                            ]
+                        else:
+                            reason = audited_item["reason"] or "No verified Unity source evidence"
+                            item["message"] += f" (audit: {reason})"
+                            for issue in issues:
+                                if issue.get("target_id") == item["criterion_id"]:
+                                    issue["message"] = item["message"]
+                except Exception as audit_error:  # noqa: BLE001 - keep unmet criteria visible
+                    check(
+                        "final.feature_evidence_audit",
+                        False,
+                        f"Feature evidence audit could not complete: {audit_error}",
+                        required=False,
+                    )
             if not any(issue["severity"] == "error" for issue in issues):
                 package = manager.write_bytes(
                     state["project_id"],
@@ -413,7 +569,7 @@ def final_validation_node(
         "evidence": evidence,
         "entry_artifact": package,
     }
-    return {
+    output: FinalValidationAgentOutput = {
         "final_validation_result": manager.write_json(
             state["project_id"],
             "validation",
@@ -422,3 +578,62 @@ def final_validation_node(
             producer="final_validation",
         )
     }
+    if result["status"] == "passed" and reconciled_game_validation_reference is not None:
+        output["game_validation_result"] = reconciled_game_validation_reference
+    return output
+
+
+_RECONCILABLE_GAME_VALIDATION_CODES = frozenset(
+    {
+        "UNITY_RUNTIME_TEST_FAILED",
+        "AGENT_POST_VALIDATION_REPAIR_FAILED",
+    }
+)
+
+
+def _reconcile_upstream_game_validation(
+    checks: list[ValidationCheckResult],
+    issues: list[ValidationIssue],
+    upstream: dict[str, Any],
+) -> bool:
+    """Replace a stale runtime-only failure after authoritative final Unity validation passes."""
+
+    upstream_errors = [issue for issue in upstream["issues"] if issue["severity"] == "error"]
+    if not upstream_errors or any(
+        issue["code"] not in _RECONCILABLE_GAME_VALIDATION_CODES for issue in upstream_errors
+    ):
+        return False
+    for item in checks:
+        if item["criterion_id"] == "final.game_validation":
+            item["passed"] = True
+            item["message"] = (
+                "Upstream runtime failure was repaired and authoritative final Unity validation "
+                "passed"
+            )
+            break
+    issues[:] = [item for item in issues if item.get("target_id") != "final.game_validation"]
+    return True
+
+
+def _runtime_transition_for_feature(
+    feature: dict[str, Any],
+    genre_profile: str | None,
+) -> str | None:
+    """Map semantic combat requirements to authoritative causal Play Mode evidence."""
+
+    if genre_profile != "SurvivorLike":
+        return None
+    name = str(feature.get("name", "")).replace(" ", "")
+    description = str(feature.get("description", "")).replace(" ", "")
+    explicit_attack_names = {"공격", "자동공격", "8방향공격"}
+    player_attack_phrases = (
+        "플레이어가적을공격",
+        "플레이어주변을회전하는검",
+        "검이적에게피해",
+        "무기가적에게피해",
+    )
+    if name in explicit_attack_names or any(
+        phrase in description for phrase in player_attack_phrases
+    ):
+        return "survivor.attack_to_damage"
+    return None

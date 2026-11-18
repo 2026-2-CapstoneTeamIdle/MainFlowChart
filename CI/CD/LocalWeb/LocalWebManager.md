@@ -35,7 +35,7 @@
 
 | 버튼 | 실행 범위 |
 |---|---|
-| Generate | 기존 운영 Graph 전체: 게임, 이미지, 사운드 생성·검증·적용과 최종 검증 |
+| Generate | 게임, 이미지, 사운드 생성·검증·적용과 최종 검증. VLM 시각 비교는 현재 비활성화되어 실패 조건에서 제외 |
 | test-Generate | `--game-test`: 이미지·사운드 생성/검증/적용 제외, 모듈 합성 → 컴파일 → Feature Checklist → Visual Checklist |
 
 두 모드 모두 먼저 `user_input → parse_input → analysis → logic_analysis`를 실행한다. 화면에
@@ -77,6 +77,19 @@ docker compose -f "CI/CD/LocalWeb/compose.yaml" up --build -d
 ```text
 http://127.0.0.1:8000
 ```
+
+`완료 알림`을 켜면 Feature 분석 종료와 게임 생성 종료 시 소리와 Chrome 시스템 알림을
+보낸다. 처음 켤 때 Chrome의 알림 권한 요청을 허용해야 하며, 체크박스 옆에 현재 권한
+상태가 표시된다. Windows 알림이 보이지 않으면 Windows 설정에서 Chrome 알림과
+방해 금지 상태를 확인한다. 진행 상태를 감지하려면 Web UI 탭을 열어 둔다.
+
+이미지 생성 백엔드에서 만든 검증된 이미지는 기본적으로 Unity 프로젝트에 적용된다.
+적용 없이 파일만 생성하려면 서버 시작 전에 `MAINFLOW_APPLY_IMAGE_ASSETS=off`로 설정한다.
+
+Docker의 Unity 검증은 Linux Editor에서 실행되지만, Windows에서 생성 프로젝트를 열면
+기본 빌드 타깃을 Windows 64-bit로 선택한다. Web UI의 Editor 열기 버튼과 Unity Hub에서
+직접 여는 경우 모두 적용되며, Editor를 연 뒤 사용자가 선택한 플랫폼은 해당 세션 동안 유지한다.
+WebGL Preview 빌드는 별도로 WebGL 타깃을 사용한다.
 
 종료:
 
@@ -267,6 +280,15 @@ WebGL Preview가 Docker 안에서 실행된다.
 14. 게임 검증이 실패했더라도 프로젝트 ID와 Unity 프로젝트가 남아 있으면
     `Preview 다시 빌드`를 눌러 현재 실패 상태의 게임을 직접 확인할 수 있다. 이 Preview는
     디버깅 편의 기능이며 실패한 검증 결과를 성공으로 바꾸지는 않는다.
+
+Codex CLI 또는 Claude Code로 게임을 구현해도 `Condition → Feature`와
+`장르·의존 기능 보강`에는 기능별 AI 설정에서 선택한 Provider와 Model을 사용한다.
+두 역할에서 `Codex CLI`를 고르고 Model을 `builder`로 두면 게임 생성 요청에서 선택한
+Codex 모델과 추론 수준으로 읽기 전용 JSON 분석을 수행한다. 이 두 역할에는 LocalAI가
+필요하지 않다. 긴 Condition과 Feature 목록은 여러 항목씩 묶어서 요청한다.
+`local`을 선택했다면 LocalAI 서버가 실행 중이어야 하며, API Provider를 선택했다면
+해당 API 키가 필요하다. 두 분석 단계의 결과와 실패 요청 수는 프로젝트의
+`data/condition_feature_analysis.json`과 `data/genre_feature_enrichment.json`에 기록된다.
 
 ## 생성 파일
 

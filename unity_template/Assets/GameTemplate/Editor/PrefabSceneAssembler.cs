@@ -61,6 +61,7 @@ namespace TeamIdle.GameTemplate.Editor
             public Transform Ui;
             public Camera Camera;
             public AssemblyReport Report;
+            public bool AgentHarnessMode;
         }
 
         public static void Assemble(
@@ -114,6 +115,7 @@ namespace TeamIdle.GameTemplate.Editor
                 Ui = ui,
                 Camera = sceneCamera,
                 Report = report,
+                AgentHarnessMode = IsAgentHarnessProject(),
             };
 
             context.Blueprint.ApplyContentTo(context.Plan);
@@ -234,7 +236,9 @@ namespace TeamIdle.GameTemplate.Editor
                 ["CardGame"] = new[] { "OpponentArea", "PlayerArea", "CardSlot_1" },
                 ["VisualNovel"] = new[] { "SceneBackground", "CharacterLeft", "CharacterRight" },
                 ["RaisingSimulation"] = new[] { "Room", "Trainee", "ActivityCard_1" },
-                ["SurvivorLike"] = new[] { "Player", "ArenaMarker_1" },
+                ["SurvivorLike"] = IsAgentHarnessProject()
+                    ? new[] { "Player" }
+                    : new[] { "Player", "ArenaMarker_1" },
             };
             if (!expectedObjects.TryGetValue(config.Genre, out var names))
             {
@@ -327,6 +331,13 @@ namespace TeamIdle.GameTemplate.Editor
             foreach (var entity in context.Blueprint.entities)
             {
                 if (string.IsNullOrWhiteSpace(entity.entity_id))
+                {
+                    continue;
+                }
+
+                // In agent mode, blueprint entries are requirements for the agent, not
+                // decorative blocks. The agent authors the actual scene geometry.
+                if (context.AgentHarnessMode && entity.archetype != "player_anchor")
                 {
                     continue;
                 }
@@ -424,6 +435,9 @@ namespace TeamIdle.GameTemplate.Editor
             var stageController =
                 context.Ui.gameObject.AddComponent<PrototypePlatformerStageController>();
             stageController.Bind(player.transform);
+            stageController.ConfigureDeathRecovery(
+                !context.Presentation.ui_screens.Contains("failure")
+            );
             var cameraFollow = context.Camera.gameObject.AddComponent<PrototypeCameraFollow>();
             cameraFollow.Bind(player.transform);
             var groundCheck = new GameObject("GroundCheck").transform;
@@ -909,7 +923,7 @@ namespace TeamIdle.GameTemplate.Editor
             SetInt(spawner, "maximumAlive", 24);
 
             var autoTarget = GetModule<AutoTargetSystemModule>(context);
-            if (autoTarget != null)
+            if (autoTarget != null && !context.AgentHarnessMode)
             {
                 CreateSpriteObject(
                     "LeftWing",
@@ -941,7 +955,9 @@ namespace TeamIdle.GameTemplate.Editor
                 context.Blueprint
             );
 
-            var arenaMarkerCount = context.Plan.Count("arena_marker", 20);
+            var arenaMarkerCount = context.AgentHarnessMode
+                ? 0
+                : context.Plan.Count("arena_marker", 20);
             for (var index = 0; index < arenaMarkerCount; index++)
             {
                 var angle = index / (float)arenaMarkerCount * Mathf.PI * 2f;
@@ -959,6 +975,14 @@ namespace TeamIdle.GameTemplate.Editor
                     "arena-marker"
                 );
             }
+        }
+
+        private static bool IsAgentHarnessProject()
+        {
+            const string designPath = "Assets/GameTemplate/Generated/GameLogicDesign.json";
+            return File.Exists(designPath)
+                && File.ReadAllText(designPath)
+                    .Contains("\"agent_harness_mode\"", StringComparison.Ordinal);
         }
 
         private static ChaseAgent2D CreateSurvivorEnemyPrefab(AssemblyContext context)

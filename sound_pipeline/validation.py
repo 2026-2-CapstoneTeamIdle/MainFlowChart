@@ -195,10 +195,14 @@ def apply_fixes(
         samples[-fade:] *= (np.linspace(1.0, 0.0, fade, dtype=np.float32) ** 3)[:, None]
         fixes.append(f"fade_out_{FADE_MS:g}ms")
     if "sound-loop-seam" in failed and loop and len(samples) > 2 * fade:
-        ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)[:, None]
-        head = samples[:fade] * ramp + samples[-fade:] * (1 - ramp)
-        samples = np.concatenate([head, samples[fade:-fade]])
-        fixes.append(f"loop_crossfade_{FADE_MS:g}ms")
+        # Preserve duration and blend a longer mirrored tail into the head. A short
+        # overlap can close the sample jump but leave the first and last 50 ms at
+        # very different loudness, which fails loop validation after two repairs.
+        loop_fade = min(len(samples) // 4, max(fade, int(rate * 0.2)))
+        ramp = np.linspace(0.0, 1.0, loop_fade, dtype=np.float32)[:, None]
+        samples = samples.copy()
+        samples[:loop_fade] = samples[-loop_fade:][::-1] * (1 - ramp) + samples[:loop_fade] * ramp
+        fixes.append(f"loop_crossfade_{loop_fade / rate * 1000:g}ms")
     peak = float(np.abs(samples).max()) if samples.size else 0.0
     if "sound-true-peak" in failed and peak > 0:
         samples = samples * (10 ** ((PEAK_LIMIT_DBFS - 0.1) / 20) / peak)

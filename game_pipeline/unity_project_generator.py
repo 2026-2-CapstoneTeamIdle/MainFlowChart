@@ -449,6 +449,11 @@ class UnityProjectGenerator:
                             requirement["purpose"],
                             variation_description,
                             requirement["asset_id"],
+                            kind_override=(
+                                "sprite"
+                                if requirement["asset_id"] == "primary_attack_visual"
+                                else None
+                            ),
                         )
                         if asset_type == "image"
                         else build_sound_generation_spec(

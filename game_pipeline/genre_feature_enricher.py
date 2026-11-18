@@ -7,6 +7,7 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from game_pipeline.gemini_feature_generator import (
@@ -16,11 +17,14 @@ from game_pipeline.gemini_feature_generator import (
     StructuredJsonClient,
     resolve_feature_provider_from_environment,
 )
+from game_pipeline.codex_cli.structured_json_client import CodexStructuredJsonClient
 from mainflow.contracts import FeatureRequirement, GameGenre, Viewpoint
 
 MAX_INFERRED_FEATURES = 30
 MAX_INFERRED_FEATURES_PER_REQUEST = 5
 FEATURES_PER_DEPENDENCY_REQUEST = 3
+CODEX_FEATURES_PER_DEPENDENCY_REQUEST = 8
+CODEX_MAX_INFERRED_FEATURES_PER_REQUEST = 8
 DEFAULT_CONDITION_FEATURE_MODEL = "gemma4-12b-it-qat-q4-0"
 
 GENRE_FEATURE_ENRICHMENT_SCHEMA: dict[str, Any] = {
@@ -159,8 +163,31 @@ class GenreFeatureEnricher:
     ) -> GenreFeatureEnrichment:
         baseline_contract = baseline_contract or {}
         requests: list[tuple[str, set[str], list[FeatureRequirement]]] = []
-        for index in range(0, len(existing_features), FEATURES_PER_DEPENDENCY_REQUEST):
-            target_features = existing_features[index : index + FEATURES_PER_DEPENDENCY_REQUEST]
+        group_size = (
+            CODEX_FEATURES_PER_DEPENDENCY_REQUEST
+            if self.provider == "codex_cli"
+            else FEATURES_PER_DEPENDENCY_REQUEST
+        )
+        request_feature_limit = (
+            CODEX_MAX_INFERRED_FEATURES_PER_REQUEST
+            if self.provider == "codex_cli"
+            else MAX_INFERRED_FEATURES_PER_REQUEST
+        )
+        schema = (
+            {
+                **GENRE_FEATURE_ENRICHMENT_SCHEMA,
+                "properties": {
+                    "features": {
+                        **GENRE_FEATURE_ENRICHMENT_SCHEMA["properties"]["features"],
+                        "maxItems": request_feature_limit,
+                    }
+                },
+            }
+            if self.provider == "codex_cli"
+            else GENRE_FEATURE_ENRICHMENT_SCHEMA
+        )
+        for index in range(0, len(existing_features), group_size):
+            target_features = existing_features[index : index + group_size]
             requests.append(
                 (
                     "user_requirement_dependency",
@@ -194,8 +221,9 @@ class GenreFeatureEnricher:
                         target_features=target_features,
                         closure_scope=scope,
                         baseline_contract=baseline_contract,
+                        request_feature_limit=request_feature_limit,
                     ),
-                    GENRE_FEATURE_ENRICHMENT_SCHEMA,
+                    schema,
                 )
             except (RuntimeError, TypeError, ValueError) as error:
                 failed_requests.append(
@@ -211,7 +239,7 @@ class GenreFeatureEnricher:
             raw_features = response.get("features")
             if not isinstance(raw_features, list):
                 raise TypeError("Genre feature enrichment must return a features array")
-            for item in raw_features[:MAX_INFERRED_FEATURES_PER_REQUEST]:
+            for item in raw_features[:request_feature_limit]:
                 if len(inferred) >= MAX_INFERRED_FEATURES:
                     break
                 if not isinstance(item, Mapping):
@@ -328,6 +356,7 @@ class GenreFeatureEnricher:
         target_features: list[FeatureRequirement],
         closure_scope: str,
         baseline_contract: Mapping[str, object],
+        request_feature_limit: int = MAX_INFERRED_FEATURES_PER_REQUEST,
     ) -> str:
         payload = {
             "genre": genre,
@@ -371,7 +400,7 @@ class GenreFeatureEnricher:
             "You are a senior game systems designer performing requirement closure before "
             "detailed Unity design. This is one bounded request in a multi-request analysis. "
             "Produce only the closure_kind named by closure_scope and return no more than "
-            f"{MAX_INFERRED_FEATURES_PER_REQUEST} features. {scope_instruction} "
+            f"{request_feature_limit} features. {scope_instruction} "
             "Do not merely paraphrase the requested behavior. For example, an "
             "orbiting weapon request needs a damageable enemy, collision-to-damage connection, "
             "enemy death consequence, visible hit feedback, and any promised reward delivery; an "
@@ -411,7 +440,9 @@ class GenreFeatureEnricher:
         )
 
 
-def create_genre_feature_enricher_from_environment() -> GenreFeatureEnricher | None:
+def create_genre_feature_enricher_from_environment(
+    project_root: Path | None = None,
+) -> GenreFeatureEnricher | None:
     """Use the code-generation provider unless this optional stage is disabled."""
 
     configured = os.environ.get("MAINFLOW_GENRE_FEATURE_PROVIDER", "").strip().lower()
@@ -423,6 +454,15 @@ def create_genre_feature_enricher_from_environment() -> GenreFeatureEnricher | N
         # explicitly selected LocalAI/Gemini provider still enables this stage.
         return None
     provider = configured or resolve_feature_provider_from_environment()
+    if provider in {"codex", "codex_cli"}:
+        if project_root is None:
+            raise ValueError("Codex genre feature enrichment requires a project root")
+        return GenreFeatureEnricher(
+            CodexStructuredJsonClient(
+                project_root, "genre_feature_enrichment", "LLM_GENRE_FEATURE_ENRICHMENT_MODEL"
+            ),
+            "codex_cli",
+        )
     if provider == "openai":
         return GenreFeatureEnricher(
             OpenAIJsonClient.from_environment(
@@ -446,7 +486,7 @@ def create_genre_feature_enricher_from_environment() -> GenreFeatureEnricher | N
             provider,
         )
     raise ValueError(
-        "MAINFLOW_GENRE_FEATURE_PROVIDER must be 'openai', 'local', 'gemini', or 'off'"
+        "MAINFLOW_GENRE_FEATURE_PROVIDER must be 'codex_cli', 'openai', 'local', 'gemini', or 'off'"
     )
 
 

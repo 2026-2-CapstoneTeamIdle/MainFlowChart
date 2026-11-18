@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using TeamIdle.GameTemplate.Common;
 using TeamIdle.GameTemplate.Core;
@@ -338,7 +339,7 @@ namespace TeamIdle.GameTemplate.Editor
                         return;
                     }
 
-                    BeginAutoTraversalTest();
+                    BeginValidationPlanTests();
                     return;
                 }
 
@@ -361,7 +362,7 @@ namespace TeamIdle.GameTemplate.Editor
                         return;
                     }
 
-                    BeginAutoTraversalTest();
+                    BeginValidationPlanTests();
                     return;
                 }
 
@@ -373,7 +374,7 @@ namespace TeamIdle.GameTemplate.Editor
                         return;
                     }
 
-                    BeginAutoTraversalTest();
+                    BeginValidationPlanTests();
                     return;
                 }
 
@@ -437,6 +438,62 @@ namespace TeamIdle.GameTemplate.Editor
                 }
             }
 
+            Canvas.ForceUpdateCanvases();
+            foreach (var canvas in canvases)
+            {
+                var hudPanels = canvas
+                    .GetComponentsInChildren<RectTransform>(true)
+                    .Where(rect =>
+                        rect.gameObject.activeInHierarchy
+                        && rect.parent == canvas.transform
+                        && rect.name.Contains("Panel", StringComparison.OrdinalIgnoreCase)
+                        && (
+                            rect.name.Contains("Hud", StringComparison.OrdinalIgnoreCase)
+                            || rect.name.Contains("Status", StringComparison.OrdinalIgnoreCase)
+                            || rect.name.Contains("Timer", StringComparison.OrdinalIgnoreCase)
+                        )
+                    )
+                    .ToList();
+                for (var index = 0; index < hudPanels.Count; index++)
+                {
+                    var first = ScreenRect(hudPanels[index], canvas);
+                    if (
+                        first.width < 1f
+                        || first.height < 1f
+                        || first.xMin < -2f
+                        || first.yMin < -2f
+                        || first.xMax > Screen.width + 2f
+                        || first.yMax > Screen.height + 2f
+                    )
+                    {
+                        issue = $"HUD panel '{hudPanels[index].name}' extends outside the screen";
+                        return false;
+                    }
+                    for (var next = index + 1; next < hudPanels.Count; next++)
+                    {
+                        var second = ScreenRect(hudPanels[next], canvas);
+                        var overlapWidth = Mathf.Max(
+                            0f,
+                            Mathf.Min(first.xMax, second.xMax) - Mathf.Max(first.xMin, second.xMin)
+                        );
+                        var overlapHeight = Mathf.Max(
+                            0f,
+                            Mathf.Min(first.yMax, second.yMax) - Mathf.Max(first.yMin, second.yMin)
+                        );
+                        var smallerArea = Mathf.Min(
+                            first.width * first.height,
+                            second.width * second.height
+                        );
+                        if (smallerArea > 0f && overlapWidth * overlapHeight > smallerArea * 0.15f)
+                        {
+                            issue =
+                                $"HUD panels '{hudPanels[index].name}' and '{hudPanels[next].name}' overlap";
+                            return false;
+                        }
+                    }
+                }
+            }
+
             var legacyDebugUi =
                 UnityEngine.Object.FindFirstObjectByType<PrototypeSceneController>();
             var hasLegacyOnGui =
@@ -462,6 +519,22 @@ namespace TeamIdle.GameTemplate.Editor
                     + $"texts={texts.Count}:buttons={buttons.Count}"
             );
             return true;
+        }
+
+        private static Rect ScreenRect(RectTransform rect, Canvas canvas)
+        {
+            var corners = new Vector3[4];
+            rect.GetWorldCorners(corners);
+            var camera =
+                canvas.renderMode == RenderMode.ScreenSpaceOverlay ? null : canvas.worldCamera;
+            var first = RectTransformUtility.WorldToScreenPoint(camera, corners[0]);
+            var third = RectTransformUtility.WorldToScreenPoint(camera, corners[2]);
+            return Rect.MinMaxRect(
+                Mathf.Min(first.x, third.x),
+                Mathf.Min(first.y, third.y),
+                Mathf.Max(first.x, third.x),
+                Mathf.Max(first.y, third.y)
+            );
         }
 
         private static List<T> SceneObjects<T>()
@@ -510,12 +583,27 @@ namespace TeamIdle.GameTemplate.Editor
             {
                 var slot = UnityEngine.Object.FindFirstObjectByType<PrototypeTowerBuildSlot>();
                 var currencyBeforeBuild = economy.Currency;
-                if (slot == null || !slot.Activate())
+                if (slot == null)
                 {
-                    Finish(
-                        false,
-                        "runtime.tower_build_input: activating a build pad could not place a tower"
-                    );
+                    Finish(false, "runtime.tower_build_input: no build slot exists");
+                    return;
+                }
+                if (IsAgentHarnessProject())
+                {
+                    if (!TryBuildTowerThroughUi(slot, out var buildIssue))
+                    {
+                        Finish(false, buildIssue);
+                        return;
+                    }
+                }
+                else if (!slot.Activate())
+                {
+                    Finish(false, "runtime.tower_build_input: build slot could not place a tower");
+                    return;
+                }
+                if (build.BuiltTowerCount == 0)
+                {
+                    Finish(false, "runtime.tower_build_input: tower button created no tower");
                     return;
                 }
 
@@ -708,44 +796,16 @@ namespace TeamIdle.GameTemplate.Editor
                 }
 
                 buildPoints[0].SendMessage("OnMouseDown", SendMessageOptions.DontRequireReceiver);
-                Button basicButton = null;
-                foreach (
-                    var button in UnityEngine.Object.FindObjectsByType<Button>(
-                        FindObjectsSortMode.None
-                    )
-                )
-                {
-                    var label = button.GetComponentInChildren<Text>();
-                    if (
-                        label != null
-                        && label.text.IndexOf("BASIC", StringComparison.OrdinalIgnoreCase) >= 0
-                    )
-                    {
-                        basicButton = button;
-                        break;
-                    }
-                }
-                if (basicButton == null || !basicButton.interactable)
-                {
-                    Finish(false, "runtime.tower_build_input: basic tower build button is missing");
-                    return;
-                }
                 if (!TryReadTowerGold(out genreCurrencyAfterBuild))
                 {
                     Finish(false, "runtime.tower_economy: visible gold counter is missing");
                     return;
                 }
-                var eventSystem = UnityEngine.EventSystems.EventSystem.current;
-                if (eventSystem == null)
+                if (!TryClickBasicTowerButton(out var buildIssue))
                 {
-                    Finish(false, "runtime.tower_build_input: EventSystem is missing");
+                    Finish(false, buildIssue);
                     return;
                 }
-                UnityEngine.EventSystems.ExecuteEvents.Execute(
-                    basicButton.gameObject,
-                    new UnityEngine.EventSystems.PointerEventData(eventSystem),
-                    UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler
-                );
                 if (FindSceneBehaviours("TowerRuntime").Count == 0)
                 {
                     Finish(false, "runtime.tower_build_input: build button created no tower");
@@ -865,6 +925,119 @@ namespace TeamIdle.GameTemplate.Editor
             }
         }
 
+        private static bool TryBuildTowerThroughUi(PrototypeTowerBuildSlot slot, out string issue)
+        {
+            var camera = Camera.main;
+            var collider = slot.GetComponent<Collider2D>();
+            var renderer = slot.GetComponent<SpriteRenderer>();
+            var viewport =
+                camera == null
+                    ? Vector3.zero
+                    : camera.WorldToViewportPoint(slot.transform.position);
+            if (
+                collider == null
+                || renderer == null
+                || !renderer.enabled
+                || viewport.z <= 0f
+                || viewport.x < 0f
+                || viewport.x > 1f
+                || viewport.y < 0f
+                || viewport.y > 1f
+                || IsBuildPointBlockedByUi(camera, slot.transform.position)
+            )
+            {
+                issue = "runtime.tower_build_clickability: build slot is off-screen or blocked";
+                return false;
+            }
+            slot.SendMessage("OnMouseDown", SendMessageOptions.DontRequireReceiver);
+            return TryClickBasicTowerButton(out issue);
+        }
+
+        private static bool TryClickBasicTowerButton(out string issue)
+        {
+            Canvas.ForceUpdateCanvases();
+            var eventSystem = UnityEngine.EventSystems.EventSystem.current;
+            if (eventSystem == null)
+            {
+                issue = "runtime.tower_build_input: EventSystem is missing";
+                return false;
+            }
+
+            Button basicButton = null;
+            foreach (var button in SceneObjects<Button>())
+            {
+                var label = button.GetComponentInChildren<Text>();
+                if (
+                    label != null
+                    && label.text.IndexOf("BASIC", StringComparison.OrdinalIgnoreCase) >= 0
+                )
+                {
+                    basicButton = button;
+                    break;
+                }
+            }
+            if (basicButton == null || !basicButton.interactable || !basicButton.isActiveAndEnabled)
+            {
+                issue = "runtime.tower_build_menu_visibility: basic tower button is not visible";
+                return false;
+            }
+
+            var rect = basicButton.GetComponent<RectTransform>();
+            if (rect == null || rect.rect.width <= 0f || rect.rect.height <= 0f)
+            {
+                issue =
+                    "runtime.tower_build_menu_visibility: basic tower button has no screen area";
+                return false;
+            }
+            var canvas = basicButton.GetComponentInParent<Canvas>();
+            var uiCamera =
+                canvas != null && canvas.renderMode != RenderMode.ScreenSpaceOverlay
+                    ? canvas.worldCamera
+                    : null;
+            var corners = new Vector3[4];
+            rect.GetWorldCorners(corners);
+            foreach (var corner in corners)
+            {
+                var screen = RectTransformUtility.WorldToScreenPoint(uiCamera, corner);
+                if (
+                    screen.x < 0f
+                    || screen.x > Screen.width
+                    || screen.y < 0f
+                    || screen.y > Screen.height
+                )
+                {
+                    issue =
+                        "runtime.tower_build_menu_visibility: basic tower button is outside the screen";
+                    return false;
+                }
+            }
+
+            var center = RectTransformUtility.WorldToScreenPoint(
+                uiCamera,
+                rect.TransformPoint(rect.rect.center)
+            );
+            var pointer = new UnityEngine.EventSystems.PointerEventData(eventSystem)
+            {
+                position = center,
+            };
+            var hits = new List<UnityEngine.EventSystems.RaycastResult>();
+            eventSystem.RaycastAll(pointer, hits);
+            if (hits.Count == 0 || !hits[0].gameObject.transform.IsChildOf(basicButton.transform))
+            {
+                issue =
+                    "runtime.tower_build_menu_clickability: basic tower button is covered or misses UI raycasts";
+                return false;
+            }
+
+            UnityEngine.EventSystems.ExecuteEvents.Execute(
+                basicButton.gameObject,
+                pointer,
+                UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler
+            );
+            issue = string.Empty;
+            return true;
+        }
+
         private static bool IsBuildPointBlockedByUi(Camera camera, Vector3 worldPosition)
         {
             var eventSystem = UnityEngine.EventSystems.EventSystem.current;
@@ -944,6 +1117,33 @@ namespace TeamIdle.GameTemplate.Editor
                 return;
             }
 
+            var scenePlayers = SceneObjects<Transform>()
+                .FindAll(item => item.name == "Player" && item.gameObject.activeInHierarchy);
+            if (scenePlayers.Count != 1)
+            {
+                Finish(
+                    false,
+                    $"runtime.survivor_player_identity: expected exactly one active Player, found {scenePlayers.Count}"
+                );
+                return;
+            }
+
+            var movementOwner = UnityEngine.Object.FindFirstObjectByType<TopDownMovementModule>();
+            var movementBody =
+                movementOwner == null
+                    ? null
+                    : new SerializedObject(movementOwner)
+                        .FindProperty("target")
+                        ?.objectReferenceValue as Rigidbody2D;
+            if (movementOwner == null || movementBody != playerBody)
+            {
+                Finish(
+                    false,
+                    "runtime.survivor_player_binding: TopDownMovementModule must control the scene Player Rigidbody2D"
+                );
+                return;
+            }
+
             if (playerHealth.Maximum <= 0f || playerHealth.Current <= 0f || healthSystem.IsGameOver)
             {
                 Finish(
@@ -990,9 +1190,30 @@ namespace TeamIdle.GameTemplate.Editor
                     {
                         if (Vector3.Distance(initialPosition, player.transform.position) < 0.1f)
                         {
+                            var movementModule =
+                                UnityEngine.Object.FindFirstObjectByType<TopDownMovementModule>();
+                            var inputModule =
+                                UnityEngine.Object.FindFirstObjectByType<InputAdapterModule>();
+                            var movementTarget =
+                                movementModule == null
+                                    ? null
+                                    : new SerializedObject(movementModule)
+                                        .FindProperty("target")
+                                        ?.objectReferenceValue as Rigidbody2D;
                             Finish(
                                 false,
                                 "runtime.survivor_movement: test input did not move Player"
+                                    + $"; initial={initialPosition}, current={player.transform.position}"
+                                    + $"; body={playerBody?.position}, input_enabled={InputAdapterModule.TestInputEnabled}"
+                                    + $"; requested_input={InputAdapterModule.TestMovement}"
+                                    + $"; movement_initialized={movementModule?.IsInitialized}, move_speed={movementModule?.MoveSpeed}"
+                                    + $"; movement_enabled={movementModule?.isActiveAndEnabled}, adapter_input={inputModule?.Movement}"
+                                    + $"; target_is_player={movementTarget == playerBody}, target_simulated={movementTarget?.simulated}"
+                                    + $"; target_object={movementTarget?.gameObject.GetInstanceID()}, player_object={player.GetInstanceID()}"
+                                    + $"; player_body_count={player.GetComponents<Rigidbody2D>().Length}"
+                                    + $"; target_scene={movementTarget?.gameObject.scene.path}, player_scene={player.scene.path}"
+                                    + $"; time_scale={Time.timeScale}, delta_time={Time.deltaTime}"
+                                    + $"; play_frames={Time.frameCount}, editor_ticks={frames}, game_time={Time.timeSinceLevelLoad}"
                             );
                             return;
                         }
@@ -1118,7 +1339,16 @@ namespace TeamIdle.GameTemplate.Editor
 
             if (!genreProgressionTriggered)
             {
-                experience.Add(experience.RequiredExperience);
+                var previousRandomState = UnityEngine.Random.state;
+                try
+                {
+                    UnityEngine.Random.InitState(0x51A7);
+                    experience.Add(experience.RequiredExperience);
+                }
+                finally
+                {
+                    UnityEngine.Random.state = previousRandomState;
+                }
                 genreProgressionTriggered = true;
             }
 
@@ -1135,6 +1365,8 @@ namespace TeamIdle.GameTemplate.Editor
             var damageBefore = autoTarget?.Damage ?? -1f;
             var attackSpeedBefore = autoTarget?.AttacksPerSecond ?? -1f;
             var projectileCountBefore = autoTarget?.ProjectileCount ?? -1;
+            var maximumHealthBefore = playerHealth?.Maximum ?? -1f;
+            var currentHealthBefore = playerHealth?.Current ?? -1f;
             if (!upgrades.Select(0))
             {
                 Finish(
@@ -1151,6 +1383,13 @@ namespace TeamIdle.GameTemplate.Editor
                         !Mathf.Approximately(autoTarget.Damage, damageBefore)
                         || !Mathf.Approximately(autoTarget.AttacksPerSecond, attackSpeedBefore)
                         || autoTarget.ProjectileCount != projectileCountBefore
+                    )
+                )
+                || (
+                    playerHealth != null
+                    && (
+                        !Mathf.Approximately(playerHealth.Maximum, maximumHealthBefore)
+                        || !Mathf.Approximately(playerHealth.Current, currentHealthBefore)
                     )
                 );
             if (!upgradeChangedState)
@@ -1278,7 +1517,7 @@ namespace TeamIdle.GameTemplate.Editor
             {
                 Metrics.last_reached_zone = "mastery";
                 InputAdapterModule.TestConfirmPressed = false;
-                BeginValidationPlanTests();
+                BeginCollectibleTest();
                 return;
             }
             if (PhaseElapsed > routeTimeoutSeconds)
@@ -1329,8 +1568,49 @@ namespace TeamIdle.GameTemplate.Editor
             stageController =
                 UnityEngine.Object.FindFirstObjectByType<PrototypePlatformerStageController>();
             playerHealth = player.GetComponent<HealthComponent>();
-            checkpoint = UnityEngine.Object.FindFirstObjectByType<PrototypeCheckpoint>();
-            hazard = UnityEngine.Object.FindFirstObjectByType<PrototypeHazard>();
+            checkpoint = null;
+            foreach (
+                var candidate in UnityEngine.Object.FindObjectsByType<PrototypeCheckpoint>(
+                    FindObjectsSortMode.None
+                )
+            )
+            {
+                if (
+                    candidate != null
+                    && candidate.isActiveAndEnabled
+                    && (
+                        checkpoint == null || candidate.CheckpointIndex < checkpoint.CheckpointIndex
+                    )
+                )
+                {
+                    checkpoint = candidate;
+                }
+            }
+
+            hazard = null;
+            var nearestHazardDistance = float.PositiveInfinity;
+            foreach (
+                var candidate in UnityEngine.Object.FindObjectsByType<PrototypeHazard>(
+                    FindObjectsSortMode.None
+                )
+            )
+            {
+                if (candidate == null || !candidate.isActiveAndEnabled || candidate.Damage <= 0f)
+                {
+                    continue;
+                }
+                var distance =
+                    checkpoint == null
+                        ? candidate.transform.position.sqrMagnitude
+                        : (
+                            candidate.transform.position - checkpoint.transform.position
+                        ).sqrMagnitude;
+                if (distance < nearestHazardDistance)
+                {
+                    hazard = candidate;
+                    nearestHazardDistance = distance;
+                }
+            }
             goalActor = UnityEngine.Object.FindFirstObjectByType<PrototypeGoal>();
             collectibles = UnityEngine.Object.FindObjectsByType<PrototypeCollectible>(
                 FindObjectsSortMode.None
@@ -1356,7 +1636,7 @@ namespace TeamIdle.GameTemplate.Editor
             InputAdapterModule.TestDashPressed = false;
             InputAdapterModule.TestConfirmPressed = false;
             collectibleIndex = 0;
-            BeginCollectibleTest();
+            BeginCheckpointTest();
         }
 
         private static bool ValidateRequiredSceneObjects()
@@ -1424,7 +1704,7 @@ namespace TeamIdle.GameTemplate.Editor
                     );
                     return;
                 }
-                BeginCheckpointTest();
+                BeginGoalTest();
                 return;
             }
             collectedBefore = collectibleSystem.CollectedCount;
@@ -1511,18 +1791,23 @@ namespace TeamIdle.GameTemplate.Editor
                 {
                     MarkCausalTransition("platformer.hazard_to_health");
                     playerHealth.Changed -= OnHazardHealthChanged;
-                    // Contact damage and death recovery are separate requirements. A normal
-                    // hazard may deal only one point, so force the remaining health to zero after
-                    // proving contact damage, then verify checkpoint recovery independently.
-                    if (
-                        playerHealth.IsAlive
-                        && Vector3.Distance(
-                            player.transform.position,
-                            stageController.CurrentCheckpoint
-                        ) > 0.75f
-                    )
+                    // Verify the requested recovery path after proving contact damage.
+                    if (stageController.RespawnOnDeath)
                     {
-                        playerHealth.Damage(playerHealth.Current);
+                        if (
+                            playerHealth.IsAlive
+                            && Vector3.Distance(
+                                player.transform.position,
+                                stageController.CurrentCheckpoint
+                            ) > 0.75f
+                        )
+                        {
+                            playerHealth.Damage(playerHealth.Current);
+                        }
+                    }
+                    else
+                    {
+                        TeleportPlayer(new Vector3(player.transform.position.x, -10f, 0f));
                     }
                     traversalPhase = 14;
                     phaseStartedAt = Time.realtimeSinceStartup;
@@ -1573,8 +1858,12 @@ namespace TeamIdle.GameTemplate.Editor
                     return;
                 }
                 MarkScenarioPassed("checkpoint_recovery");
-                MarkCausalTransition("platformer.death_to_checkpoint");
-                BeginGoalTest();
+                MarkCausalTransition(
+                    stageController.RespawnOnDeath
+                        ? "platformer.death_to_checkpoint"
+                        : "platformer.fall_to_checkpoint"
+                );
+                BeginAutoTraversalTest();
                 return;
             }
 
