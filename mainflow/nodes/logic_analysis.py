@@ -281,13 +281,20 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
         if report:
             Path(report).write_text(state["project_id"], encoding="utf-8")
         log("승인된 Feature별 Checklist 30개 항목을 먼저 작성합니다.")
+        generator = create_checklist_generator_from_environment(project_root)
+        published_feature_ids: set[str] = set()
 
         def publish(checklist):
             persist_generated_checklist(checklist, workspace_root=project_root)
-            feature = checklist.feature_checklists[-1]
+            feature = next(
+                item
+                for item in checklist.feature_checklists
+                if item.feature_id not in published_feature_ids
+            )
+            published_feature_ids.add(feature.feature_id)
             log(f"Feature Checklist 작성 완료: {feature.feature_id} · {feature.feature_name}")
 
-        create_checklist_generator_from_environment(project_root).generate(
+        generator.generate(
             project_id=state["project_id"],
             logic_analysis=result,
             source_root=Path(
@@ -297,6 +304,7 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
                 )
             ),
             on_feature_ready=publish,
+            max_workers=3 if generator.provider in {"codex_cli", "claude_code"} else 1,
         )
         log("모든 Feature Checklist 작성 완료 · 게임 구현을 시작합니다.")
     return {

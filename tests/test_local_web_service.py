@@ -388,6 +388,58 @@ def test_reject_keeps_cards_and_applies_feedback_to_preview_request(tmp_path: Pa
     assert feedback_record["revision"] == 1
 
 
+def test_confirmed_generation_uses_revised_condition(tmp_path: Path):
+    service = _load_service_module()
+    job_root = tmp_path / "job"
+    job_root.mkdir()
+    request_file = job_root / "request.json"
+    request_file.write_text(json.dumps(_request_payload(), ensure_ascii=False), encoding="utf-8")
+    (job_root / "feature_preview.json").write_text(
+        json.dumps({"logic_analysis_path": str(job_root / "approved.json")}), encoding="utf-8"
+    )
+    job = service.WorkflowJob(
+        job_id="job-id",
+        mode="generate",
+        request_file=request_file,
+        job_root=job_root,
+        feature_revision=1,
+        feature_revision_feedback=["공격은 빼고 탐험 기능을 추가해줘"],
+    )
+    manager = object.__new__(service.WorkflowJobManager)
+    manager.settings = Mock(process_environment=Mock(return_value={}))
+
+    with (
+        patch.object(manager, "_stream_process", side_effect=RuntimeError("captured")) as stream,
+        pytest.raises(RuntimeError, match="captured"),
+    ):
+        manager._run_generation(job)
+
+    command = stream.call_args.args[1]
+    selected_request = Path(command[command.index("--request-file") + 1])
+    assert selected_request != request_file
+    assert (
+        "공격은 빼고 탐험 기능을 추가해줘"
+        in json.loads(selected_request.read_text(encoding="utf-8"))["condition"]
+    )
+
+
+def test_completed_job_without_unity_feature_results_is_not_marked_passed(tmp_path: Path):
+    service = _load_service_module()
+    job = service.WorkflowJob(
+        job_id="job-id",
+        mode="generate",
+        request_file=tmp_path / "request.json",
+        job_root=tmp_path,
+        status="completed",
+        features=[{"feature_id": "jump", "name": "점프", "description": "점프한다."}],
+    )
+
+    snapshot = job.snapshot()
+
+    assert snapshot["feature_validation_complete"] is False
+    assert snapshot["feature_cards"][0]["status"] == "pending"
+
+
 def test_feature_dashboard_reads_checklists_and_validation_results(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -487,6 +539,12 @@ def test_feature_dashboard_reads_checklists_and_validation_results(
     assert card["checklist_status"] == "passed"
     assert card["checklist_count"] == 2
     assert card["checklist"][0]["status"] == "passed"
+    summary = job.snapshot(detail_feature_ids=set())
+    summary_card = summary["feature_cards"][0]
+    assert summary["feature_validation_complete"] is True
+    assert summary_card["checklist_count"] == 2
+    assert summary_card["checklist"] == []
+    assert len(job.snapshot(detail_feature_ids={"jump"})["feature_cards"][0]["checklist"]) == 2
 
 
 def test_recovers_project_id_from_failed_workflow_report(

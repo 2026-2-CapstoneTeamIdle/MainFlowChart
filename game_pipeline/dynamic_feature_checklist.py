@@ -7,11 +7,11 @@ import os
 import re
 import shutil
 import textwrap
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
-from collections.abc import Callable
 
 from game_pipeline.gemini_feature_generator import (
     GeminiApiClient,
@@ -204,83 +204,131 @@ class DynamicFeatureChecklistGenerator:
         logic_analysis: LogicAnalysis,
         source_root: Path,
         on_feature_ready: Callable[[ProjectFeatureChecklist], None] | None = None,
+        max_workers: int = 1,
     ) -> ProjectFeatureChecklist:
         features = logic_analysis["features"]
         if not features:
             raise ValueError("At least one feature is required to generate checklists")
+        if not 1 <= max_workers <= 4:
+            raise ValueError("Checklist worker count must be between 1 and 4")
         known_feature_ids = {feature["feature_id"] for feature in features}
-        feature_checklists: list[FeatureChecklist] = []
-        for feature_index, feature in enumerate(features, start=1):
-            criteria: list[ChecklistCriterion] = []
-            criterion_fingerprints: set[str] = set()
-            for batch_index in range(CHECKLIST_BATCH_COUNT):
-                response = self.client.generate_json(
-                    self._prompt(
-                        logic_analysis,
-                        feature,
-                        source_root,
-                        batch_index=batch_index,
-                        previous_criteria=criteria,
-                    ),
-                    CHECKLIST_SCHEMA,
-                )
-                raw_criteria = response.get("criteria")
-                if not isinstance(raw_criteria, list) or len(raw_criteria) != CHECKLIST_BATCH_SIZE:
-                    raise ValueError(
-                        f"Feature {feature['feature_id']} checklist batch {batch_index + 1} "
-                        f"must contain exactly {CHECKLIST_BATCH_SIZE} items"
-                    )
-                for local_index, item in enumerate(raw_criteria, start=1):
-                    if not isinstance(item, Mapping):
-                        raise TypeError("Generated checklist items must be objects")
-                    criterion_index = batch_index * CHECKLIST_BATCH_SIZE + local_index
-                    criterion = _validate_criterion(
-                        feature_index,
-                        criterion_index,
-                        item,
-                        known_feature_ids,
-                        feature["feature_id"],
-                    )
-                    fingerprint = _criterion_fingerprint(criterion)
-                    if fingerprint in criterion_fingerprints:
-                        raise ValueError(
-                            f"Feature {feature['feature_id']} checklist contains a duplicate "
-                            f"criterion in batch {batch_index + 1}"
-                        )
-                    criterion_fingerprints.add(fingerprint)
-                    criteria.append(criterion)
-            if len(criteria) != CHECKLIST_ITEM_COUNT:
-                raise ValueError(
-                    f"Feature {feature['feature_id']} checklist must contain exactly "
-                    f"{CHECKLIST_ITEM_COUNT} items after batching"
-                )
-            feature_checklists.append(
-                FeatureChecklist(
-                    checklist_version="1.2.0",
-                    checklist_id=f"checklist-{feature['feature_id']}",
-                    project_id=project_id,
-                    feature_id=feature["feature_id"],
-                    feature_name=feature["name"],
-                    feature_description=feature["description"],
-                    feature_origin=feature.get("origin", "user"),
-                    model_role=f"feature_checklist_generation:{self.provider}",
-                    criteria=tuple(criteria),
-                )
-            )
+        completed: dict[int, FeatureChecklist] = {}
+
+        def publish(feature_index: int, checklist: FeatureChecklist) -> None:
+            completed[feature_index] = checklist
             if on_feature_ready is not None:
                 on_feature_ready(
                     ProjectFeatureChecklist(
                         checklist_version="1.2.0",
                         project_id=project_id,
                         model_role=f"feature_checklist_generation:{self.provider}",
-                        feature_checklists=tuple(feature_checklists),
+                        feature_checklists=tuple(completed[index] for index in sorted(completed)),
                     )
                 )
+
+        if max_workers == 1:
+            for feature_index, feature in enumerate(features, start=1):
+                publish(
+                    feature_index,
+                    self._generate_feature(
+                        project_id,
+                        logic_analysis,
+                        source_root,
+                        known_feature_ids,
+                        feature_index,
+                        feature,
+                    ),
+                )
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(
+                        self._generate_feature,
+                        project_id,
+                        logic_analysis,
+                        source_root,
+                        known_feature_ids,
+                        feature_index,
+                        feature,
+                    ): feature_index
+                    for feature_index, feature in enumerate(features, start=1)
+                }
+                try:
+                    for future in as_completed(futures):
+                        publish(futures[future], future.result())
+                except Exception:
+                    for future in futures:
+                        future.cancel()
+                    raise
         return ProjectFeatureChecklist(
             checklist_version="1.2.0",
             project_id=project_id,
             model_role=f"feature_checklist_generation:{self.provider}",
-            feature_checklists=tuple(feature_checklists),
+            feature_checklists=tuple(completed[index] for index in sorted(completed)),
+        )
+
+    def _generate_feature(
+        self,
+        project_id: str,
+        logic_analysis: LogicAnalysis,
+        source_root: Path,
+        known_feature_ids: set[str],
+        feature_index: int,
+        feature: FeatureRequirement,
+    ) -> FeatureChecklist:
+        criteria: list[ChecklistCriterion] = []
+        criterion_fingerprints: set[str] = set()
+        for batch_index in range(CHECKLIST_BATCH_COUNT):
+            response = self.client.generate_json(
+                self._prompt(
+                    logic_analysis,
+                    feature,
+                    source_root,
+                    batch_index=batch_index,
+                    previous_criteria=criteria,
+                ),
+                CHECKLIST_SCHEMA,
+            )
+            raw_criteria = response.get("criteria")
+            if not isinstance(raw_criteria, list) or len(raw_criteria) != CHECKLIST_BATCH_SIZE:
+                raise ValueError(
+                    f"Feature {feature['feature_id']} checklist batch {batch_index + 1} "
+                    f"must contain exactly {CHECKLIST_BATCH_SIZE} items"
+                )
+            for local_index, item in enumerate(raw_criteria, start=1):
+                if not isinstance(item, Mapping):
+                    raise TypeError("Generated checklist items must be objects")
+                criterion_index = batch_index * CHECKLIST_BATCH_SIZE + local_index
+                criterion = _validate_criterion(
+                    feature_index,
+                    criterion_index,
+                    item,
+                    known_feature_ids,
+                    feature["feature_id"],
+                )
+                fingerprint = _criterion_fingerprint(criterion)
+                if fingerprint in criterion_fingerprints:
+                    raise ValueError(
+                        f"Feature {feature['feature_id']} checklist contains a duplicate "
+                        f"criterion in batch {batch_index + 1}"
+                    )
+                criterion_fingerprints.add(fingerprint)
+                criteria.append(criterion)
+        if len(criteria) != CHECKLIST_ITEM_COUNT:
+            raise ValueError(
+                f"Feature {feature['feature_id']} checklist must contain exactly "
+                f"{CHECKLIST_ITEM_COUNT} items after batching"
+            )
+        return FeatureChecklist(
+            checklist_version="1.2.0",
+            checklist_id=f"checklist-{feature['feature_id']}",
+            project_id=project_id,
+            feature_id=feature["feature_id"],
+            feature_name=feature["name"],
+            feature_description=feature["description"],
+            feature_origin=feature.get("origin", "user"),
+            model_role=f"feature_checklist_generation:{self.provider}",
+            criteria=tuple(criteria),
         )
 
     @staticmethod
@@ -592,6 +640,8 @@ def _role_provider(node_name: str) -> str:
     configured = os.environ.get(env_name, "").strip().lower()
     if os.environ.get("MAINFLOW_GAME_BUILDER") == "codex_cli":
         return "codex_cli"
+    if os.environ.get("MAINFLOW_GAME_BUILDER") == "claude_code":
+        return "claude_code"
     return configured or resolve_feature_provider_from_environment()
 
 
@@ -604,6 +654,12 @@ def _structured_client(
         if project_root is None:
             raise ValueError("Codex Checklist generation requires a project root")
         return CodexStructuredJsonClient(project_root, node_name, "MAINFLOW_CODEX_MODEL")
+    if provider == "claude_code":
+        from game_pipeline.claude_code.structured_json_client import ClaudeStructuredJsonClient
+
+        if project_root is None:
+            raise ValueError("Claude Checklist generation requires a project root")
+        return ClaudeStructuredJsonClient(project_root, node_name)
     if provider == "local":
         return LocalAIJsonClient.from_environment(node_name=node_name, default_model=default_model)
     if provider == "openai":

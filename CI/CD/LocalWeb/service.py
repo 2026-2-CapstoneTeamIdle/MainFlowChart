@@ -405,7 +405,7 @@ class WorkflowJob:
                 self.preview_progress_label = label
                 return
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, detail_feature_ids: set[str] | None = None) -> dict[str, Any]:
         with self.lock:
             if self.project_id is None:
                 checklist_report = self.job_root / "checklist_project_id.txt"
@@ -419,7 +419,7 @@ class WorkflowJob:
                 )
                 if discovered_project_id is not None:
                     self.project_id = discovered_project_id
-            feature_cards = _feature_dashboard(self)
+            feature_cards = _feature_dashboard(self, detail_feature_ids=detail_feature_ids)
             feature_validation_complete = bool(feature_cards) and all(
                 card["status"] == "passed" for card in feature_cards
             )
@@ -950,6 +950,7 @@ class WorkflowJobManager:
         try:
             preview = json.loads(preview_path.read_text(encoding="utf-8"))
             approved_logic_path = Path(preview["logic_analysis_path"]).resolve()
+            generation_request_file = self._feature_preview_request(job)
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
             self._fail(job, f"승인된 Feature 파일을 읽지 못했습니다: {error}")
             return
@@ -973,7 +974,7 @@ class WorkflowJobManager:
             "-m",
             "mainflow.run_flow",
             "--request-file",
-            str(job.request_file),
+            str(generation_request_file),
             "--workspace",
             str(WORKSPACE_ROOT),
             "--result-file",
@@ -1318,7 +1319,9 @@ def _project_id_from_unity_report(report_path: Path) -> str | None:
     return project_id
 
 
-def _feature_dashboard(job: WorkflowJob) -> list[dict[str, Any]]:
+def _feature_dashboard(
+    job: WorkflowJob, *, detail_feature_ids: set[str] | None = None
+) -> list[dict[str, Any]]:
     """Combine approved Features with generated Checklist and Unity test evidence."""
 
     features = [dict(feature) for feature in job.features]
@@ -1380,29 +1383,30 @@ def _feature_dashboard(job: WorkflowJob) -> list[dict[str, Any]]:
                 break
         result_by_criterion = {str(item.get("feature_id")): item for item in latest_results}
         rendered_criteria: list[dict[str, Any]] = []
-        for criterion in criteria:
-            if not isinstance(criterion, dict):
-                continue
-            criterion_id = str(criterion.get("criterion_id", ""))
-            result = result_by_criterion.get(criterion_id, {})
-            rendered_criteria.append(
-                {
-                    "criterion_id": criterion_id,
-                    "title": str(criterion.get("title", "")),
-                    "category": str(criterion.get("category", "")),
-                    "setup": str(criterion.get("setup", "")),
-                    "action": str(criterion.get("action", "")),
-                    "expected": str(criterion.get("expected", "")),
-                    "evidence": str(criterion.get("evidence", "")),
-                    "status": str(result.get("status", "pending")),
-                    "message": str(result.get("message", "")),
-                }
-            )
+        if detail_feature_ids is None or feature_id in detail_feature_ids:
+            for criterion in criteria:
+                if not isinstance(criterion, dict):
+                    continue
+                criterion_id = str(criterion.get("criterion_id", ""))
+                result = result_by_criterion.get(criterion_id, {})
+                rendered_criteria.append(
+                    {
+                        "criterion_id": criterion_id,
+                        "title": str(criterion.get("title", "")),
+                        "category": str(criterion.get("category", "")),
+                        "setup": str(criterion.get("setup", "")),
+                        "action": str(criterion.get("action", "")),
+                        "expected": str(criterion.get("expected", "")),
+                        "evidence": str(criterion.get("evidence", "")),
+                        "status": str(result.get("status", "pending")),
+                        "message": str(result.get("message", "")),
+                    }
+                )
 
         status, activity, checklist_status = _feature_card_state(
             job,
             checklist_exists=bool(criteria),
-            criteria_count=len(rendered_criteria),
+            criteria_count=len(criteria),
             results=latest_results,
         )
         attempt_number = None
@@ -1417,7 +1421,7 @@ def _feature_dashboard(job: WorkflowJob) -> list[dict[str, Any]]:
                 "status": status,
                 "activity": activity,
                 "checklist_status": checklist_status,
-                "checklist_count": len(rendered_criteria),
+                "checklist_count": len(criteria),
                 "checklist": rendered_criteria,
                 "validation_attempt": attempt_number,
             }
@@ -1453,9 +1457,9 @@ def _feature_card_state(
         return "failed", "작업이 완료되기 전에 중단됨", "failed"
     if job.status == "completed":
         return (
-            "passed",
-            "게임 생성 및 검증 완료",
-            "passed" if checklist_exists else "not_generated",
+            "pending",
+            "Unity Feature 검증 결과 없음",
+            "ready" if checklist_exists else "not_generated",
         )
     if checklist_exists:
         return "working", "Checklist 작성 완료 · Unity 검증 준비", "ready"

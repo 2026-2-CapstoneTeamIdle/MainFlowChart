@@ -122,11 +122,14 @@ def create_job(request: GenerationRequest) -> dict[str, object]:
 
 
 @app.get("/api/jobs/{job_id}")
-def read_job(job_id: str) -> dict[str, object]:
+def read_job(job_id: str, detail_features: str | None = None) -> dict[str, object]:
     """Return current status, approved-safe metadata, Feature candidates, and logs."""
 
     try:
-        return job_manager.get(job_id).snapshot()
+        detailed = (
+            None if detail_features is None else set(filter(None, detail_features.split(",")))
+        )
+        return job_manager.get(job_id).snapshot(detail_feature_ids=detailed)
     except KeyError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
 

@@ -95,6 +95,7 @@ let toastTimer = null;
 let codexAuthPollTimer = null;
 let codexAuthenticated = false;
 let expandedFeatureIds = new Set();
+let lastFeatureRenderKey = null;
 let featureViewMode = "cards";
 let featureMergeTimer = null;
 
@@ -577,6 +578,7 @@ async function startJob(mode) {
     currentJobId = job.job_id;
     notifiedMilestones = new Set();
     expandedFeatureIds = new Set();
+    lastFeatureRenderKey = null;
     featureViewMode = "cards";
     window.clearTimeout(featureMergeTimer);
     rejectFeedback.value = "";
@@ -600,7 +602,8 @@ function startPolling() {
 async function refreshJob() {
   if (!currentJobId) return;
   try {
-    const job = await api(`/api/jobs/${currentJobId}`);
+    const details = encodeURIComponent([...expandedFeatureIds].join(","));
+    const job = await api(`/api/jobs/${currentJobId}?detail_features=${details}`);
     renderJob(job);
     const previewFinished = ["ready", "failed", "cancelled"].includes(job.preview_status);
     if (job.status === "cancelled"
@@ -804,6 +807,15 @@ function renderFeatureWorkspace(job) {
 }
 
 function renderFeatures(features) {
+  const renderKey = JSON.stringify([features, [...expandedFeatureIds].sort()]);
+  if (renderKey === lastFeatureRenderKey && featureList.childElementCount === features.length) return;
+  const openCriteria = new Set(
+    [...featureList.querySelectorAll(".checklist-item details[open]")].map((details) => {
+      const card = details.closest(".feature-card");
+      const criterion = details.closest(".checklist-item");
+      return `${card?.dataset.featureId}:${criterion?.dataset.criterionId}`;
+    }),
+  );
   featureList.replaceChildren();
   features.forEach((feature, index) => {
     const featureId = String(feature.feature_id || "feature");
@@ -816,6 +828,7 @@ function renderFeatures(features) {
     const item = document.createElement("article");
     item.className = `feature-card feature-card--${escapeHtml(status)}`;
     item.dataset.featureId = featureId;
+    item.dataset.checklistCount = String(feature.checklist_count || 0);
     item.style.setProperty("--card-index", String(index));
     item.tabIndex = 0;
     item.setAttribute("role", "button");
@@ -846,11 +859,18 @@ function renderFeatures(features) {
       </div>`;
     featureList.append(item);
   });
+  featureList.querySelectorAll(".checklist-item").forEach((criterion) => {
+    const card = criterion.closest(".feature-card");
+    if (openCriteria.has(`${card?.dataset.featureId}:${criterion.dataset.criterionId}`)) {
+      criterion.querySelector("details").open = true;
+    }
+  });
+  lastFeatureRenderKey = renderKey;
 }
 
 function renderChecklistCriterion(criterion) {
   const status = criterion.status || "pending";
-  return `<li class="checklist-item checklist-item--${escapeHtml(status)}">
+  return `<li class="checklist-item checklist-item--${escapeHtml(status)}" data-criterion-id="${escapeHtml(criterion.criterion_id)}">
     <details>
       <summary>
         <span>${escapeHtml(criterion.criterion_id)} · ${escapeHtml(criterion.title)}</span>
@@ -907,8 +927,9 @@ function toggleFeatureCard(card) {
   const expanded = expandedFeatureIds.has(featureId);
   card.setAttribute("aria-expanded", String(expanded));
   card.querySelector(".feature-card__toggle").setAttribute("aria-expanded", String(expanded));
-  card.querySelector(".feature-card__toggle").textContent = `Checklist ${card.querySelectorAll(".checklist-item").length}개 ${expanded ? "접기" : "보기"}`;
+  card.querySelector(".feature-card__toggle").textContent = `Checklist ${card.dataset.checklistCount}개 ${expanded ? "접기" : "보기"}`;
   card.querySelector(".feature-checklist").classList.toggle("is-hidden", !expanded);
+  if (expanded) refreshJob();
 }
 
 function beginFeatureMerge(job) {

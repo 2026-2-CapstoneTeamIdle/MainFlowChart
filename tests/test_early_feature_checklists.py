@@ -1,14 +1,19 @@
+import json
+import threading
+import time
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from game_pipeline.claude_code.structured_json_client import ClaudeStructuredJsonClient
 from game_pipeline.dynamic_feature_checklist import (
     DynamicFeatureChecklistGenerator,
     create_checklist_generator_from_environment,
+    create_unity_test_generator_from_environment,
     load_generated_checklist,
     persist_generated_checklist,
 )
-from mainflow.nodes.logic_analysis import logic_analysis_node
 from game_pipeline.feature_checklist_validation import FeatureChecklistWorkflow
+from mainflow.nodes.logic_analysis import logic_analysis_node
 from tests.test_dynamic_feature_checklist import FakeStructuredClient, _logic_analysis
 
 
@@ -113,3 +118,87 @@ def test_codex_checklists_use_builder_model_instead_of_local_model(tmp_path, mon
     generator = create_checklist_generator_from_environment(tmp_path)
     assert generator.provider == "codex_cli"
     assert generator.client.model_environment == "MAINFLOW_CODEX_MODEL"
+
+
+def test_claude_builder_uses_claude_for_checklists_and_unity_tests(tmp_path, monkeypatch):
+    monkeypatch.setenv("MAINFLOW_GAME_BUILDER", "claude_code")
+    monkeypatch.setenv("LLM_FEATURE_CHECKLIST_GENERATION_PROVIDER", "local")
+    monkeypatch.setenv("LLM_UNITY_CHECKLIST_TEST_GENERATION_PROVIDER", "local")
+
+    checklist = create_checklist_generator_from_environment(tmp_path)
+    unity_test = create_unity_test_generator_from_environment(tmp_path)
+
+    assert checklist.provider == "claude_code"
+    assert unity_test.provider == "claude_code"
+    assert checklist.client.__class__.__name__ == "ClaudeStructuredJsonClient"
+    assert unity_test.client.__class__.__name__ == "ClaudeStructuredJsonClient"
+
+
+def test_claude_checklist_client_uses_read_only_cli_and_unique_audit_paths(tmp_path):
+    client = ClaudeStructuredJsonClient(tmp_path, "feature_checklist_generation")
+    settings = Mock()
+    with (
+        patch(
+            "game_pipeline.claude_code.structured_json_client.ClaudeCodeHarnessSettings.from_environment",
+            return_value=settings,
+        ),
+        patch("game_pipeline.claude_code.structured_json_client.ClaudeCodeCliRunner") as runner,
+    ):
+        runner.return_value.run.return_value.final_response = {"criteria": []}
+        assert client.generate_json("prompt", {"type": "object"}) == {"criteria": []}
+        client.generate_json("prompt", {"type": "object"})
+
+    assert runner.call_args.args == (settings,)
+    calls = runner.return_value.run.call_args_list
+    assert all(call.kwargs["sandbox"] == "read-only" for call in calls)
+    assert calls[0].kwargs["audit_directory"].name == "request_001"
+    assert calls[1].kwargs["audit_directory"].name == "request_002"
+
+
+def test_checklists_generate_features_concurrently_and_preserve_final_order():
+    logic = _logic_analysis()
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    class ConcurrentClient:
+        def generate_json(self, prompt, _schema):
+            nonlocal active, max_active
+            payload = json.loads(prompt.split("INPUT=", 1)[1])
+            feature_id = payload["target_feature"]["feature_id"]
+            batch = payload["batch"]["index"]
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.01)
+            with lock:
+                active -= 1
+            return {
+                "criteria": [
+                    {
+                        "feature_ids": [feature_id],
+                        "title": f"{feature_id}-{batch}-{index}",
+                        "category": "runtime",
+                        "setup": "prepare",
+                        "action": "run",
+                        "expected": f"result-{feature_id}-{batch}-{index}",
+                        "evidence": "state",
+                    }
+                    for index in range(10)
+                ]
+            }
+
+    published = []
+    result = DynamicFeatureChecklistGenerator(ConcurrentClient(), "test").generate(
+        project_id="20261118_01",
+        logic_analysis=logic,
+        source_root=Path("missing"),
+        on_feature_ready=lambda checklist: published.append(len(checklist.feature_checklists)),
+        max_workers=2,
+    )
+
+    assert max_active == 2
+    assert published == [1, 2]
+    assert [item.feature_id for item in result.feature_checklists] == [
+        item["feature_id"] for item in logic["features"]
+    ]
