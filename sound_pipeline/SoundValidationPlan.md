@@ -1,22 +1,51 @@
 # Sound Validation 기획서 — AI 생성 사운드의 Slop 방지
 
-> 대상 브랜치: `feat/Sound-test` (기준 `main` `403079f`)
-> 대상 노드: `create_asset_validation_spec` → `validate_sound` → (재생성 루프) → `apply_assets_to_game`
-> 상태: 기획 단계. 이 문서의 수치는 **초기값**이며 실측과 사람 리뷰로 보정한다.
+> 기준: `feat/Sound` (`main` `d98e032` 기반, 2026-11-20 확인)
+> 대상 노드: `generate_sound`(QC 재생성 1회) → `create_asset_validation_spec` → `validate_sound` → `apply_assets_to_game` (그래프 재생성 루프 미구현)
+> 상태: **1단계 구현 완료, 2단계 일부(중복 검사) 구현** (8장 참고). 이 문서의 수치는 **초기값**이며 실측과 사람 리뷰로 보정한다.
 
 ---
 
 ## 1. 배경
 
-### 1.1 현재 상태
+### 1.1 현재 상태 (구현 기준)
+
+파이프라인 흐름:
+
+```text
+design_game_logic ── sound_asset_request.json (모든 항목에 generation_spec 포함)
+  │                  ├ GameSpec 에셋 + presentation feedback cue (presentation_sound_assets.py)
+  │                  └ 에이전트 보고 sound_events (agent_sound_assets.py, required=false, 최대 64개)
+  ▼
+generate_sound ── plan_sound_assets() → ElevenLabs 또는 절차적 합성 → 즉시 G1·G2 QC (REGENERATE면 1회 재생성 → 그래도 실패면 절차적 합성)
+  │                → generated/sounds/<stem>.wav|mp3 + sound_draft.json
+  ▼                (create_asset_validation_spec 과 join)
+validate_sound ── G1 → G2(최대 2회) → G1 → 중복 검사 → 판정 → sound_validation_result.json(validated_assets) + sound_profile.json
+  ▼                (validate_image 와 join)
+apply_assets_to_game ── validated_assets(PASS·FIX)만 Assets/…/Sounds 로 복사, audio_cue 바인딩
+  ▼
+Unity GeneratedAssetBinder ── AudioImporter 설정 + AudioSource 생성, GeneratedAudioCuePlayer 가 GameAudioCues.Raise(cue) 에 재생
+```
+
 | 항목 | 상태 |
 |---|---|
-| `generate_sound` | ElevenLabs(효과음 `/v1/sound-generation`, BGM `/v1/music` → 402 시 효과음 엔드포인트) 또는 절차적 합성으로 생성 |
-| `validate_sound` | placeholder. 항상 `status: "pending"`, `checks: []` |
-| `asset_validation_spec.sound_criteria` | `[]` |
-| 재생성 루프 | 없음 |
+| `generate_sound` | ElevenLabs(효과음·환경음·UI·voice → `/v1/sound-generation`, BGM → `/v1/music`) 또는 절차적 합성. 기본 출력 `pcm_44100`(WAV 래핑), 401/403 시 `pcm_24000` 재시도. 에셋 실패 시 절차적 합성으로 대체, 치명 오류(401/403·quota·연결 실패)는 이후 에셋 호출 생략(circuit breaker) |
+| `validate_sound` | G1 기술 QC + G2 DSP 보정 + 세트 중복 검사 + PASS/FIX/REGENERATE/REVIEW 판정 구현 (`sound_pipeline/validation.py`) |
+| `asset_validation_spec.sound_criteria` | `SOUND_CRITERIA` 10개로 채워짐 |
+| 재생성 | `generate_sound` 안에서 **1회**. ElevenLabs 결과에 `check_asset()`(validate_sound와 같은 G1·G2 판정, 기본 `SOUND_CRITERIA`)을 바로 돌려 REGENERATE면 같은 요청으로 다시 생성. 두 번째도 실패하면 절차적 합성으로 대체(`fallback_asset_ids`에 표시). `SOUND_FALLBACK=none`이면 두 번째 결과를 그대로 넘겨 validate_sound가 판정. 절차적 합성은 asset_id 시드로 결정적이라 재시도하지 않음. 그래프 루프·증상 → 프롬프트 수정은 없음. 여전히 REGENERATE·REVIEW인 에셋은 `validated_asset_ids`에서 빠져 **게임에 적용되지 않고** status가 `needs_revision`이 되며, `final_validation`은 `passed`만 통과시킨다 |
+| 후보 선택, G3, G5, G6 | 미구현 |
 
-즉 **생성된 사운드를 아무도 검사하지 않고** 첫 결과가 그대로 게임에 들어간다.
+생성 사양은 `generation_spec`(`game_pipeline/asset_specs.py::build_sound_generation_spec`)이 정한다. 키워드 분류·`SOUND_BGM_SECONDS`는 `generation_spec`이 없을 때만 쓰이는 대체 경로다.
+
+| kind | 길이 | loop | mixer |
+|---|---|---|---|
+| bgm | 90 s | ✓ | Music |
+| ambience | 60 s | ✓ | Ambience |
+| voice | 5 s | ✗ | Voice |
+| ui | 0.5 s | ✗ | UI |
+| sfx | 1.0 s | ✗ | SFX |
+
+BGM이 아닌 에셋의 계획 길이는 효과음 엔드포인트 상한(`SOUND_EFFECTS_MAX_SECONDS` = 30 s)으로 잘린다. 따라서 ambience는 spec상 60 s지만 실제로는 30 s 루프로 생성·검증된다. onset·tail 검사는 BGM이 아닌 비루프 에셋 전체(sfx·ui·voice)에 적용된다.
 
 ### 1.2 기본 관점
 현업에서 AI 생성은 "녹음" 단계에 해당한다. 녹음본을 그대로 쓰는 스튜디오는 없다.
@@ -72,6 +101,8 @@ generate_sound ─▶ 후보 N개 ─▶ G1 기술 QC ─▶ G2 DSP 보정 ─�
 
 ### G1. 기술 QC (자동, 결정적)
 
+> 구현 차이: `sound-true-peak`는 4x 오버샘플 true peak가 아니라 **sample peak** ≤ -1 dBFS + 평평한 피크(동일 샘플 3개 이상) 검사. `sound-duration-match`는 ±20% (최소 0.1 s), BGM 마디 허용 없음. `sound-loop-bar-aligned`, 초저역 비율, mono/stereo 강제는 미구현이며 `sound-channel-layout`은 좌우 상관계수 > 0만 보는 선택(required=false) 기준. 구현에는 아래 표 외에 `sound-set-duplicate`, `sound-not-placeholder`가 추가로 있다. 실제 목록은 `validation.py::SOUND_CRITERIA`가 기준이다.
+
 | criterion_id | 검사 | 기준 (초기값) | 근거 |
 |---|---|---|---|
 | `sound-file-valid` | 디코딩 가능, 형식·샘플레이트·채널 확인 | MP3/WAV 디코딩 성공 | 계약, 엔진 import |
@@ -87,6 +118,8 @@ generate_sound ─▶ 후보 N개 ─▶ G1 기술 QC ─▶ G2 DSP 보정 ─�
 ### G2. DSP 자동 보정 (재생성보다 먼저)
 
 현업의 편집·마스터링 단계. **API 비용 0**이므로 재생성보다 항상 먼저 시도한다.
+
+> 구현됨: DC 제거, 앞 무음 trim(2 ms 여유), 20 ms cubic fade-out, 루프 이음매 크로스페이드(최대 200 ms, 길이 유지), peak -1.1 dBFS 정규화. G2→G1을 최대 2회 반복. 미구현: 고역통과, 라우드니스(LUFS) 정규화, 제로크로싱 정렬, 마디 경계 자르기.
 
 | 증상 (G1 실패) | 보정 |
 |---|---|
@@ -221,48 +254,51 @@ Slop을 가장 확실하게 줄이는 단계.
 | `sound-set-cohesion` | 세트 공통 팔레트 문구(스타일 힌트)를 강제 포함 |
 
 ### 6.3 재시도 예산
+> 현재 구현: 에셋당 같은 프롬프트로 **1회** 재생성(`generate_sound`), 비용 상한·비용 기록 없음. 실패 원인이 클리핑·길이·무음 같은 확률적 결함뿐이라 프롬프트 수정 없이 재시도한다. 아래는 G3 도입 후 목표.
+
 - 에셋당 재생성 최대 **2회** (후보 생성과 별도), 실행당 **비용 상한** 설정 (`SOUND_MAX_CREDITS_PER_RUN`).
 - 예산 소진 시 최고 점수 후보를 **REVIEW**로 넘긴다 (조용히 PASS 처리하지 않음).
 - 비용은 `sound_profile.json`에 에셋별·실행별로 기록한다.
 
 ### 6.4 대체(절차적 합성) 결과물
-- ElevenLabs 실패로 절차적 합성이 사용된 에셋은 **PASS가 아니라 `placeholder` 표시 + REVIEW**.
-- 이유: 이미지 PR #11에서 확인된 "placeholder가 검증을 `passed`로 통과" 문제를 사운드에서 반복하지 않기 위함.
+- 초기 기획: 절차적 합성 에셋은 `placeholder` 표시 + REVIEW.
+- **현재 구현**: 절차적 합성은 API 없이도 게임을 완성하기 위한 의도된 대체 경로로 취급한다. G1·G2 결정적 검사는 그대로 받고, 통과하면 `sound-not-placeholder` 실패를 제거해 **PASS/FIX로 적용**한다. 대신 `SoundValidationResult.fallback_asset_ids`에 기록해 대체물임을 숨기지 않는다.
+- 이유: provider 정체성만으로 게임 전체가 `needs_revision`이 되는 것을 막기 위함. 이미지 PR #11의 "placeholder가 조용히 `passed`" 문제는 `fallback_asset_ids` 노출로 대응.
 
 ---
 
 ## 7. 프로젝트 반영 방법
 
 ### 7.1 노드별 변경
-| 노드 | 변경 |
-|---|---|
-| `create_asset_validation_spec` | `sound_criteria`를 4장의 `criterion_id`로 채움. 카테고리별 `required` 지정 |
-| `generate_sound` | 후보 N개 생성, 후보별 결과를 별도 파일로 저장. REGENERATE 시 수정된 프롬프트·파라미터 수용 |
-| `validate_sound` | G1–G5 실행, 판정, 보정본 저장, `SoundValidationResult` + `sound_profile.json` 작성 |
-| 그래프 | `validate_sound` → REGENERATE일 때 `generate_sound`로 돌아가는 조건부 edge. 재시도 횟수는 State |
-| `apply_assets_to_game` | PASS 에셋의 보정본만 적용, REVIEW 에셋은 적용하되 표시 (또는 정책에 따라 보류) |
+| 노드 | 변경 | 상태 |
+|---|---|---|
+| `create_asset_validation_spec` | `sound_criteria`를 `SOUND_CRITERIA`로 채움 (기준별 `required`, 카테고리별 구분은 없음) | ✅ |
+| `generate_sound` | 후보 N개 생성, 후보별 결과를 별도 파일로 저장. REGENERATE 시 수정된 프롬프트·파라미터 수용 | 일부: 기술 QC 실패 시 같은 요청으로 1회 재생성 후 절차적 합성 대체. 후보 N개·프롬프트 수정 ❌ |
+| `validate_sound` | G1·G2·중복 검사·판정, 보정본 저장, `SoundValidationResult`(+`validated_assets`, `fallback_asset_ids`) + `sound_profile.json` 작성. `unity_binding_key`가 요청과 다르면 `sound-binding-key` REGENERATE | ✅ (G3–G5 제외) |
+| 그래프 | `validate_sound` → REGENERATE일 때 `generate_sound`로 돌아가는 조건부 edge. 재시도 횟수는 State | ❌ (G3 전까지 불필요: 노드 내 재생성으로 대체) |
+| `apply_assets_to_game` | `validated_assets`(PASS·FIX, 보정본 우선)만 적용. REVIEW·REGENERATE는 미적용. 게임 검증 실패 시 진단용으로만 미검증 draft 포함 | ✅ |
 
-### 7.2 계약 원칙 (이미지 PR #11 교훈)
+### 7.2 계약 원칙 (이미지 PR #11 교훈) — 반영됨
 - `validate_sound` 입력 State에 **`sound_asset_request`를 추가**한다. 카테고리·루프·필수 여부는 `plan_sound_assets()`로 **같은 함수로 다시 계산**한다.
 - **draft `notes` 문자열을 파싱하지 않는다.** notes는 사람이 읽는 로그로만 쓴다.
 - 요청된 `asset_id` 집합과 draft를 대조한다. 필수 누락은 error, 선택 누락은 warning issue.
 - 테스트는 생성 쪽 상수를 import하지 않고 기대값을 리터럴로 적는다.
 
 ### 7.3 산출물
+현재 구현:
 ```text
 workspace/{project_id}/
 ├─ generated/sounds/
-│  ├─ <asset>.mp3                 # 선택된 원본
-│  ├─ candidates/<asset>_c1.mp3 …  # 후보 (탈락 포함)
+│  ├─ <stem>.wav (mp3_* 설정 시 .mp3)  # 원본 (stem = suggested_filename)
+│  ├─ processed/<stem>.wav            # G2 보정본 (있으면 게임 적용 대상)
 │  └─ sound_draft.json
-├─ validation/
-│  ├─ sound_validation_result.json # 계약 SoundValidationResult (checks, issues, validated_asset_ids)
-│  ├─ sound_profile.json           # 측정값·판정·보정 내역·비용 (아래 예시)
-│  └─ sound_report.html            # 사람 리뷰용 시각화 리포트
-└─ processed/sounds/<asset>.wav    # G2 보정본 (게임 적용 대상)
+└─ validation/
+   ├─ sound_validation_result.json    # checks, issues, validated_asset_ids, validated_assets, fallback_asset_ids
+   └─ sound_profile.json              # asset_id, category, required, decision, failed, error, metrics, applied_fixes, processed_path
 ```
+미구현: `candidates/`, `sound_report.html`, 프로파일의 `target_platform`·`budget`·`candidates`·`regenerations`·`set_checks`.
 
-`sound_profile.json` 예시:
+목표 `sound_profile.json` 예시 (후보·예산 도입 후):
 ```json
 {
   "contract_version": "3.1.0",
@@ -291,21 +327,18 @@ workspace/{project_id}/
 ```
 
 ### 7.4 기존 자산 재사용
-로컬 `local/sound-eval` 브랜치의 `sound_eval` 패키지에 이미 아래 기능이 있다. `validate_sound`에 연결하는 것부터 시작한다.
-- 라우드니스·피크·길이 측정, 루프 이음매(self-normalized novelty ratio), 템포 측정
-- PASS / REGENERATE / REVIEW 판정, 증상 → 수정 매핑
-- 프로파일링 HTML 리포트
+G1·G2·판정은 `sound_pipeline/validation.py`에 numpy만으로 구현되었다 (MP3 디코딩은 ffmpeg 필요, 없으면 `sound-validator-unavailable` REVIEW). 예전 `local/sound-eval` 브랜치는 현재 저장소에 없으며, 남은 아이디어(LUFS 측정, 템포 측정, novelty 기반 이음매, HTML 리포트, 증상 → 수정 매핑)는 이 문서 기준으로 새로 구현한다.
 
 ---
 
 ## 8. 도입 단계
 
-| 단계 | 내용 | 추가 의존성 | 기대 효과 |
-|---|---|---|---|
-| **1** | G1 + G2 + 판정 + `sound_profile.json` + 리포트, `sound_criteria` 채우기, 계약 원칙 반영 | numpy 수준 | 기술 결함 대부분 제거, 비용 0 |
-| **2** | G4 라우드니스 위계·중복, G5 마스킹, 대체 결과물 REVIEW 처리 | 없음 | "제각각인 세트" 해결 |
-| **3** | G3 금지 요소 분류기, 후보 선택, 재생성 루프와 증상 → 수정 매핑, 재시도 예산 | 로컬 오디오 분류 모델 | 내용 불일치 slop 제거 |
-| **4** | CLAP 유사도, G4 cohesion·distinct, G6 리뷰 UI(LocalWeb), 임계값 보정 | 임베딩 모델 | 정체성·품질 향상 |
+| 단계 | 내용 | 추가 의존성 | 기대 효과 | 상태 |
+|---|---|---|---|---|
+| **1** | G1 + G2 + 판정 + `sound_profile.json` + 리포트, `sound_criteria` 채우기, 계약 원칙 반영 | numpy 수준 | 기술 결함 대부분 제거, 비용 0 | ✅ (HTML 리포트 제외) |
+| **2** | G4 라우드니스 위계·중복, G5 마스킹, 대체 결과물 처리 | 없음 | "제각각인 세트" 해결 | 중복 검사·대체물 표시(`fallback_asset_ids`)만 |
+| **3** | G3 금지 요소 분류기, 후보 선택, 재생성 루프와 증상 → 수정 매핑, 재시도 예산 | 로컬 오디오 분류 모델 | 내용 불일치 slop 제거 | 노드 내 1회 재생성만 |
+| **4** | CLAP 유사도, G4 cohesion·distinct, G6 리뷰 UI(LocalWeb), 임계값 보정 | 임베딩 모델 | 정체성·품질 향상 | ❌ |
 
 ## 9. 평가 지표 (기획이 효과가 있는지 확인)
 

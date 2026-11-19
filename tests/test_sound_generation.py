@@ -158,6 +158,38 @@ class PlannerTest(unittest.TestCase):
         self.assertEqual(plan.unity_binding_key, "asset_registry:theme")
         self.assertEqual(plan.mixer_group, "Music")
 
+    def test_sfx_spec_mentioning_music_word_is_planned_as_sfx(self):
+        asset = item("win", "승리 징글", "보스 테마 승리 효과음")
+        asset["generation_spec"] = {
+            "kind": "sfx",
+            "target_duration_seconds": 1.0,
+            "loop": False,
+            "channels": "mono",
+            "sample_rate_hz": 44100,
+            "unity_load_type": "decompress_on_load",
+            "mixer_group": "SFX",
+            "spatial_blend": 0.0,
+        }
+        (plan,) = plan_sound_assets(request(asset), PARSED)
+        self.assertEqual((plan.kind, plan.category), ("sfx", "action"))
+        self.assertIn("Gameplay action sound effect", plan.prompt)
+
+    def test_long_ambience_spec_is_clamped_to_sound_effects_limit(self):
+        asset = item("wind", "숲 환경음", "바람 소리")
+        asset["generation_spec"] = {
+            "kind": "ambience",
+            "target_duration_seconds": 60.0,
+            "loop": True,
+            "channels": "stereo",
+            "sample_rate_hz": 44100,
+            "unity_load_type": "streaming",
+            "mixer_group": "Ambience",
+            "spatial_blend": 0.0,
+        }
+        (plan,) = plan_sound_assets(request(asset), PARSED)
+        self.assertEqual(plan.duration_seconds, 30.0)
+        self.assertTrue(plan.loop)
+
 
 class ProviderTest(unittest.TestCase):
     def test_procedural_output_is_valid_and_mood_dependent(self):
@@ -433,6 +465,51 @@ class GenerateSoundNodeTest(unittest.TestCase):
             self.assertAlmostEqual(wav_duration(audio), asset["duration_seconds"], places=2)
         self.assertIn("provider=procedural", draft["notes"])
 
+    def test_silent_take_is_regenerated_once_then_replaced(self):
+        os.environ["ELEVENLABS_API_KEY"] = "k"
+        silent = lambda req, timeout: FakeResponse(b"\x00" * 48000)  # noqa: E731
+        with mock.patch("urllib.request.urlopen", side_effect=silent) as urlopen:
+            draft = self.manager.read_json(generate_sound_node(self.state)["sound_draft"])
+        self.assertEqual(urlopen.call_count, 4)  # two takes per asset, no more
+        self.assertEqual([a["provider"] for a in draft["assets"]], ["procedural"] * 2)
+        self.assertTrue(any("sound-file-valid" in n and "1회 재생성" in n for n in draft["notes"]))
+        self.assertTrue(any("재생성 후에도" in n for n in draft["notes"]))
+
+    def test_second_take_that_passes_qc_is_kept(self):
+        os.environ["ELEVENLABS_API_KEY"] = "k"
+        os.environ["ELEVENLABS_OUTPUT_FORMAT"] = "mp3_44100_128"
+        endpoints = []
+
+        def fake_urlopen(req, timeout):
+            endpoints.append(req.full_url.split("?")[0].rsplit("/", 1)[1])
+            return FakeResponse(fake_mp3(2.0))
+
+        hit_takes = []
+
+        def fake_qc(result, plan):
+            if plan.asset_id != "hit_sfx":
+                return []
+            hit_takes.append(1)
+            return ["sound-true-peak"] if len(hit_takes) == 1 else []
+
+        with (
+            mock.patch("urllib.request.urlopen", fake_urlopen),
+            mock.patch("mainflow.nodes.generate_sound._qc_failures", fake_qc),
+        ):
+            draft = self.manager.read_json(generate_sound_node(self.state)["sound_draft"])
+        self.assertEqual(endpoints, ["music", "sound-generation", "sound-generation"])
+        self.assertEqual([a["provider"] for a in draft["assets"]], ["elevenlabs"] * 2)
+
+    def test_failed_take_is_kept_when_fallback_is_disabled(self):
+        os.environ["ELEVENLABS_API_KEY"] = "k"
+        os.environ["SOUND_FALLBACK"] = "none"
+        silent = lambda req, timeout: FakeResponse(b"\x00" * 48000)  # noqa: E731
+        with mock.patch("urllib.request.urlopen", side_effect=silent):
+            draft = self.manager.read_json(generate_sound_node(self.state)["sound_draft"])
+        self.assertEqual([a["provider"] for a in draft["assets"]], ["elevenlabs"] * 2)
+        self.assertTrue(any("대체 없음" in n for n in draft["notes"]))
+
+    @mock.patch("mainflow.nodes.generate_sound._qc_failures", lambda result, plan: [])
     def test_elevenlabs_mp3_is_stored_as_mp3(self):
         os.environ["ELEVENLABS_API_KEY"] = "k"
         os.environ["ELEVENLABS_OUTPUT_FORMAT"] = "mp3_44100_128"
@@ -477,6 +554,7 @@ class GenerateSoundNodeTest(unittest.TestCase):
             generate_sound_node(self.state)
         self.assertEqual(urlopen.call_count, 2)  # music and hit_sfx both tried
 
+    @mock.patch("mainflow.nodes.generate_sound._qc_failures", lambda result, plan: [])
     def test_slow_music_api_does_not_trip_breaker(self):
         os.environ["ELEVENLABS_API_KEY"] = "k"
         calls = []
