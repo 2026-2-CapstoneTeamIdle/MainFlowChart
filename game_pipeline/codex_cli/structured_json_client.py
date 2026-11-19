@@ -6,6 +6,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from game_pipeline.codex_cli.config import CodexHarnessSettings
@@ -20,13 +21,16 @@ class CodexStructuredJsonClient:
         self.role = role
         self.model_environment = model_environment
         self.request_number = 0
+        self._request_lock = Lock()
 
     def generate_json(self, prompt: str, schema: Mapping[str, Any]) -> Mapping[str, Any]:
         settings = CodexHarnessSettings.from_environment()
         selected_model = os.environ.get(self.model_environment, "builder").strip()
         if selected_model and selected_model != "builder":
             settings = replace(settings, model=selected_model)
-        self.request_number += 1
+        with self._request_lock:
+            self.request_number += 1
+            request_number = self.request_number
         result = CodexCliRunner(settings).run(
             project_root=self.project_root,
             prompt=(
@@ -39,7 +43,7 @@ class CodexStructuredJsonClient:
                 / "validation"
                 / "codex_feature_analysis"
                 / self.role
-                / f"request_{self.request_number:03d}"
+                / f"request_{request_number:03d}"
             ),
             sandbox="read-only",
         )

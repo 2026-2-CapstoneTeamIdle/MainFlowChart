@@ -283,6 +283,20 @@ class GenerationRequest(BaseModel):
         return self
 
 
+class FeatureRejectRequest(BaseModel):
+    """One short user instruction applied only to the next Feature analysis."""
+
+    feedback: str = Field(min_length=1, max_length=300)
+
+    @field_validator("feedback")
+    @classmethod
+    def normalize_feedback(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("Feature 재분석 요청을 한마디로 입력하세요.")
+        return normalized
+
+
 @dataclass
 class WorkflowJob:
     job_id: str
@@ -297,6 +311,8 @@ class WorkflowJob:
     stage: str = "condition_feature_analysis"
     logs: list[str] = field(default_factory=list)
     features: list[dict[str, Any]] = field(default_factory=list)
+    feature_revision: int = 0
+    feature_revision_feedback: list[str] = field(default_factory=list)
     preview_project_id: str | None = None
     project_id: str | None = None
     error: str | None = None
@@ -389,8 +405,24 @@ class WorkflowJob:
                 self.preview_progress_label = label
                 return
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, detail_feature_ids: set[str] | None = None) -> dict[str, Any]:
         with self.lock:
+            if self.project_id is None:
+                checklist_report = self.job_root / "checklist_project_id.txt"
+                if checklist_report.is_file():
+                    candidate = checklist_report.read_text(encoding="utf-8").strip()
+                    if PROJECT_ID_PATTERN.fullmatch(candidate):
+                        self.project_id = candidate
+            if self.project_id is None:
+                discovered_project_id = _project_id_from_unity_report(
+                    self.job_root / "unity_project_path.txt"
+                )
+                if discovered_project_id is not None:
+                    self.project_id = discovered_project_id
+            feature_cards = _feature_dashboard(self, detail_feature_ids=detail_feature_ids)
+            feature_validation_complete = bool(feature_cards) and all(
+                card["status"] == "passed" for card in feature_cards
+            )
             elapsed = max(0, int(time.monotonic() - self.progress_started_at))
             if self.status in {"completed", "failed", "cancelled"}:
                 estimated_total = elapsed
@@ -411,6 +443,10 @@ class WorkflowJob:
                 "status": self.status,
                 "stage": self.stage,
                 "features": list(self.features),
+                "feature_cards": feature_cards,
+                "feature_validation_complete": feature_validation_complete,
+                "feature_revision": self.feature_revision,
+                "feature_revision_feedback": list(self.feature_revision_feedback),
                 "preview_project_id": self.preview_project_id,
                 "project_id": self.project_id,
                 "error": self.error,
@@ -638,20 +674,32 @@ class WorkflowJobManager:
         thread.start()
         return job
 
-    def reject(self, job_id: str) -> WorkflowJob:
+    def reject(self, job_id: str, feedback: str) -> WorkflowJob:
         job = self.get(job_id)
         with job.lock:
             if job.status != "awaiting_confirmation":
                 raise ValueError("Feature 확인 대기 상태에서만 Reject할 수 있습니다.")
             job.status = "analyzing_features"
             job.stage = "condition_feature_analysis"
-            job.features = []
+            job.feature_revision += 1
+            job.feature_revision_feedback.append(feedback)
             job.error = None
             job.cancel_requested = False
             job.progress_percent = 3
             job.progress_label = "Feature 재분석"
             job.progress_started_at = time.monotonic()
-        job.append_log("[WEB] Feature 구성을 거절했습니다. Condition 분석을 다시 실행합니다.")
+            feedback_history = list(job.feature_revision_feedback)
+        _atomic_write_json(
+            job.job_root / "feature_revision_feedback.json",
+            {
+                "revision": job.feature_revision,
+                "feedback": feedback_history,
+            },
+        )
+        job.append_log(
+            "[WEB] Feature 구성을 거절했습니다. 사용자 재분석 요청을 반영해 "
+            f"Condition 분석을 다시 실행합니다: {feedback}"
+        )
         self._start_preview(job)
         return job
 
@@ -830,12 +878,17 @@ class WorkflowJobManager:
     def _run_preview(self, job: WorkflowJob) -> None:
         preview_path = job.job_root / "feature_preview.json"
         preview_path.unlink(missing_ok=True)
+        try:
+            request_file = self._feature_preview_request(job)
+        except ValueError as error:
+            self._fail(job, str(error))
+            return
         command = [
             sys.executable,
             "-m",
             "mainflow.preview_features",
             "--request-file",
-            str(job.request_file),
+            str(request_file),
             "--workspace",
             str(WORKSPACE_ROOT),
             "--output-file",
@@ -871,6 +924,28 @@ class WorkflowJobManager:
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
             self._fail(job, f"Feature 분석 결과를 읽지 못했습니다: {error}")
 
+    @staticmethod
+    def _feature_preview_request(job: WorkflowJob) -> Path:
+        with job.lock:
+            revision = job.feature_revision
+            feedback = list(job.feature_revision_feedback)
+        if not feedback:
+            return job.request_file
+        try:
+            payload = json.loads(job.request_file.read_text(encoding="utf-8"))
+            condition = str(payload["condition"]).strip()
+        except (OSError, TypeError, KeyError, json.JSONDecodeError) as error:
+            raise ValueError(f"원본 Feature 요청을 읽지 못했습니다: {error}") from error
+        payload["condition"] = (
+            "Feature 재구성 요청: "
+            + " / ".join(reversed(feedback))
+            + "\n최신 수정 요청은 원본 Condition보다 우선합니다. "
+            "충돌하는 원본 수치와 기능은 적용하지 않습니다." + "\n\n원본 Condition:\n" + condition
+        )
+        preview_request = job.job_root / f"feature_request_{revision:02d}.json"
+        _atomic_write_json(preview_request, payload)
+        return preview_request
+
     def _run_generation(self, job: WorkflowJob) -> None:
         preview_path = job.job_root / "feature_preview.json"
         result_path = job.job_root / "workflow_result.json"
@@ -880,11 +955,16 @@ class WorkflowJobManager:
         try:
             preview = json.loads(preview_path.read_text(encoding="utf-8"))
             approved_logic_path = Path(preview["logic_analysis_path"]).resolve()
+            generation_request_file = self._feature_preview_request(job)
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
             self._fail(job, f"승인된 Feature 파일을 읽지 못했습니다: {error}")
             return
         environment = self.settings.process_environment()
         environment["MAINFLOW_APPROVED_LOGIC_ANALYSIS"] = str(approved_logic_path)
+        environment["MAINFLOW_EARLY_FEATURE_CHECKLISTS"] = "1"
+        environment["MAINFLOW_FEATURE_CHECKLIST_PROJECT_REPORT"] = str(
+            job.job_root / "checklist_project_id.txt"
+        )
         environment["MAINFLOW_UNITY_PROJECT_REPORT_FILE"] = str(unity_project_report)
         environment["MAINFLOW_OPEN_UNITY_EDITOR"] = "0"
         _configure_game_builder_environment(
@@ -899,7 +979,7 @@ class WorkflowJobManager:
             "-m",
             "mainflow.run_flow",
             "--request-file",
-            str(job.request_file),
+            str(generation_request_file),
             "--workspace",
             str(WORKSPACE_ROOT),
             "--result-file",
@@ -1242,6 +1322,202 @@ def _project_id_from_unity_report(report_path: Path) -> str | None:
     if not (project_root / "ProjectSettings/ProjectVersion.txt").is_file():
         return None
     return project_id
+
+
+def _feature_dashboard(
+    job: WorkflowJob, *, detail_feature_ids: set[str] | None = None
+) -> list[dict[str, Any]]:
+    """Combine approved Features with generated Checklist and Unity test evidence."""
+
+    features = [dict(feature) for feature in job.features]
+    if not features:
+        return []
+
+    project_id = job.project_id
+    generated_by_feature: dict[str, dict[str, Any]] = {}
+    attempts: list[dict[str, Any]] = []
+    if project_id and PROJECT_ID_PATTERN.fullmatch(project_id):
+        project_root = (WORKSPACE_ROOT / project_id).resolve()
+        try:
+            project_root.relative_to(WORKSPACE_ROOT.resolve())
+        except ValueError:
+            project_root = WORKSPACE_ROOT / "__invalid_project__"
+        generated_payload = _read_json_mapping(
+            project_root / "validation" / "feature_checklists" / "generated" / "checklist.json"
+        )
+        raw_checklists = generated_payload.get("feature_checklists", [])
+        if isinstance(raw_checklists, list):
+            for item in raw_checklists:
+                if isinstance(item, dict) and item.get("feature_id"):
+                    generated_by_feature[str(item["feature_id"])] = item
+        results_payload = _read_json_mapping(
+            project_root / "validation" / "feature_checklists" / "checked" / "results.json"
+        )
+        raw_attempts = results_payload.get("attempts", [])
+        if isinstance(raw_attempts, list):
+            attempts = [item for item in raw_attempts if isinstance(item, dict)]
+
+    cards: list[dict[str, Any]] = []
+    for feature in features:
+        feature_id = str(feature.get("feature_id", ""))
+        checklist = generated_by_feature.get(feature_id)
+        criteria = (
+            checklist.get("criteria", []) if checklist else _fallback_feature_criteria(feature)
+        )
+        if not isinstance(criteria, list):
+            criteria = []
+        criterion_ids = {
+            str(item.get("criterion_id"))
+            for item in criteria
+            if isinstance(item, dict) and item.get("criterion_id")
+        }
+        latest_attempt: dict[str, Any] | None = None
+        latest_results: list[dict[str, Any]] = []
+        for attempt in reversed(attempts):
+            raw_results = attempt.get("results", [])
+            if not isinstance(raw_results, list):
+                continue
+            matching = [
+                item
+                for item in raw_results
+                if isinstance(item, dict) and str(item.get("feature_id")) in criterion_ids
+            ]
+            if matching:
+                latest_attempt = attempt
+                latest_results = matching
+                break
+        result_by_criterion = {str(item.get("feature_id")): item for item in latest_results}
+        rendered_criteria: list[dict[str, Any]] = []
+        if detail_feature_ids is None or feature_id in detail_feature_ids:
+            for criterion in criteria:
+                if not isinstance(criterion, dict):
+                    continue
+                criterion_id = str(criterion.get("criterion_id", ""))
+                result = result_by_criterion.get(criterion_id, {})
+                rendered_criteria.append(
+                    {
+                        "criterion_id": criterion_id,
+                        "title": str(criterion.get("title", "")),
+                        "category": str(criterion.get("category", "")),
+                        "setup": str(criterion.get("setup", "")),
+                        "action": str(criterion.get("action", "")),
+                        "expected": str(criterion.get("expected", "")),
+                        "evidence": str(criterion.get("evidence", "")),
+                        "status": str(result.get("status", "pending")),
+                        "message": str(result.get("message", "")),
+                    }
+                )
+
+        status, activity, checklist_status = _feature_card_state(
+            job,
+            checklist_exists=bool(criteria),
+            criteria_count=len(criteria),
+            results=latest_results,
+        )
+        attempt_number = None
+        if latest_attempt is not None:
+            try:
+                attempt_number = int(latest_attempt.get("attempt", 0)) + 1
+            except (TypeError, ValueError):
+                attempt_number = 1
+        cards.append(
+            {
+                **feature,
+                "status": status,
+                "activity": activity,
+                "checklist_status": checklist_status,
+                "checklist_count": len(criteria),
+                "checklist": rendered_criteria,
+                "validation_attempt": attempt_number,
+            }
+        )
+    return cards
+
+
+def _feature_card_state(
+    job: WorkflowJob,
+    *,
+    checklist_exists: bool,
+    criteria_count: int,
+    results: list[dict[str, Any]],
+) -> tuple[str, str, str]:
+    if results:
+        statuses = {str(item.get("status", "error")) for item in results}
+        all_passed = len(results) == criteria_count and statuses <= {"passed", "skipped"}
+        if all_passed:
+            return "passed", "Unity 기능 검증 통과", "passed"
+        if job.status in {"failed", "cancelled"}:
+            return "failed", "Unity 기능 검증 실패", "failed"
+        return "retrying", "실패 항목을 수정하고 다시 검증 중", "retrying"
+    if job.status == "analyzing_features":
+        label = (
+            "사용자 피드백을 반영해 Feature 재분석 중"
+            if job.feature_revision
+            else "Feature 분석 중"
+        )
+        return "working", label, "pending"
+    if job.status == "awaiting_confirmation":
+        return "pending", "사용자 승인 대기", "pending"
+    if job.status in {"failed", "cancelled"}:
+        return "failed", "작업이 완료되기 전에 중단됨", "failed"
+    if job.status == "completed":
+        return (
+            "pending",
+            "Unity Feature 검증 결과 없음",
+            "ready" if checklist_exists else "not_generated",
+        )
+    if checklist_exists:
+        return "working", "Checklist 작성 완료 · Unity 검증 준비", "ready"
+    if job.progress_percent < 24:
+        return "working", "승인된 Feature의 Checklist 작성 중", "writing"
+    if job.progress_percent >= 58:
+        return "working", "Feature Checklist 작성 및 테스트 준비", "writing"
+    if job.progress_percent >= 24:
+        return "working", "Feature 구현 및 Unity 코드 구성", "pending"
+    return "working", "승인된 Feature를 게임 설계에 반영", "pending"
+
+
+def _fallback_feature_criteria(feature: dict[str, Any]) -> list[dict[str, Any]]:
+    checklist = feature.get("checklist")
+    if not isinstance(checklist, dict):
+        return []
+    rendered: list[dict[str, Any]] = []
+    sections = (
+        ("preconditions", "사전 조건", "structure"),
+        ("steps", "검증 절차", "interaction"),
+        ("expected_results", "기대 결과", "runtime"),
+        ("failure_signals", "실패 신호", "regression"),
+    )
+    sequence = 0
+    for key, title, category in sections:
+        values = checklist.get(key, [])
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            sequence += 1
+            text = str(value)
+            rendered.append(
+                {
+                    "criterion_id": f"SPEC{sequence:02d}",
+                    "title": f"{title} · {text}",
+                    "category": category,
+                    "setup": text if key == "preconditions" else "Feature 실행 환경을 준비한다.",
+                    "action": text if key == "steps" else "해당 Feature를 실행한다.",
+                    "expected": text if key == "expected_results" else "정의된 결과를 만족한다.",
+                    "evidence": text if key == "failure_signals" else "Unity 실행 및 Test 결과",
+                }
+            )
+    return rendered
+
+
+def _read_json_mapping(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _docker_localweb_enabled() -> bool:

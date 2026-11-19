@@ -302,6 +302,7 @@ def validate_game_node(
                         logic_analysis=(
                             None
                             if os.environ.get("MAINFLOW_CODEX_STATIC_CHECKLISTS") == "1"
+                            and os.environ.get("MAINFLOW_EARLY_FEATURE_CHECKLISTS") != "1"
                             else logic_analysis
                         ),
                         feature_requirements=logic_analysis["features"],

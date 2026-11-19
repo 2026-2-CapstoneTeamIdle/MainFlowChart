@@ -512,11 +512,21 @@ class FeatureChecklistWorkflow:
         source_root: Path,
         compile_validation: Callable[[Path], Any],
     ) -> tuple[ProjectFeatureChecklist, str]:
-        checklist = self.checklist_generator_factory().generate(
-            project_id=project_id,
-            logic_analysis=logic_analysis,
-            source_root=source_root,
-        )
+        checklist = load_generated_checklist(workspace_root)
+        if checklist is None:
+            generator = (
+                self.checklist_generator_factory(project_root)
+                if self.checklist_generator_factory is create_checklist_generator_from_environment
+                else self.checklist_generator_factory()
+            )
+            checklist = generator.generate(
+                project_id=project_id,
+                logic_analysis=logic_analysis,
+                source_root=source_root,
+            )
+        expected_ids = {feature["feature_id"] for feature in logic_analysis["features"]}
+        if {item.feature_id for item in checklist.feature_checklists} != expected_ids:
+            raise ValueError("Stored Checklist does not cover the approved Features")
         persist_generated_checklist(
             checklist,
             workspace_root=workspace_root,
@@ -532,7 +542,13 @@ class FeatureChecklistWorkflow:
             last_error = feedback
             for source_attempt in range(1, attempts + 1):
                 try:
-                    source_code = self.test_generator_factory().generate(
+                    test_generator = (
+                        self.test_generator_factory(project_root)
+                        if self.test_generator_factory
+                        is create_unity_test_generator_from_environment
+                        else self.test_generator_factory()
+                    )
+                    source_code = test_generator.generate(
                         checklist=feature_checklist,
                         project_root=project_root,
                         feedback=last_error,
