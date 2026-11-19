@@ -30,16 +30,17 @@ from game_pipeline import (
     resolve_game_builder,
     review_feedback,
 )
-from game_pipeline.feature_contract import build_feature_contract
-from game_pipeline.agent_visual_assets import with_agent_visual_assets
 from game_pipeline.agent_sound_assets import with_agent_sound_assets
+from game_pipeline.agent_visual_assets import with_agent_visual_assets
 from game_pipeline.condition_visual_assets import with_condition_visual_assets
+from game_pipeline.feature_contract import build_feature_contract
 from game_pipeline.gameplay_contracts import build_pacing_contract, build_ui_contract
-from game_pipeline.project_context_index import build_project_context_index
-from game_pipeline.repair_loop import validate_and_repair
-from game_pipeline.scene_visual_assets import with_scene_visual_assets
 from game_pipeline.presentation_sound_assets import with_presentation_sound_assets
 from game_pipeline.presentation_ui_assets import with_presentation_ui_assets
+from game_pipeline.project_context_index import build_project_context_index
+from game_pipeline.repair_loop import validate_and_repair
+from game_pipeline.requirement_constraints import forbids_player_projectiles
+from game_pipeline.scene_visual_assets import with_scene_visual_assets
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -73,12 +74,17 @@ def design_game_logic_node(
     # logic_analysis contains the user's explicit requirements plus the LLM-inferred
     # genre-essential closure. The original analysis artifact remains immutable evidence.
     feature_plan = plan_feature_mechanics(logic_analysis["features"], request["genre"])
+    mechanics = feature_plan.mechanics
+    if forbids_player_projectiles(request["condition"]):
+        # AutoTargetSystemModule is a player-owned projectile attack. Enemy and boss
+        # projectile_system remains available for their explicitly requested shots.
+        mechanics = [item for item in mechanics if item != "auto_target"]
     game_spec = normalize_game_spec(
         request["genre"],
         {
             "viewpoint": request["viewpoint"],
             "features": feature_plan.game_features,
-            "mechanics": feature_plan.mechanics,
+            "mechanics": mechanics,
         },
     )
     game_spec = with_condition_visual_assets(game_spec, request["condition"])
@@ -920,11 +926,12 @@ def design_game_logic_node(
                 producer="design_game_logic",
             )
 
-        development_loop.run_task(
-            "package-project",
-            lambda: unity_generator.create_archive(generation.project_root),
-            evidence=lambda content: f"created deterministic archive with {len(content)} bytes",
-        )
+        if not agent_harness_enabled:
+            development_loop.run_task(
+                "package-project",
+                lambda: unity_generator.create_archive(generation.project_root),
+                evidence=lambda content: f"created deterministic archive with {len(content)} bytes",
+            )
         development_loop.require_complete()
         design["implementation_tasks"] = development_loop.snapshot()
         unity_generator.update_implementation_tasks(
@@ -953,17 +960,25 @@ def design_game_logic_node(
             filename="unity_project_manifest.json",
             media_type="application/json",
         )
-        archive_reference = manager.write_bytes(
-            state["project_id"],
-            "game",
-            "unity_project.zip",
-            unity_generator.create_archive(generation.project_root),
-            producer="design_game_logic",
-            media_type="application/zip",
+        archive_reference = (
+            manager.write_bytes(
+                state["project_id"],
+                "game",
+                "unity_project.zip",
+                unity_generator.create_archive(generation.project_root),
+                producer="design_game_logic",
+                media_type="application/zip",
+            )
+            if not agent_harness_enabled
+            else None
         )
         notes = [
             f"{game_spec['genre']} 프리셋과 공통 모듈을 조합한 Unity 설계 초안",
-            "Unity 프로젝트와 배포용 ZIP 생성 완료",
+            (
+                "Unity 프로젝트 생성 완료; 최종 검증 후 배포용 ZIP을 생성함"
+                if agent_harness_enabled
+                else "Unity 프로젝트와 배포용 ZIP 생성 완료"
+            ),
             "Unity에서 처음 열면 선택 모듈로 Bootstrap 씬을 자동 재구성",
         ]
         if design["generated_modules"]:
@@ -993,7 +1008,7 @@ def design_game_logic_node(
             "source_artifacts": [
                 design_reference,
                 manifest_reference,
-                archive_reference,
+                *([archive_reference] if archive_reference is not None else []),
                 blueprint_reference,
                 implementation_tasks_reference,
                 *([quality_report_reference] if quality_report_reference is not None else []),

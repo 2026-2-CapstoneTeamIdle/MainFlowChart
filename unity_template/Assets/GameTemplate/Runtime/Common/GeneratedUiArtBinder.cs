@@ -77,12 +77,15 @@ namespace TeamIdle.GameTemplate.Common
                         if (image.sprite != binding.sprite)
                         {
                             image.sprite = binding.sprite;
-                            image.type = UnityEngine.UI.Image.Type.Simple;
+                            image.type =
+                                binding.assetId == "hud_panel_frame"
+                                    ? UnityEngine.UI.Image.Type.Sliced
+                                    : UnityEngine.UI.Image.Type.Simple;
                             image.preserveAspect = binding.assetId != "hud_panel_frame";
                             image.raycastTarget = false;
                             if (binding.assetId == "hud_panel_frame")
                             {
-                                image.color = new Color(1f, 1f, 1f, 0.3f);
+                                image.color = Color.white;
                             }
                         }
                     }

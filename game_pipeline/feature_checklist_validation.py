@@ -332,6 +332,7 @@ class FeatureChecklistWorkflow:
         project_id: str | None = None,
         logic_analysis: LogicAnalysis | None = None,
         feature_requirements: list[FeatureRequirement] | None = None,
+        excluded_static_feature_ids: set[str] | None = None,
     ) -> FeatureChecklistOutcome:
         self._copy_checklist_sources(
             source_root,
@@ -409,7 +410,9 @@ class FeatureChecklistWorkflow:
                     combined_log,
                 )
         for attempt in range(self.max_retries + 1):
-            results, run_log = self._run_tests(project_root, checklist)
+            results, run_log = self._run_tests(
+                project_root, checklist, excluded_static_feature_ids=excluded_static_feature_ids
+            )
             combined_log += f"\n--- FEATURE CHECKLIST ATTEMPT {attempt} ---\n{run_log}"
             final_results = results
             failures = [item for item in results if item.status in {"failed", "error"}]
@@ -627,7 +630,11 @@ class FeatureChecklistWorkflow:
         )
 
     def _run_tests(
-        self, root: Path, checklist: ProjectFeatureChecklist | None = None
+        self,
+        root: Path,
+        checklist: ProjectFeatureChecklist | None = None,
+        *,
+        excluded_static_feature_ids: set[str] | None = None,
     ) -> tuple[list[ChecklistResult], str]:
         temporary = Path(tempfile.mkdtemp(prefix="mainflow-feature-tests-"))
         results_path = temporary / "feature-checklists.xml"
@@ -674,7 +681,7 @@ class FeatureChecklistWorkflow:
                     ],
                     log,
                 )
-            return self._parse_nunit(results_path, checklist), log
+            return self._parse_nunit(results_path, checklist, excluded_static_feature_ids), log
         except (OSError, subprocess.TimeoutExpired) as error:
             return (
                 [
@@ -693,7 +700,9 @@ class FeatureChecklistWorkflow:
 
     @staticmethod
     def _parse_nunit(
-        path: Path, checklist: ProjectFeatureChecklist | None = None
+        path: Path,
+        checklist: ProjectFeatureChecklist | None = None,
+        excluded_static_feature_ids: set[str] | None = None,
     ) -> list[ChecklistResult]:
         root = ET.parse(path).getroot()
         results: list[ChecklistResult] = []
@@ -707,6 +716,8 @@ class FeatureChecklistWorkflow:
             full_name = case.attrib.get("fullname") or case.attrib.get("name", "")
             feature_id = next((key for key in [*dynamic, *FEATURES] if key in full_name), None)
             if feature_id is None:
+                continue
+            if feature_id not in dynamic and feature_id in (excluded_static_feature_ids or set()):
                 continue
             result = case.attrib.get("result", "Failed")
             label = case.attrib.get("label", "")

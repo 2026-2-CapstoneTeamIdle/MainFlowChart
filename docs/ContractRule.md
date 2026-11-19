@@ -178,16 +178,15 @@ Play Mode 검증은 `UNITY_PLAYTEST_METRICS` JSON 로그로 완료 여부, 경�
 | `parse_input` | 사용자 입력 | `project_id`, `parsed_request` | `data/parsed_request.json`, 조건부 Custom 이미지 |
 | `analysis` | `project_id`, `parsed_request` | `analysis` | `data/analysis.json` |
 | `logic_analysis` | `project_id`, `parsed_request`, `analysis` | `logic_analysis` | `data/logic_analysis.json` |
-| `design_game_logic` | 위 세 참조와 `project_id` | 게임 draft, 이미지·사운드 요청 참조 | 7개 v2 설계 JSON, `game/implementation_tasks.json`, `game/project_context_index.json`, 단계별 실행 증거, `game/asset_requests/*.json`, Unity 프로젝트, ZIP |
+| `design_game_logic` | 위 세 참조와 `project_id` | 게임 draft, 이미지·사운드 요청 참조 | 7개 v2 설계 JSON, `game/implementation_tasks.json`, `game/project_context_index.json`, 단계별 실행 증거, `game/asset_requests/*.json`, Unity 프로젝트. Agent Harness의 ZIP은 최종 검증 후 생성 |
 | `generate_image` | 분석 참조와 `image_asset_request` | `image_draft` | `generated/images/image_draft.json` |
 | `generate_sound` | 분석 참조와 `sound_asset_request` | `sound_draft` | `generated/sounds/sound_draft.json` |
 | `validate_game` | `parsed_request`, `logic_analysis`, 게임 draft | `game_validation_result` | validation 결과 |
-| `create_asset_validation_spec` | 요청, 게임 검증 결과 | `asset_validation_spec` | validation 기준 |
-| `validate_image` | 요청, 이미지 에셋 요청, 이미지 draft, 에셋 기준 | `image_validation_result` | validation 결과 |
-| `validate_sound` | 요청, 사운드 에셋 요청, 사운드 draft, 에셋 기준 | `sound_validation_result` | validation 결과 |
+| `validate_image` | 요청, 이미지 에셋 요청, 이미지 draft, 선택적 에셋 기준 | `image_validation_result` | validation 결과. 별도 기준이 없으면 기본 기준 사용 |
+| `validate_sound` | 요청, 사운드 에셋 요청, 사운드 draft, 선택적 에셋 기준 | `sound_validation_result` | validation 결과. 별도 기준이 없으면 기본 기준 사용 |
 | `apply_assets_to_game` | 세 draft와 이미지·사운드 검증 결과 | `integrated_game` | 통합 게임 |
 | `visual_validation` | 요청·LogicAnalysis·게임 draft·게임 검증, 운영 그래프에서는 통합 게임 | `visual_validation_result` | 검증 전용 목표 화면, 회차별 Unity 캡처, VLM 판정과 수정 기록 |
-| `final_validation` | `parsed_request`, `logic_analysis`, 게임 draft, 게임·이미지·사운드·시각 검증 결과, 통합 게임 | `final_validation_result` | 최종 검증 결과 |
+| `final_validation` | `parsed_request`, `logic_analysis`, 게임 draft, 게임·이미지·사운드·시각 검증 결과, 통합 게임 | `final_validation_result` | 최종 검증 결과와 통과한 Unity 프로젝트 ZIP |
 | `game_quality_validator` | 전체 요구사항, draft, 게임·이미지·사운드·시각·최종 검증 결과, 통합 게임 | `game_validator_ai_result` | 독립 AI 품질 평가 |
 
 `game/project_context_index.json`은 자연어 요약이 아니라 생성된 C#을 결정적으로 스캔한 계약이다.

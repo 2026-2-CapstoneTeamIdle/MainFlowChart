@@ -21,7 +21,12 @@ namespace TeamIdle.GameTemplate.Common
             rect.anchorMax = anchorMax;
             rect.offsetMin = Vector2.zero;
             rect.offsetMax = Vector2.zero;
-            instance.AddComponent<UnityEngine.UI.Image>().color = color;
+            instance.AddComponent<UnityEngine.UI.Image>().color = new Color(
+                color.r,
+                color.g,
+                color.b,
+                1f
+            );
             return rect;
         }
 

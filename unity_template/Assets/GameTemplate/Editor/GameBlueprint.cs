@@ -39,6 +39,8 @@ namespace TeamIdle.GameTemplate.Editor
             public string display_name = string.Empty;
             public string description = string.Empty;
             public string rarity = "common";
+            public string observable_stat_id = string.Empty;
+            public string expected_stat_change = "change";
         }
 
         public string blueprint_version = string.Empty;

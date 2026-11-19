@@ -21,7 +21,6 @@ from __future__ import annotations
 
 from typing import cast
 
-from game_pipeline.asset_specs import classify_image_kind
 from mainflow.contracts import AssetRequirement, GameSpec, LevelPlan
 
 STAGE_BACKGROUND_ASSET_ID = "stage_background"
@@ -140,8 +139,12 @@ def scene_visual_requirements(
 
     # Every genre gets a full-screen "Background" object. Genres whose preset already
     # requests a background image (visual novel, raising sim) bind that one instead.
+    # Descriptions of other sprites may say "do not draw a background". That
+    # negative instruction must not suppress the actual scene background.
     has_background = any(
-        classify_image_kind(item["purpose"], item["description"]) == "background"
+        "background" in item["asset_id"].lower()
+        or "배경" in item["purpose"]
+        or "background" in item["purpose"].lower()
         for item in existing
     )
     if not has_background and STAGE_BACKGROUND_ASSET_ID not in existing_ids:

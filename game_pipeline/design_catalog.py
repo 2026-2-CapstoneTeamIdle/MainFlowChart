@@ -15,6 +15,7 @@ from game_pipeline.design_v2 import build_design_v2, validate_design_v2
 from game_pipeline.game_blueprint import build_game_blueprint
 from game_pipeline.implementation_planner import build_implementation_plan
 from game_pipeline.implementation_task_planner import build_implementation_tasks
+from game_pipeline.module_init_order import order_selected_modules
 from mainflow.contracts import (
     CONTRACT_VERSION,
     AssetRequirement,
@@ -539,7 +540,9 @@ def build_game_logic_design(
             if module_id in known_catalog_modules
         ]
     )
-    selected_modules = _unique_strings(COMMON_MODULES + genre_modules + planned_catalog_modules)
+    selected_modules = order_selected_modules(
+        _unique_strings(COMMON_MODULES + genre_modules + planned_catalog_modules)
+    )
     design_v2 = build_design_v2(game_spec, design_intent, variation_seed=variation_seed)
     validate_design_v2(design_v2)
     variation_id = (

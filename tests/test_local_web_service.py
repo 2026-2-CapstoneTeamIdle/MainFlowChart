@@ -11,8 +11,9 @@ from unittest.mock import Mock, patch
 import pytest
 
 from mainflow.ArtifactManager import ArtifactManager
-from mainflow.contracts import LogicAnalysis, WorkflowState
+from mainflow.contracts import LogicAnalysis, MAX_APPROVED_FEATURES, ParsedRequest, WorkflowState
 from mainflow.nodes import analysis_node, logic_analysis_node, parse_input_node, user_input_node
+from mainflow.nodes.logic_analysis import _load_approved_logic_analysis
 from mainflow.preview_features import main as preview_main
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -250,6 +251,45 @@ def test_preview_and_confirmed_logic_use_identical_features(
     assert json.loads(condition_report)["status"] == "approved_preview"
 
 
+def test_approved_preview_accepts_large_feature_list_shown_to_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    source = workspace / "20261119_11" / "data" / "logic_analysis.json"
+    source.parent.mkdir(parents=True)
+    request = cast(ParsedRequest, _request_payload())
+    features = [
+        {
+            "feature_id": f"user-feature-{index:03d}",
+            "name": f"Feature {index}",
+            "description": f"Implement feature {index}",
+            "source_text": "User condition",
+        }
+        for index in range(1, 109)
+    ]
+    payload = {
+        "genre": request["genre"],
+        "viewpoint": request["viewpoint"],
+        "mood_style": request["mood_style"],
+        "features": features,
+    }
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("MAINFLOW_APPROVED_LOGIC_ANALYSIS", str(source))
+    manager = ArtifactManager(workspace)
+
+    approved = _load_approved_logic_analysis(manager, request)
+    assert approved is not None
+    assert len(approved["features"]) == 108
+
+    payload["features"] = [
+        {**features[0], "feature_id": f"user-feature-{index:03d}"}
+        for index in range(1, MAX_APPROVED_FEATURES + 2)
+    ]
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="approval limit|too many Features"):
+        _load_approved_logic_analysis(manager, request)
+
+
 def test_generation_request_rejects_custom_style_without_file():
     service = _load_service_module()
     with pytest.raises(ValueError, match="Custom image style"):
@@ -425,6 +465,33 @@ def test_workflow_progress_tracks_agent_and_validation_milestones(tmp_path: Path
     assert snapshot["progress_label"] == "Unity 컴파일·실행 검증"
     assert snapshot["elapsed_seconds"] >= 0
     assert snapshot["estimated_total_seconds"] >= 1200
+
+
+def test_workflow_elapsed_time_includes_feature_analysis_after_confirmation(tmp_path: Path):
+    service = _load_service_module()
+    job_root = tmp_path / "job-progress-clock"
+    job_root.mkdir()
+    request_file = job_root / "request.json"
+    request_file.write_text("{}", encoding="utf-8")
+    started_at = time.monotonic() - 125
+    job = service.WorkflowJob(
+        job_id="progress-clock-job",
+        mode="generate",
+        request_file=request_file,
+        job_root=job_root,
+        status="awaiting_confirmation",
+        stage="feature_confirmation",
+        progress_started_at=started_at,
+    )
+    manager = object.__new__(service.WorkflowJobManager)
+    manager.jobs = {job.job_id: job}
+    manager.lock = service.threading.RLock()
+
+    with patch.object(service.threading, "Thread"):
+        manager.confirm(job.job_id)
+
+    assert job.progress_started_at == started_at
+    assert job.snapshot()["elapsed_seconds"] >= 125
 
 
 def test_webgl_preview_progress_tracks_compile_link_and_publish(tmp_path: Path):

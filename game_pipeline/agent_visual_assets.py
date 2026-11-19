@@ -62,6 +62,13 @@ def with_agent_visual_assets(
             ):
                 continue
 
+            if kind == "background":
+                description += (
+                    " Seamlessly repeatable scenery in both horizontal and vertical directions; "
+                    "preserve fine pixel-art detail at normal camera zoom, with no characters "
+                    "or large flat-color blocks."
+                )
+
             item = cast(
                 AssetGenerationItem,
                 {

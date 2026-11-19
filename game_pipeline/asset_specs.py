@@ -25,7 +25,7 @@ IMAGE_SIZES: dict[ImageAssetKind, tuple[int, int]] = {
     "ui": (128, 128),
     "tileset": (128, 128),
     "illustration": (256, 256),
-    "background": (512, 384),
+    "background": (1024, 768),
 }
 
 # On-screen size (width, height in Unity units) of scene objects built by

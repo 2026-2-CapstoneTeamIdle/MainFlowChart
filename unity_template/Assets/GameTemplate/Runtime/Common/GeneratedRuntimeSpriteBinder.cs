@@ -13,6 +13,7 @@ namespace TeamIdle.GameTemplate.Common
             public string objectPrefix = string.Empty;
             public Sprite sprite;
             public RuntimeAnimatorController animationController;
+            public bool tileBackground;
         }
 
         [SerializeField]
@@ -24,7 +25,8 @@ namespace TeamIdle.GameTemplate.Common
             string assetId,
             string objectPrefix,
             Sprite sprite,
-            RuntimeAnimatorController animationController = null
+            RuntimeAnimatorController animationController = null,
+            bool tileBackground = false
         )
         {
             if (string.IsNullOrWhiteSpace(objectPrefix) || sprite == null)
@@ -45,6 +47,7 @@ namespace TeamIdle.GameTemplate.Common
             binding.objectPrefix = objectPrefix;
             binding.sprite = sprite;
             binding.animationController = animationController;
+            binding.tileBackground = tileBackground;
             ApplyBindings();
         }
 
@@ -70,6 +73,10 @@ namespace TeamIdle.GameTemplate.Common
             {
                 foreach (var renderer in root.GetComponentsInChildren<SpriteRenderer>(true))
                 {
+                    if (renderer.name == "GeneratedBackgroundTile")
+                    {
+                        continue;
+                    }
                     SpriteBinding selected = null;
                     foreach (var binding in bindings)
                     {
@@ -91,6 +98,12 @@ namespace TeamIdle.GameTemplate.Common
 
                     if (selected == null)
                     {
+                        continue;
+                    }
+
+                    if (selected.tileBackground)
+                    {
+                        ApplyTiledBackground(renderer, selected.sprite);
                         continue;
                     }
 
@@ -131,6 +144,35 @@ namespace TeamIdle.GameTemplate.Common
                     }
                 }
             }
+        }
+
+        private static void ApplyTiledBackground(SpriteRenderer source, Sprite sprite)
+        {
+            var existing = source.transform.Find("GeneratedBackgroundTile");
+            var tileRenderer = existing != null ? existing.GetComponent<SpriteRenderer>() : null;
+            var targetSize = tileRenderer == null ? (Vector2)source.bounds.size : tileRenderer.size;
+            if (tileRenderer == null)
+            {
+                var localCenter = source.transform.InverseTransformPoint(source.bounds.center);
+                var tile = new GameObject("GeneratedBackgroundTile", typeof(SpriteRenderer));
+                tile.transform.SetParent(source.transform, false);
+                tile.transform.localPosition = localCenter;
+                var scale = source.transform.lossyScale;
+                tile.transform.localScale = new Vector3(
+                    Mathf.Approximately(scale.x, 0f) ? 1f : 1f / scale.x,
+                    Mathf.Approximately(scale.y, 0f) ? 1f : 1f / scale.y,
+                    1f
+                );
+                tileRenderer = tile.GetComponent<SpriteRenderer>();
+                tileRenderer.sortingLayerID = source.sortingLayerID;
+                tileRenderer.sortingOrder = source.sortingOrder;
+            }
+            tileRenderer.sprite = sprite;
+            tileRenderer.drawMode = SpriteDrawMode.Tiled;
+            tileRenderer.tileMode = SpriteTileMode.Continuous;
+            tileRenderer.size = targetSize;
+            tileRenderer.color = Color.white;
+            source.enabled = false;
         }
 
         private static bool MatchesPrefix(Transform current, string prefix)

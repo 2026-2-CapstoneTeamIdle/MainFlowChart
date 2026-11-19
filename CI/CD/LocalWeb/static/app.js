@@ -749,6 +749,19 @@ function renderFeatures(features) {
       <div><span class="origin origin--${escapeHtml(feature.origin)}">${originLabel(feature.origin)}</span><code>${escapeHtml(feature.feature_id)}</code></div>
       <h3>${escapeHtml(feature.name)}</h3><p>${escapeHtml(feature.description)}</p>
       ${feature.rationale ? `<small>${escapeHtml(feature.rationale)}</small>` : ""}`;
+    if (Array.isArray(feature.acceptance_items) && feature.acceptance_items.length) {
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = `세부 검증 조건 ${feature.acceptance_items.length}개`;
+      const list = document.createElement("ul");
+      feature.acceptance_items.forEach((criterion) => {
+        const row = document.createElement("li");
+        row.textContent = criterion;
+        list.append(row);
+      });
+      details.append(summary, list);
+      item.append(details);
+    }
     featureList.append(item);
   });
 }

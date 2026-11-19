@@ -327,10 +327,6 @@ class WorkflowJob:
             with (self.job_root / "workflow.log").open("a", encoding="utf-8") as file:
                 file.write(line + "\n")
 
-    def reset_progress_clock(self) -> None:
-        with self.lock:
-            self.progress_started_at = time.monotonic()
-
     def _update_progress(self, line: str) -> None:
         milestones = (
             ("게임 생성 파이프라인이 완료", 100, "게임 생성 완료"),
@@ -632,7 +628,6 @@ class WorkflowJobManager:
             job.stage = "workflow"
             job.progress_percent = 18
             job.progress_label = "게임 생성 준비"
-            job.progress_started_at = time.monotonic()
         job.append_log("[WEB] Feature 구성을 승인했습니다. 게임 생성 단계를 계속합니다.")
         thread = threading.Thread(target=self._run_generation, args=(job,), daemon=True)
         thread.start()
@@ -650,7 +645,6 @@ class WorkflowJobManager:
             job.cancel_requested = False
             job.progress_percent = 3
             job.progress_label = "Feature 재분석"
-            job.progress_started_at = time.monotonic()
         job.append_log("[WEB] Feature 구성을 거절했습니다. Condition 분석을 다시 실행합니다.")
         self._start_preview(job)
         return job

@@ -59,6 +59,13 @@ class UnityTemplateTest(unittest.TestCase):
         self.assertIn("BindingFlags.DeclaredOnly", source)
         self.assertIn("legacyDebugUi.enabled && hasLegacyOnGui", source)
         self.assertIn("UNITY_UI_QUALITY_OK", source)
+        self.assertIn("layoutIssues.Add(", source)
+        self.assertIn("HUD panel '{image.name}' must have an opaque backing", source)
+        self.assertIn("alpha={image.color.a:0.###}, required=1", source)
+        opacity_scan = source.split("foreach (var image in panelBackings)", 1)[1].split(
+            "var artPanels", 1
+        )[0]
+        self.assertNotIn("return false", opacity_scan)
 
     def test_template_metadata_matches_pipeline_contract(self) -> None:
         metadata = json.loads((TEMPLATE_ROOT / "template.json").read_text(encoding="utf-8"))
@@ -405,6 +412,27 @@ class UnityTemplateTest(unittest.TestCase):
         self.assertIn('"platformer.death_to_checkpoint"', smoke)
         self.assertIn('"platformer.fall_to_checkpoint"', smoke)
         self.assertIn('Debug.Log("UNITY_CAUSAL_TRANSITION_OK:" + transitionId)', smoke)
+
+    def test_survivor_upgrade_smoke_uses_declared_live_stat_contract(self) -> None:
+        smoke = (TEMPLATE_ROOT / "Assets/GameTemplate/Editor/RuntimeSmokeValidator.cs").read_text(
+            encoding="utf-8"
+        )
+        contract = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Runtime/Core/IGeneratedFeatureModule.cs"
+        ).read_text(encoding="utf-8")
+        assembler = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Editor/PrefabSceneAssembler.cs"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("interface IGameplayStatSource", contract)
+        self.assertIn("selectedUpgrade?.observableStatId", smoke)
+        self.assertIn("TryFindGameplayStatSource(statId", smoke)
+        self.assertIn("StatChangedInExpectedDirection", smoke)
+        self.assertIn('FindPropertyRelative("observableStatId")', assembler)
+        self.assertIn(
+            "agentHarnessMode && string.IsNullOrWhiteSpace(option.observable_stat_id)", assembler
+        )
+        self.assertNotIn("SurvivorStatProperties", smoke)
 
     def test_template_meta_guids_are_unique(self) -> None:
         owners: dict[str, Path] = {}

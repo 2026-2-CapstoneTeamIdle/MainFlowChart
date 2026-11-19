@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
@@ -83,6 +84,14 @@ class AssetCheckTest(unittest.TestCase):
         self.assertEqual(qc.decision, "REGENERATE")
         self.assertIn("sound-true-peak", qc.failed)
 
+    def test_brief_flat_peaks_are_repaired_without_regeneration(self):
+        samples = impact()
+        samples[100:104, 0] = 1.0
+        qc = qc_of(samples)
+        self.assertEqual(qc.decision, "FIX")
+        self.assertEqual(qc.failed, [])
+        self.assertTrue(any(fix.startswith("declip_short_peaks_") for fix in qc.applied_fixes))
+
     def test_wrong_duration_is_regenerated(self):
         qc = qc_of(impact(seconds=2.0))
         self.assertEqual(qc.decision, "REGENERATE")
@@ -94,6 +103,17 @@ class AssetCheckTest(unittest.TestCase):
         qc = qc_of(samples)
         self.assertEqual(qc.decision, "FIX")
         self.assertIn("fade_out_20ms", qc.applied_fixes)
+
+    def test_inverted_stereo_effect_is_repaired_without_cancelling_audio(self):
+        mono = impact()[:, 0]
+        inverted_stereo = np.column_stack([mono, -0.6 * mono])
+        qc = qc_of(inverted_stereo)
+        self.assertEqual(qc.decision, "FIX")
+        self.assertEqual(qc.failed, [])
+        self.assertIn("mono_from_left", qc.applied_fixes)
+        repaired, _ = decode(qc.processed_wav, "wav")
+        self.assertEqual(repaired.shape[1], 1)
+        self.assertGreater(float(np.max(np.abs(repaired))), 0.1)
 
     def test_loop_seam_click_is_crossfaded(self):
         t = np.arange(4 * RATE) / RATE
@@ -110,6 +130,14 @@ class AssetCheckTest(unittest.TestCase):
         self.assertEqual(qc.decision, "FIX")
         self.assertEqual(qc.failed, [])
         self.assertAlmostEqual(qc.metrics["duration_s"], 4.0, delta=0.01)
+
+    def test_bgm_with_faded_tail_matches_head_after_crossfade(self):
+        t = np.arange(4 * RATE) / RATE
+        samples = (0.5 * np.sin(2 * np.pi * 110 * t)).astype(np.float32)
+        samples[-int(RATE * 0.3) :] *= np.linspace(1.0, 0.0, int(RATE * 0.3))
+        qc = qc_of(samples[:, None], plan("bgm", "bgm", 4.0, loop=True, kind="bgm"))
+        self.assertEqual(qc.decision, "FIX")
+        self.assertNotIn("sound-loop-seam", qc.failed)
 
     def test_placeholder_goes_to_review_not_pass(self):
         qc = qc_of(impact(), placeholder=True)
@@ -139,7 +167,10 @@ class AssetCheckTest(unittest.TestCase):
 class ValidateSoundNodeTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.env = mock.patch.dict(os.environ, {"MAINFLOW_WORKSPACE": self.tmp.name})
+        self.env = mock.patch.dict(
+            os.environ,
+            {"MAINFLOW_WORKSPACE": self.tmp.name, "MAINFLOW_SOUND_VALIDATION_REGENERATIONS": "0"},
+        )
         self.env.start()
         self.manager = ArtifactManager()
         self.project = self.manager.create_project()
@@ -232,6 +263,65 @@ class ValidateSoundNodeTest(unittest.TestCase):
             ("sound-missing-asset", "error", "lost"),
             [(i["code"], i["severity"], i.get("target_id")) for i in result["issues"]],
         )
+
+    def test_failed_required_peak_regenerates_only_that_sound(self):
+        provider = mock.Mock()
+        provider.name = "elevenlabs"
+        provider.generate.return_value = SimpleNamespace(
+            audio=encode_wav(impact(seed=9), RATE),
+            file_format="wav",
+            media_type="audio/wav",
+        )
+        with (
+            mock.patch.dict(os.environ, {"MAINFLOW_SOUND_VALIDATION_REGENERATIONS": "2"}),
+            mock.patch("mainflow.nodes.validate_sound.primary_provider", return_value=provider),
+        ):
+            result, profile = self.run_node(
+                [("hit", np.clip(impact(gain=3.0), -1, 1), "elevenlabs")],
+                [item("hit", "공격 효과음", "타격음")],
+            )
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(profile["assets"][0]["decision"], "PASS")
+        self.assertEqual(provider.generate.call_count, 1)
+        selected = result["validated_assets"]["assets"][0]["artifact"]
+        self.assertIn("regenerated/attempt_1", selected["relative_path"])
+
+    def test_inverted_stereo_effect_is_applied_as_processed_mono(self):
+        mono = impact()[:, 0]
+        result, profile = self.run_node(
+            [("hit", np.column_stack([mono, -0.6 * mono]), "elevenlabs")],
+            [item("hit", "공격 효과음", "타격음")],
+        )
+        self.assertEqual(result["status"], "passed")
+        self.assertIn("mono_from_left", profile["assets"][0]["applied_fixes"])
+        selected = result["validated_assets"]["assets"][0]
+        repaired, _ = decode(self.manager.read_bytes(selected["artifact"]), "wav")
+        self.assertEqual(repaired.shape[1], 1)
+
+    def test_required_inverted_stereo_music_regenerates_only_that_asset(self):
+        mono = impact(seconds=3.0)[:, 0]
+        provider = mock.Mock()
+        provider.name = "elevenlabs"
+        provider.generate.return_value = SimpleNamespace(
+            audio=encode_wav(impact(seconds=3.0, seed=9), RATE),
+            file_format="wav",
+            media_type="audio/wav",
+        )
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"SOUND_BGM_SECONDS": "3", "MAINFLOW_SOUND_VALIDATION_REGENERATIONS": "2"},
+            ),
+            mock.patch("mainflow.nodes.validate_sound.primary_provider", return_value=provider),
+        ):
+            result, _ = self.run_node(
+                [("bgm", np.column_stack([mono, -0.6 * mono]), "elevenlabs")],
+                [item("bgm", "엔딩 배경 음악", "엔딩 배경 음악")],
+            )
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(provider.generate.call_count, 1)
+        selected = result["validated_assets"]["assets"][0]["artifact"]
+        self.assertIn("regenerated/attempt_1", selected["relative_path"])
 
     def test_duplicate_and_placeholder_need_revision(self):
         same = impact()

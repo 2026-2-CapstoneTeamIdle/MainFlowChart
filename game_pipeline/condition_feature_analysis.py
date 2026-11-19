@@ -22,10 +22,10 @@ from mainflow.contracts import FeatureRequirement, GameGenre, Viewpoint
 
 DEFAULT_CONDITION_FEATURE_MODEL = "gemma4-12b-it-qat-q4-0"
 MAX_EXPLICIT_FEATURES = 20
-MAX_FEATURES_PER_REQUEST = 6
+MAX_FEATURES_PER_REQUEST = 4
 CODEX_MAX_EXPLICIT_FEATURES = 60
 CODEX_SEGMENTS_PER_REQUEST = 4
-CODEX_MAX_FEATURES_PER_REQUEST = 12
+CODEX_MAX_FEATURES_PER_REQUEST = 4
 
 CONDITION_FEATURE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -44,6 +44,7 @@ CONDITION_FEATURE_SCHEMA: dict[str, Any] = {
                     "description",
                     "source_text",
                     "acceptance_criteria",
+                    "acceptance_items",
                     "implementation_kind",
                 ],
                 "properties": {
@@ -51,6 +52,12 @@ CONDITION_FEATURE_SCHEMA: dict[str, Any] = {
                     "description": {"type": "string"},
                     "source_text": {"type": "string"},
                     "acceptance_criteria": {"type": "string"},
+                    "acceptance_items": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 24,
+                        "items": {"type": "string"},
+                    },
                     "implementation_kind": {
                         "type": "string",
                         "enum": [
@@ -90,12 +97,10 @@ class ConditionFeatureAnalyzer:
         detected_features: list[FeatureRequirement],
     ) -> ConditionFeatureAnalysis:
         known_features = [
-            feature for feature in detected_features if feature["name"] != "사용자 지정 조건"
+            dict(feature) for feature in detected_features if feature["name"] != "사용자 지정 조건"
         ]
-        fingerprints = {
-            _fingerprint(feature["name"], feature["description"]) for feature in known_features
-        }
         accepted: list[FeatureRequirement] = []
+        merged_feature_count = 0
         rejected: list[dict[str, str]] = []
         failed_segments: list[dict[str, object]] = []
         truncated_segments: list[dict[str, object]] = []
@@ -151,6 +156,20 @@ class ConditionFeatureAnalyzer:
             raw_features = response.get("features")
             if not isinstance(raw_features, list):
                 raise TypeError("Condition feature analysis must return a features array")
+            if raw_features and all(
+                isinstance(item, Mapping) and isinstance(item.get("acceptance_items"), list)
+                for item in raw_features
+            ):
+                item_count = sum(len(item["acceptance_items"]) for item in raw_features)
+                if item_count < len(_split_condition(segment)):
+                    failed_segments.append(
+                        {
+                            "segment_index": segment_index,
+                            "segment": segment,
+                            "error": "Grouped features have fewer acceptance items than source clauses",
+                        }
+                    )
+                    continue
             for item in raw_features[:request_feature_limit]:
                 if len(accepted) >= feature_limit:
                     truncated_segments.append({"segment_index": segment_index, "segment": segment})
@@ -158,17 +177,35 @@ class ConditionFeatureAnalyzer:
                 if not isinstance(item, Mapping):
                     continue
                 try:
-                    validated = _validate_feature(item, condition)
+                    validated = _validate_feature(item, segment)
                 except ValueError as error:
                     rejected.append({"reason": str(error), "value": str(dict(item))[:500]})
                     continue
+                acceptance_items = _acceptance_items(item, validated)
                 fingerprint = _fingerprint(validated["name"], validated["description"])
-                if fingerprint in fingerprints or any(
-                    _overlaps(validated, feature) for feature in [*known_features, *accepted]
-                ):
-                    rejected.append({"reason": "duplicate", "value": validated["name"]})
+                match = next(
+                    (
+                        feature
+                        for feature in [*known_features, *accepted]
+                        if _fingerprint(feature["name"], feature["description"]) == fingerprint
+                        or _overlaps(validated, feature)
+                    ),
+                    None,
+                )
+                if match is not None:
+                    merged_items = list(
+                        dict.fromkeys([*match.get("acceptance_items", []), *acceptance_items])
+                    )
+                    if len(merged_items) > 24:
+                        match = None
+                if match is not None:
+                    match["acceptance_items"] = merged_items
+                    if len(acceptance_items) > 1 and match in known_features:
+                        match["name"] = validated["name"]
+                        match["description"] = validated["description"]
+                        match["acceptance_criteria"] = validated["acceptance_criteria"]
+                    merged_feature_count += 1
                     continue
-                fingerprints.add(fingerprint)
                 accepted.append(
                     {
                         "feature_id": f"user-feature-{len(accepted) + 1:02d}",
@@ -178,6 +215,7 @@ class ConditionFeatureAnalyzer:
                         "origin": "user",
                         "rationale": "사용자 Condition에서 명시적으로 추출한 기능",
                         "acceptance_criteria": validated["acceptance_criteria"],
+                        "acceptance_items": acceptance_items,
                         "implementation_kind": validated["implementation_kind"],
                     }
                 )
@@ -197,6 +235,11 @@ class ConditionFeatureAnalyzer:
                 "detected_feature_count": len(detected_features),
                 "explicit_feature_count": len(features),
                 "added_feature_count": len(accepted),
+                "merged_feature_count": merged_feature_count,
+                "acceptance_item_count": sum(
+                    len(feature.get("acceptance_items") or [feature["description"]])
+                    for feature in features
+                ),
                 "request_count": len(request_segments),
                 "successful_request_count": (
                     len(request_segments) - len(failed_segments) - len(truncated_segments)
@@ -243,18 +286,22 @@ class ConditionFeatureAnalyzer:
             "You are the requirements parser for a Unity game generator. Analyze only "
             "condition_segment while using full_condition for context. Decompose EVERY "
             "explicitly requested behavior, object, interaction, rule, success condition, and "
-            "failure condition in the user's condition into atomic implementable features. "
+            "failure condition in the user's condition. Group clauses that share one runtime "
+            "system into a coherent implementable feature, and put EVERY observable rule, "
+            "numeric threshold, and exclusion in that feature's acceptance_items array. "
             "Explicit exclusions and negative capabilities are binding requirements. Never emit "
             "the positive opposite of phrases such as 'cannot attack', 'has no attack', or 'must "
             "not use'. Do "
             "not add prerequisites or genre defaults in this stage; a separate closure stage "
-            "does that. Do not collapse a compound sentence into one vague custom feature. Each "
-            "feature must describe one runtime behavior and have one short observable Unity Play "
-            "Mode acceptance criterion. Keep name under 30 characters and description, "
-            "source_text, and acceptance_criteria under 160 characters each. Preserve concrete "
+            "does that. Do not merge unrelated systems or replace specific rules with a vague "
+            "custom feature. Preserve every clause even when there are more clauses than features. "
+            "Each feature must name a connected runtime system and have a short summary in "
+            "acceptance_criteria; acceptance_items contain its distinct observable Unity Play "
+            "Mode checks. Keep name under 30 characters and description, source_text, and "
+            "acceptance_criteria under 160 characters each. Preserve concrete "
             "qualifiers such as all items, patrol, "
             "checkpoint, unlock-on-button, destination, input key, direction count, and resource "
-            f"cost. Return no more than {request_feature_limit} atomic features for this "
+            f"cost. Return no more than {request_feature_limit} grouped features for this "
             "segment. Choose generate_code only when the behavior is not represented by a detected "
             "feature; use scene_binding/configure_existing when wiring or data is sufficient. "
             "Return strict JSON only.\n\n"
@@ -387,7 +434,7 @@ def _validate_feature(item: Mapping[str, object], condition: str) -> dict[str, s
             raise ValueError(f"Condition feature {key} length is invalid")
         result[key] = value
     if _normalize(result["source_text"]) not in _normalize(condition):
-        result["source_text"] = condition
+        result["source_text"] = condition[:320]
     implementation_kind = str(item.get("implementation_kind", "")).strip()
     if implementation_kind not in {
         "reuse_module",
@@ -399,6 +446,20 @@ def _validate_feature(item: Mapping[str, object], condition: str) -> dict[str, s
         raise ValueError("Condition feature implementation_kind is invalid")
     result["implementation_kind"] = implementation_kind
     return result
+
+
+def _acceptance_items(item: Mapping[str, object], validated: Mapping[str, str]) -> list[str]:
+    raw_items = item.get("acceptance_items")
+    if not isinstance(raw_items, list) or not raw_items:
+        return [validated["acceptance_criteria"]]
+    items = list(
+        dict.fromkeys(
+            value.strip() for value in raw_items if isinstance(value, str) and value.strip()
+        )
+    )
+    if not items or len(items) > 24 or any(len(value) > 320 for value in items):
+        raise ValueError("Condition feature acceptance_items are invalid")
+    return items
 
 
 def _normalize(value: str) -> str:

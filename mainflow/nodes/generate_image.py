@@ -60,6 +60,25 @@ def generate_image_node(
     log("이미지 에셋을 생성합니다.")
 
     manager = ArtifactManager()
+    game_draft_reference = state.get("game_logic_draft")
+    if (
+        game_draft_reference is not None
+        and manager.read_json(game_draft_reference)["status"] == "failed"
+    ):
+        log("게임 구현 실패로 이미지 API 호출을 생략합니다.")
+        draft: ImageDraft = {
+            "contract_version": CONTRACT_VERSION,
+            "draft_id": "image-draft",
+            "status": "failed",
+            "assets": [],
+            "missing_required_asset_ids": [],
+            "notes": ["skipped: game generation failed"],
+        }
+        return {
+            "image_draft": manager.write_json(
+                state["project_id"], "image", "image_draft.json", draft, producer="generate_image"
+            )
+        }
     cast(ParsedRequest, manager.read_json(state["parsed_request"]))
     cast(AnalysisResult, manager.read_json(state["analysis"]))
     cast(LogicAnalysis, manager.read_json(state["logic_analysis"]))

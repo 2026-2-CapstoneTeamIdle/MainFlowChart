@@ -25,6 +25,123 @@ class FakeStructuredClient:
 
 
 class ConditionFeatureAnalysisTest(unittest.TestCase):
+    def test_undercovered_group_falls_back_to_original_condition(self) -> None:
+        condition = (
+            "플레이어는 이동한다. 적이 추격한다. 적이 사망하면 보석을 떨어뜨린다. "
+            "보석을 획득하면 경험치가 증가한다."
+        )
+        client = FakeStructuredClient(
+            {
+                "features": [
+                    {
+                        "name": "플레이어 이동",
+                        "description": "플레이어가 방향 입력에 따라 이동한다.",
+                        "source_text": "플레이어는 이동한다",
+                        "acceptance_criteria": "플레이어가 이동한다.",
+                        "acceptance_items": ["플레이어가 이동한다."],
+                        "implementation_kind": "generate_code",
+                    }
+                ]
+            }
+        )
+        result = ConditionFeatureAnalyzer(client, "codex_cli").analyze(
+            genre="뱀서류",
+            viewpoint="탑다운",
+            condition=condition,
+            detected_features=[],
+        )
+        self.assertEqual(result.report["failed_request_count"], 1)
+        self.assertIn("보석을 획득하면 경험치가 증가한다", result.features[0]["source_text"])
+
+    def test_group_overlapping_detected_feature_keeps_all_rules(self) -> None:
+        client = FakeStructuredClient(
+            {
+                "features": [
+                    {
+                        "name": "체력 및 피해",
+                        "description": "체력, 피격 무적과 사망 상태를 관리한다.",
+                        "source_text": "최대 체력은 100이고 피격 후 1초 동안 무적이다",
+                        "acceptance_criteria": "체력과 무적 및 사망 상태가 동작한다.",
+                        "acceptance_items": [
+                            "시작 체력은 100이다.",
+                            "피격 후 1초 동안 무적이다.",
+                            "체력 0이면 게임 오버가 된다.",
+                        ],
+                        "implementation_kind": "generate_code",
+                    }
+                ]
+            }
+        )
+        result = ConditionFeatureAnalyzer(client, "codex_cli").analyze(
+            genre="뱀서류",
+            viewpoint="탑다운",
+            condition="최대 체력은 100이고 피격 후 1초 동안 무적이다.",
+            detected_features=[
+                {
+                    "feature_id": "feature-01",
+                    "name": "체력 및 피해",
+                    "description": "플레이어의 체력이 피격 시 감소한다.",
+                    "source_text": "최대 체력은 100이고 피격 후 1초 동안 무적이다.",
+                }
+            ],
+        )
+        self.assertEqual(len(result.features), 1)
+        self.assertEqual(len(result.features[0]["acceptance_items"]), 3)
+        self.assertEqual(result.report["merged_feature_count"], 1)
+
+    def test_codex_groups_related_rules_without_discarding_acceptance_items(self) -> None:
+        condition = (
+            "플레이어는 8방향으로 이동하고 최대 체력 100으로 시작한다. "
+            "피격 후 1초 동안 무적이며 체력이 0이면 게임 오버가 된다. "
+            "검은 플레이어 주변을 회전하며 적에게 피해를 준다. "
+            "검은 투사체로 대체하면 안 되고 적마다 피격 쿨다운이 적용된다."
+        )
+        client = FakeStructuredClient(
+            {
+                "features": [
+                    {
+                        "name": "플레이어 이동과 생존",
+                        "description": "이동, 체력, 피격과 게임 오버를 관리한다.",
+                        "source_text": "플레이어는 8방향으로 이동하고 최대 체력 100으로 시작한다",
+                        "acceptance_criteria": "이동과 피해 및 사망 상태가 실제 플레이에 반영된다.",
+                        "acceptance_items": [
+                            "플레이어는 8방향으로 이동한다.",
+                            "최대 체력과 시작 체력은 100이다.",
+                            "피격 후 1초 동안 무적이다.",
+                            "체력이 0이면 게임 오버가 된다.",
+                        ],
+                        "implementation_kind": "generate_code",
+                    },
+                    {
+                        "name": "회전 검 전투",
+                        "description": "회전 검으로 적을 공격한다.",
+                        "source_text": "검은 플레이어 주변을 회전하며 적에게 피해를 준다",
+                        "acceptance_criteria": "회전 검의 충돌과 피해가 동작한다.",
+                        "acceptance_items": [
+                            "검은 플레이어 주변을 회전한다.",
+                            "검이 적에게 피해를 준다.",
+                            "검을 투사체로 대체하면 안 된다.",
+                            "동일 적에게 피격 쿨다운이 적용된다.",
+                        ],
+                        "implementation_kind": "generate_code",
+                    },
+                ]
+            }
+        )
+
+        result = ConditionFeatureAnalyzer(client, "codex_cli").analyze(
+            genre="뱀서류",
+            viewpoint="탑다운",
+            condition=condition,
+            detected_features=[],
+        )
+
+        self.assertEqual(len(client.prompts), 1)
+        self.assertEqual(len(result.features), 2)
+        self.assertEqual(result.report["acceptance_item_count"], 8)
+        self.assertIn("투사체로 대체하면 안 된다", result.features[1]["acceptance_items"][2])
+        self.assertIn("Group clauses", client.prompts[0])
+
     def test_preserves_successful_segments_when_one_request_fails(self) -> None:
         class PartialClient:
             def __init__(self) -> None:

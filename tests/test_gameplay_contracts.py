@@ -72,6 +72,30 @@ class GameplayContractsTest(unittest.TestCase):
         )
         self.assertTrue(all(item["visible_data"] for item in contract["hud_regions"]))
 
+    def test_survivor_kill_count_is_required_in_live_hud(self) -> None:
+        spec = normalize_game_spec("뱀서류")
+        design = build_design_v2(spec, "적을 처치하고 처치 수를 화면에 표시한다.")
+        contract = build_ui_contract(spec, design)
+
+        hud = next(screen for screen in contract["state_screens"] if screen["screen_id"] == "hud")
+        self.assertIn("kill count", hud["required_elements"])
+        self.assertTrue(
+            any("kill count" in region["visible_data"] for region in contract["hud_regions"])
+        )
+
+        without_kills = copy.deepcopy(design["presentation_plan"])
+        for screen in without_kills["screen_requirements"]:
+            if screen["screen_id"] == "hud":
+                screen["required_elements"].remove("kill count")
+        with self.assertRaisesRegex(ValueError, "required live HUD elements: kill count"):
+            StagedDesignV2Planner._validate_stage_response(
+                "presentation_plan",
+                without_kills,
+                design["presentation_plan"],
+                design,
+                design,
+            )
+
     def test_exact_shard_count_is_preserved_in_level_and_content_plans(self) -> None:
         spec = normalize_game_spec("플랫포머")
         condition = "시간의 파편을 12개 배치한다. 파편 12개 모두 획득 가능해야 한다."

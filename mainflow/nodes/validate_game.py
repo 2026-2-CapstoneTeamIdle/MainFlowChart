@@ -7,11 +7,16 @@ from pathlib import Path
 from typing import cast
 
 from game_pipeline import UnityProjectValidator
-from game_pipeline.agent_harness_repair import repair_with_configured_agent_harness
+from game_pipeline.agent_harness_repair import (
+    repair_feature_audit_with_configured_agent,
+    repair_with_configured_agent_harness,
+)
 from game_pipeline.feature_checklist_validation import (
     FeatureChecklistOutcome,
     FeatureChecklistWorkflow,
 )
+from game_pipeline.feature_evidence_audit import audit_feature_evidence
+from game_pipeline.requirement_constraints import forbids_player_projectiles
 from game_pipeline.unity_project_validator import UnityValidationOutcome
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
@@ -305,6 +310,9 @@ def validate_game_node(
                             else logic_analysis
                         ),
                         feature_requirements=logic_analysis["features"],
+                        excluded_static_feature_ids=(
+                            {"FC03"} if forbids_player_projectiles(request["condition"]) else set()
+                        ),
                     )
 
                 checklist_outcome = run_feature_checklists()
@@ -392,6 +400,110 @@ def validate_game_node(
                     }
                 )
 
+    if (
+        outcome.status == "passed"
+        and os.environ.get("MAINFLOW_GAME_BUILDER", "").strip().lower()
+        in {"codex_cli", "claude_code"}
+        and forbids_player_projectiles(request["condition"])
+    ):
+        critical = [
+            item
+            for item in logic_analysis["criteria"]
+            if item["target"] == "game"
+            and item["criterion_id"].startswith("logic-")
+            and (
+                ("검" in item["description"] and "투사체" in item["description"])
+                or ("검" in item["description"] and "회전 반경" in item["description"])
+                or ("체력이 0" in item["description"] and "공격" in item["description"])
+            )
+        ]
+        if critical:
+            builder = os.environ["MAINFLOW_GAME_BUILDER"].strip().lower()
+            workspace = manager.ensure_project(state["project_id"])
+            audit_root = workspace / "validation" / "pre_asset_feature_audit"
+            for attempt in range(3):
+                try:
+                    audited = audit_feature_evidence(
+                        builder=builder,
+                        project_root=project_root,
+                        audit_root=audit_root,
+                        criteria=critical,
+                        features=logic_analysis["features"],
+                    )
+                except Exception as error:  # noqa: BLE001 - report a bounded audit failure
+                    outcome.issues.append(
+                        {
+                            "code": "PRE_ASSET_SEMANTIC_AUDIT_FAILED",
+                            "severity": "error",
+                            "message": f"{type(error).__name__}: {error}",
+                        }
+                    )
+                    break
+                manager.write_json(
+                    state["project_id"],
+                    "validation",
+                    f"pre_asset_feature_audit_attempt_{attempt}.json",
+                    audited,
+                    producer="validate_game",
+                )
+                missing = [
+                    item
+                    for item in critical
+                    if not audited.get(item["criterion_id"], {}).get("satisfied")
+                ]
+                if not missing:
+                    break
+                repairable = [
+                    item
+                    for item in missing
+                    if audited.get(item["criterion_id"], {}).get("verification_status")
+                    == "unsatisfied"
+                ]
+                if not repairable or attempt >= 2:
+                    for item in missing:
+                        evidence = audited.get(item["criterion_id"], {})
+                        outcome.issues.append(
+                            {
+                                "code": "PRE_ASSET_SEMANTIC_UNSATISFIED",
+                                "severity": "error",
+                                "message": f"{item['description']}: {evidence.get('reason', 'No verified source evidence')}",
+                            }
+                        )
+                    break
+                log(
+                    f"에셋 적용 전 게임 규칙 {len(repairable)}개를 CLI Agent가 수정합니다 ({attempt + 1}/2)."
+                )
+                try:
+                    repaired = repair_feature_audit_with_configured_agent(
+                        project_root=project_root,
+                        workspace_root=workspace,
+                        draft=draft,
+                        request=request,
+                        findings=[
+                            {
+                                "criterion_id": item["criterion_id"],
+                                "requirement": item["description"],
+                                "reason": audited[item["criterion_id"]]["reason"],
+                            }
+                            for item in repairable
+                        ],
+                        iteration=attempt + 1,
+                    )
+                    if repaired is None:
+                        break
+                    outcome = repaired
+                    if outcome.status != "passed":
+                        break
+                except Exception as error:  # noqa: BLE001 - preserve the failed gate
+                    outcome.issues.append(
+                        {
+                            "code": "PRE_ASSET_SEMANTIC_REPAIR_FAILED",
+                            "severity": "error",
+                            "message": f"{type(error).__name__}: {error}",
+                        }
+                    )
+                    break
+
     if outcome.unity_log:
         log_reference = manager.write_text(
             state["project_id"],
@@ -405,7 +517,11 @@ def validate_game_node(
                 check["message"] += f" (log: {log_reference['artifact_id']})"
                 break
 
-    status = "failed" if generation_failed else outcome.status
+    status = (
+        "failed"
+        if generation_failed or any(issue["severity"] == "error" for issue in outcome.issues)
+        else outcome.status
+    )
     result = {
         "contract_version": CONTRACT_VERSION,
         "status": status,

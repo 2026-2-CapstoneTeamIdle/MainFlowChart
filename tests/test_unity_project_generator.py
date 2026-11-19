@@ -23,6 +23,35 @@ class UnityProjectGeneratorTest(unittest.TestCase):
         self.addCleanup(self.temporary_directory.cleanup)
         self.output_root = Path(self.temporary_directory.name)
 
+    def test_user_mechanic_order_initializes_rarity_before_upgrades(self) -> None:
+        design = build_game_logic_design(
+            normalize_game_spec(
+                "뱀서류", {"mechanics": ["upgrade_selection", "rarity", "experience"]}
+            )
+        )
+        selected = design["selected_modules"]
+        self.assertLess(
+            selected.index("experience_system"), selected.index("upgrade_selection_system")
+        )
+        self.assertLess(selected.index("rarity_system"), selected.index("upgrade_selection_system"))
+
+        # A later design edit must still produce a consistent serialized project.
+        selected.remove("rarity_system")
+        selected.append("rarity_system")
+        result = UnityProjectGenerator().generate(design, self.output_root / "ordered")
+        manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+        self.assertLess(
+            manifest["selected_modules"].index("rarity_system"),
+            manifest["selected_modules"].index("upgrade_selection_system"),
+        )
+        config = (result.project_root / UnityProjectGenerator.CONFIG_ASSET).read_text(
+            encoding="utf-8"
+        )
+        self.assertLess(
+            config.index('  - "rarity_system"'),
+            config.index('  - "upgrade_selection_system"'),
+        )
+
     def test_generates_configured_ready_to_open_project(self) -> None:
         design = build_game_logic_design(normalize_game_spec("뱀서류"))
         generator = UnityProjectGenerator()

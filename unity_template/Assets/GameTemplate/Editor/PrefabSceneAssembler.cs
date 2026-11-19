@@ -71,12 +71,18 @@ namespace TeamIdle.GameTemplate.Editor
             ValidationProbe validation
         )
         {
-            if (config == null || moduleRoot == null || sceneCamera == null)
-            {
+            if (config == null)
+                throw new ArgumentNullException(nameof(config), "Scene assembly requires config.");
+            if (moduleRoot == null)
                 throw new ArgumentNullException(
-                    "Scene assembly requires config, modules, and camera."
+                    nameof(moduleRoot),
+                    "Scene assembly requires modules."
                 );
-            }
+            if (sceneCamera == null)
+                throw new ArgumentNullException(
+                    nameof(sceneCamera),
+                    "Scene assembly requires a camera."
+                );
 
             EnsureAssetFolder(GeneratedPrefabRoot);
             EnsureAssetFolder(GeneratedVisualRoot);
@@ -952,7 +958,8 @@ namespace TeamIdle.GameTemplate.Editor
             }
             ConfigureUpgradePool(
                 GetModule<UpgradeSelectionSystemModule>(context),
-                context.Blueprint
+                context.Blueprint,
+                context.AgentHarnessMode
             );
 
             var arenaMarkerCount = context.AgentHarnessMode
@@ -1099,7 +1106,8 @@ namespace TeamIdle.GameTemplate.Editor
 
         private static void ConfigureUpgradePool(
             UpgradeSelectionSystemModule upgrades,
-            GameBlueprint blueprint
+            GameBlueprint blueprint,
+            bool agentHarnessMode
         )
         {
             if (upgrades == null)
@@ -1107,17 +1115,46 @@ namespace TeamIdle.GameTemplate.Editor
                 return;
             }
 
-            var entries = new List<(string Id, string Name, string Description)>();
+            var entries =
+                new List<(
+                    string Id,
+                    string Name,
+                    string Description,
+                    string ObservableStatId,
+                    string ExpectedStatChange
+                )>();
             foreach (var option in blueprint.progression_options)
             {
-                entries.Add((option.option_id, option.display_name, option.description));
+                if (agentHarnessMode && string.IsNullOrWhiteSpace(option.observable_stat_id))
+                {
+                    continue;
+                }
+                entries.Add(
+                    (
+                        option.option_id,
+                        option.display_name,
+                        option.description,
+                        option.observable_stat_id,
+                        string.IsNullOrWhiteSpace(option.expected_stat_change)
+                            ? "change"
+                            : option.expected_stat_change
+                    )
+                );
             }
-            if (entries.Count == 0)
+            if (entries.Count == 0 && !agentHarnessMode)
             {
-                entries.Add(("wing-power", "Stronger Wings", "Increase feather attack power."));
-                entries.Add(("wing-speed", "Swift Wings", "Increase movement speed."));
-                entries.Add(("attack-speed", "Rapid Feathers", "Increase attack speed."));
-                entries.Add(("feather-count", "Many Feathers", "Fire one additional feather."));
+                entries.Add(
+                    ("wing-power", "Stronger Wings", "Increase feather attack power.", "", "change")
+                );
+                entries.Add(
+                    ("wing-speed", "Swift Wings", "Increase movement speed.", "", "change")
+                );
+                entries.Add(
+                    ("attack-speed", "Rapid Feathers", "Increase attack speed.", "", "change")
+                );
+                entries.Add(
+                    ("feather-count", "Many Feathers", "Fire one additional feather.", "", "change")
+                );
             }
             var serialized = new SerializedObject(upgrades);
             var pool = serialized.FindProperty("upgradePool");
@@ -1128,6 +1165,8 @@ namespace TeamIdle.GameTemplate.Editor
                 entry.FindPropertyRelative("upgradeId").stringValue = entries[index].Item1;
                 entry.FindPropertyRelative("displayName").stringValue = entries[index].Item2;
                 entry.FindPropertyRelative("description").stringValue = entries[index].Item3;
+                entry.FindPropertyRelative("observableStatId").stringValue = entries[index].Item4;
+                entry.FindPropertyRelative("expectedStatChange").stringValue = entries[index].Item5;
             }
 
             serialized.ApplyModifiedPropertiesWithoutUndo();

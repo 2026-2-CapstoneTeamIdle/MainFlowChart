@@ -25,6 +25,7 @@ class ClaudeCodeCliRunner:
         schema: dict[str, Any],
         audit_directory: Path,
         sandbox: str = "workspace-write",
+        timeout_seconds: float | None = None,
     ) -> CodexCliResult:
         root = project_root.resolve()
         if not root.is_dir():
@@ -60,6 +61,11 @@ class ClaudeCodeCliRunner:
         if self.settings.reasoning_effort:
             command.extend(["--effort", self.settings.reasoning_effort])
 
+        effective_timeout = (
+            min(self.settings.invocation_timeout_seconds, timeout_seconds)
+            if timeout_seconds is not None
+            else self.settings.invocation_timeout_seconds
+        )
         started = time.monotonic()
         try:
             process = subprocess.run(
@@ -71,15 +77,13 @@ class ClaudeCodeCliRunner:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=self.settings.invocation_timeout_seconds,
+                timeout=effective_timeout,
                 check=False,
             )
         except subprocess.TimeoutExpired as error:
             events_path.write_text(error.stdout or "", encoding="utf-8")
             stderr_path.write_text(error.stderr or "", encoding="utf-8")
-            raise TimeoutError(
-                f"CLAUDE_PROCESS_TIMEOUT after {self.settings.invocation_timeout_seconds}s"
-            ) from error
+            raise TimeoutError(f"CLAUDE_PROCESS_TIMEOUT after {effective_timeout}s") from error
         events_path.write_text(process.stdout, encoding="utf-8")
         stderr_path.write_text(process.stderr, encoding="utf-8")
         if process.returncode != 0:

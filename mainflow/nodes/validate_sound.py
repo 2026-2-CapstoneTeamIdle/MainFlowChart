@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import cast
 
 from mainflow.ArtifactManager import ArtifactManager
@@ -18,7 +19,8 @@ from mainflow.contracts import (
     ValidationIssue,
 )
 from mainflow.nodes._common import log
-from sound_pipeline import plan_sound_assets
+from mainflow.nodes.asset_validation_spec import default_asset_validation_spec
+from sound_pipeline import SoundProviderError, plan_sound_assets, primary_provider
 from sound_pipeline.validation import SOUND_CRITERIA, AssetQC, check_asset, mark_duplicates
 
 
@@ -43,7 +45,12 @@ def validate_sound_node(
     parsed = cast(ParsedRequest, manager.read_json(state["parsed_request"]))
     request = cast(AssetGenerationRequest, manager.read_json(state["sound_asset_request"]))
     draft = cast(SoundDraft, manager.read_json(state["sound_draft"]))
-    spec = cast(AssetValidationSpec, manager.read_json(state["asset_validation_spec"]))
+    spec_reference = state.get("asset_validation_spec")
+    spec = (
+        cast(AssetValidationSpec, manager.read_json(spec_reference))
+        if spec_reference is not None
+        else default_asset_validation_spec()
+    )
 
     # Category/loop/required come from the same planner as generation, never from draft notes.
     plans = {plan.asset_id: plan for plan in plan_sound_assets(request, parsed)}
@@ -59,6 +66,8 @@ def validate_sound_node(
     processed: dict[str, str] = {}
     selected = {}
     fallback_asset_ids: list[str] = []
+    regeneration_limit = _regeneration_limit()
+    regeneration_history: list[dict[str, str | int]] = []
     for asset in draft["assets"]:
         plan = plans.get(asset["asset_id"])
         if plan is None:
@@ -80,6 +89,67 @@ def validate_sound_node(
             required_by_id,
             placeholder=asset.get("provider") == "procedural",
         )
+        if (
+            plan.required
+            and (
+                qc.decision == "REGENERATE"
+                or (qc.decision == "REVIEW" and "sound-channel-layout" in qc.failed)
+            )
+            and regeneration_limit
+            and asset.get("provider") != "procedural"
+            and asset["unity_binding_key"]
+            == next(
+                item["unity_binding_key"]
+                for item in request["assets"]
+                if item["asset_id"] == plan.asset_id
+            )
+        ):
+            for attempt in range(1, regeneration_limit + 1):
+                try:
+                    provider = primary_provider()
+                    replacement = provider.generate(plan)
+                    candidate = check_asset(
+                        replacement.audio,
+                        replacement.file_format,
+                        plan,
+                        required_by_id,
+                        placeholder=provider.name == "procedural",
+                    )
+                except (SoundProviderError, OSError, ValueError) as error:
+                    regeneration_history.append(
+                        {
+                            "asset_id": plan.asset_id,
+                            "attempt": attempt,
+                            "result": f"{type(error).__name__}: {error}",
+                        }
+                    )
+                    break
+                regeneration_history.append(
+                    {"asset_id": plan.asset_id, "attempt": attempt, "result": candidate.decision}
+                )
+                if candidate.decision not in {"PASS", "FIX"}:
+                    continue
+                reference = manager.write_bytes(
+                    project_id,
+                    "sound",
+                    f"regenerated/attempt_{attempt}/{plan.file_stem}.{replacement.file_format}",
+                    replacement.audio,
+                    producer="validate_sound",
+                    media_type=replacement.media_type,
+                )
+                asset = {
+                    **asset,
+                    "artifact": reference,
+                    "file_format": replacement.file_format,
+                    "provider": provider.name,
+                }
+                audio = replacement.audio
+                audio_by_id[plan.asset_id] = audio
+                qc = candidate
+                log(
+                    f"  - {plan.asset_id} 검증 실패를 재생성 {attempt}/{regeneration_limit}회에서 복구했습니다."
+                )
+                break
         if asset.get("provider") == "procedural":
             fallback_asset_ids.append(plan.asset_id)
             # Procedural audio is the deliberate no-API fallback. It still has to pass every
@@ -116,6 +186,14 @@ def validate_sound_node(
             selected[plan.asset_id]["artifact"] = reference
             selected[plan.asset_id]["file_format"] = "wav"
     mark_duplicates(results, audio_by_id, required_by_id)
+    if regeneration_history:
+        manager.write_json(
+            project_id,
+            "validation",
+            "sound_regeneration_attempts.json",
+            {"attempts": regeneration_history},
+            producer="validate_sound",
+        )
 
     generated_ids = {qc.asset_id for qc in results}
     missing_required = False
@@ -213,3 +291,14 @@ def validate_sound_node(
             producer="validate_sound",
         )
     }
+
+
+def _regeneration_limit() -> int:
+    name = "MAINFLOW_SOUND_VALIDATION_REGENERATIONS"
+    try:
+        value = int(os.environ.get(name, "2"))
+    except ValueError as error:
+        raise ValueError(f"{name} must be an integer") from error
+    if not 0 <= value <= 3:
+        raise ValueError(f"{name} must be between 0 and 3")
+    return value

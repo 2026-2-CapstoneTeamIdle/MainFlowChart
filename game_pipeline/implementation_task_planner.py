@@ -216,13 +216,6 @@ def _build_agent_harness_tasks(
             ["unity-playmode-validation"],
             ["objective game quality score meets the configured threshold"],
         ),
-        _task(
-            "package-project",
-            "packaging",
-            "Package the validated Unity project and development evidence.",
-            ["quality-evaluation"],
-            ["a Unity project archive and harness evidence are available"],
-        ),
     ]
     return {
         "plan_version": "1.0.0",

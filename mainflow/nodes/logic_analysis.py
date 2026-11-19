@@ -25,6 +25,7 @@ from mainflow.contracts import (
     LogicAnalysis,
     LogicAnalysisAgentInput,
     LogicAnalysisAgentOutput,
+    MAX_APPROVED_FEATURES,
     ParsedRequest,
     ValidationCriterion,
 )
@@ -236,7 +237,7 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
         {
             "criterion_id": f"logic-{feature['feature_id']}",
             "target": "game",
-            "description": feature["description"],
+            "description": " ".join(feature.get("acceptance_items") or [feature["description"]]),
             "required": True,
         }
         for feature in features
@@ -256,7 +257,9 @@ def logic_analysis_node(state: LogicAnalysisAgentInput) -> LogicAnalysisAgentOut
                 "criterion_id": "sound-mood",
                 "target": "sound",
                 "description": f"사운드는 {request['mood_style']} 분위기와 어울린다.",
-                "required": True,
+                # The DSP validator can measure file and playback quality, not artistic mood.
+                # Leave this subjective criterion to the independent quality review.
+                "required": False,
             },
         ]
     )
@@ -304,8 +307,11 @@ def _load_approved_logic_analysis(
     raw_features = payload.get("features")
     if not isinstance(raw_features, list) or not raw_features:
         raise ValueError("Approved logic analysis must contain at least one Feature")
-    if len(raw_features) > 100:
-        raise ValueError("Approved logic analysis contains too many Features")
+    if len(raw_features) > MAX_APPROVED_FEATURES:
+        raise ValueError(
+            "Approved logic analysis contains too many Features "
+            f"({len(raw_features)} > {MAX_APPROVED_FEATURES})"
+        )
     seen: set[str] = set()
     for feature in raw_features:
         if not isinstance(feature, dict):

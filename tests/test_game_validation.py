@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import cast
@@ -88,6 +89,131 @@ class UnityProjectValidatorTest(unittest.TestCase):
         self.assertIn(
             "UNITY_BATCHMODE_SKIPPED",
             [issue["code"] for issue in outcome.issues],
+        )
+
+    def test_passed_unity_validation_is_reused_until_project_source_changes(self) -> None:
+        fake_editor = self.project_root / "Unity.exe"
+        fake_editor.write_bytes(b"")
+        validator = UnityProjectValidator(mode="required", unity_editor=fake_editor)
+
+        def pass_batch(outcome, _root, *, deadline=None):
+            outcome.checks.append(
+                {"criterion_id": "unity.batchmode", "passed": True, "message": "passed"}
+            )
+
+        with patch.object(validator, "_run_unity_validation", side_effect=pass_batch) as run:
+            first = validator.validate(self.unity_root, self.draft, self.request)
+            second = validator.validate(self.unity_root, self.draft, self.request)
+            self.assertEqual(first.status, "passed")
+            self.assertEqual(second.status, "passed")
+            self.assertEqual(run.call_count, 1)
+
+            source = self.unity_root / "Assets/GameTemplate/Runtime/Core/GameContext.cs"
+            source.write_text(
+                source.read_text(encoding="utf-8") + "\n// changed\n", encoding="utf-8"
+            )
+            validator.validate(self.unity_root, self.draft, self.request)
+            self.assertEqual(run.call_count, 2)
+
+    def test_intermediate_compile_returns_compiler_diagnostics(self) -> None:
+        fake_editor = self.project_root / "Unity.exe"
+        fake_editor.write_bytes(b"")
+
+        def fail_compile(command, **_kwargs):
+            log_path = Path(command[command.index("-logFile") + 1])
+            log_path.write_text("Assets/Test.cs(1,1): error CS1002: ; expected", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 1, "", "")
+
+        with patch(
+            "game_pipeline.unity_project_validator.subprocess.run", side_effect=fail_compile
+        ):
+            outcome = UnityProjectValidator(
+                mode="required", unity_editor=fake_editor
+            ).compile_sources(self.unity_root)
+
+        self.assertEqual(outcome.status, "failed")
+        self.assertIn("CS1002", outcome.checks[-1]["message"])
+
+    def test_intermediate_compile_does_not_send_host_failure_for_code_repair(self) -> None:
+        fake_editor = self.project_root / "Unity.exe"
+        fake_editor.write_bytes(b"")
+        with patch(
+            "game_pipeline.unity_project_validator.subprocess.run",
+            return_value=subprocess.CompletedProcess([str(fake_editor)], 1, "", "project locked"),
+        ):
+            outcome = UnityProjectValidator(
+                mode="required", unity_editor=fake_editor
+            ).compile_sources(self.unity_root)
+
+        self.assertEqual(outcome.status, "failed")
+        self.assertEqual(outcome.issues[-1]["code"], "UNITY_SOURCE_COMPILATION_UNAVAILABLE")
+
+    def test_preflight_rejects_broken_config_before_unity_launch(self) -> None:
+        config = self.unity_root / "Assets/GameTemplate/Generated/GameTemplateConfig.asset"
+        text = config.read_text(encoding="utf-8")
+        config.write_text(
+            text.replace(
+                "guid: a0000000000000000000000000000003", "guid: 00000000000000000000000000000000"
+            ),
+            encoding="utf-8",
+        )
+        fake_editor = self.project_root / "Unity.exe"
+        fake_editor.write_bytes(b"")
+        with patch("game_pipeline.unity_project_validator.subprocess.run") as run_unity:
+            outcome = UnityProjectValidator(mode="required", unity_editor=fake_editor).validate(
+                self.unity_root, self.draft, self.request
+            )
+        run_unity.assert_not_called()
+        self.assertIn("UNITY_BATCH_INPUTS_INVALID", [item["code"] for item in outcome.issues])
+
+    def test_preflight_rejects_unknown_selected_module(self) -> None:
+        config = self.unity_root / "Assets/GameTemplate/Generated/GameTemplateConfig.asset"
+        text = config.read_text(encoding="utf-8")
+        config.write_text(
+            text.replace(
+                "  selectedModules:\n", "  selectedModules:\n  - unknown_feature_module\n"
+            ),
+            encoding="utf-8",
+        )
+        outcome = UnityProjectValidator(mode="static").validate_preflight(
+            self.unity_root, self.draft, self.request
+        )
+        self.assertEqual(outcome.status, "failed")
+        self.assertIn("unknown_feature_module", outcome.issues[-1]["message"])
+
+    def test_preflight_rejects_late_required_service_before_unity_launch(self) -> None:
+        config = self.unity_root / "Assets/GameTemplate/Generated/GameTemplateConfig.asset"
+        text = config.read_text(encoding="utf-8")
+        config.write_text(
+            text.replace(
+                "  selectedModules:\n",
+                "  selectedModules:\n  - upgrade_selection_system\n"
+                "  - experience_system\n  - rarity_system\n",
+            ),
+            encoding="utf-8",
+        )
+        fake_editor = self.project_root / "Unity.exe"
+        fake_editor.write_bytes(b"")
+        with patch("game_pipeline.unity_project_validator.subprocess.run") as run_unity:
+            outcome = UnityProjectValidator(mode="required", unity_editor=fake_editor).validate(
+                self.unity_root, self.draft, self.request
+            )
+        run_unity.assert_not_called()
+        self.assertIn("UNITY_MODULE_DEPENDENCY_INVALID", [i["code"] for i in outcome.issues])
+        self.assertIn(
+            "upgrade_selection_system must initialize after rarity_system", str(outcome.issues)
+        )
+
+    def test_validation_budget_stops_before_unity_launch(self) -> None:
+        fake_editor = self.project_root / "Unity.exe"
+        fake_editor.write_bytes(b"")
+        with patch("game_pipeline.unity_project_validator.subprocess.run") as run_unity:
+            outcome = UnityProjectValidator(mode="required", unity_editor=fake_editor).validate(
+                self.unity_root, self.draft, self.request, time_budget_seconds=0
+            )
+        run_unity.assert_not_called()
+        self.assertIn(
+            "UNITY_VALIDATION_BUDGET_EXHAUSTED", [item["code"] for item in outcome.issues]
         )
 
     def test_static_validation_rejects_unstable_generated_module_layout(self) -> None:
@@ -217,6 +343,36 @@ internal sealed class GeneratedFeature02Module : GameModuleBehaviour { }
         )
         self.assertTrue(batch_check["passed"])
 
+    def test_runtime_uses_remaining_validation_budget(self) -> None:
+        fake_editor = self.project_root / "Unity.exe"
+        fake_editor.write_bytes(b"")
+        timeouts: list[float] = []
+
+        def run_unity(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            timeouts.append(float(kwargs["timeout"]))
+            if len(timeouts) == 1:
+                time.sleep(0.01)
+            log_path = Path(command[command.index("-logFile") + 1])
+            log_path.write_text(
+                "\n".join(
+                    (
+                        *UnityProjectValidator.SUCCESS_MARKERS,
+                        "UNITY_RUNTIME_SMOKE_OK:",
+                        "UNITY_VALIDATION_PLAN_OK:3",
+                    )
+                ),
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with patch("game_pipeline.unity_project_validator.subprocess.run", side_effect=run_unity):
+            outcome = UnityProjectValidator(mode="required", unity_editor=fake_editor).validate(
+                self.unity_root, self.draft, self.request, time_budget_seconds=3
+            )
+        self.assertEqual(outcome.status, "passed")
+        self.assertEqual(len(timeouts), 2)
+        self.assertGreater(timeouts[0], timeouts[1])
+
     def test_failed_batch_validation_exposes_compiler_diagnostic(self) -> None:
         fake_editor = self.project_root / "Unity.exe"
         fake_editor.write_bytes(b"")
@@ -244,6 +400,29 @@ internal sealed class GeneratedFeature02Module : GameModuleBehaviour { }
         )
         self.assertFalse(batch_check["passed"])
         self.assertIn("error CS0103", batch_check["message"])
+
+    def test_failed_batch_validation_exposes_config_exception_and_stage(self) -> None:
+        fake_editor = self.project_root / "Unity.exe"
+        fake_editor.write_bytes(b"")
+
+        def run_unity(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            log_path = Path(command[command.index("-logFile") + 1])
+            log_path.write_text(
+                "UNITY_BATCH_BUILD_STAGE:template_scene\n"
+                "ArgumentNullException: Scene assembly requires config.\n",
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(command, 1, "", "")
+
+        with patch("game_pipeline.unity_project_validator.subprocess.run", side_effect=run_unity):
+            outcome = UnityProjectValidator(mode="required", unity_editor=fake_editor).validate(
+                self.unity_root, self.draft, self.request
+            )
+        batch_check = next(
+            check for check in outcome.checks if check["criterion_id"] == "unity.batchmode"
+        )
+        self.assertIn("ArgumentNullException", batch_check["message"])
+        self.assertIn("last_stage=template_scene", batch_check["message"])
 
 
 class ValidateGameNodeTest(unittest.TestCase):
@@ -912,7 +1091,7 @@ class GameFailureIsolationTest(unittest.TestCase):
                     ).is_dir()
                 )
 
-    def test_image_and_sound_branches_complete_when_game_generation_fails(self) -> None:
+    def test_failed_game_skips_asset_providers_and_preserves_diagnostic_project(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             workspace = Path(temporary_directory) / "workspace"
             with (
@@ -930,6 +1109,8 @@ class GameFailureIsolationTest(unittest.TestCase):
                     "mainflow.nodes.design_game_logic.create_feature_generator_from_environment",
                     side_effect=RuntimeError("simulated game generation failure"),
                 ),
+                patch("mainflow.nodes.generate_image.create_image_generator") as image_provider,
+                patch("mainflow.nodes.generate_sound.primary_provider") as sound_provider,
             ):
                 final_state = cast(
                     WorkflowState,
@@ -952,6 +1133,7 @@ class GameFailureIsolationTest(unittest.TestCase):
                 image_draft = manager.read_json(final_state["image_draft"])
                 sound_draft = manager.read_json(final_state["sound_draft"])
                 image_validation = manager.read_json(final_state["image_validation_result"])
+                sound_validation = manager.read_json(final_state["sound_validation_result"])
                 integrated_game = manager.read_json(final_state["integrated_game"])
                 final_validation = manager.read_json(final_state["final_validation_result"])
 
@@ -979,36 +1161,26 @@ class GameFailureIsolationTest(unittest.TestCase):
                 )
                 self.assertGreater(len(image_request["assets"]), 0)
                 self.assertGreater(len(sound_request["assets"]), 0)
-                # The image and sound branches generate every requested asset on their own.
-                self.assertEqual(image_draft["status"], "generated")
-                self.assertEqual(len(image_draft["assets"]), len(image_request["assets"]))
-                self.assertEqual(sound_draft["status"], "generated")
-                self.assertEqual(len(sound_draft["assets"]), len(sound_request["assets"]))
+                image_provider.assert_not_called()
+                sound_provider.assert_not_called()
+                self.assertEqual(image_draft["status"], "failed")
+                self.assertEqual(image_draft["assets"], [])
+                self.assertEqual(sound_draft["status"], "failed")
+                self.assertEqual(sound_draft["assets"], [])
+                self.assertEqual(image_validation["status"], "failed")
+                self.assertEqual(sound_validation["status"], "failed")
                 self.assertEqual(integrated_game["status"], "failed")
-                self.assertEqual(
-                    set(integrated_game["applied_image_asset_ids"]),
-                    set(image_validation["validated_asset_ids"]),
-                )
-                self.assertEqual(
-                    set(integrated_game["applied_sound_asset_ids"]),
-                    {asset["asset_id"] for asset in sound_draft["assets"]},
-                )
+                self.assertEqual(integrated_game["applied_image_asset_ids"], [])
+                self.assertEqual(integrated_game["applied_sound_asset_ids"], [])
                 unity_project = (
                     manager.ensure_project(final_state["project_id"]) / "game/unity_project"
                 )
-                binding_manifest_path = (
-                    unity_project / "Assets/GameTemplate/Generated/AssetBindingManifest.json"
-                )
-                self.assertTrue(binding_manifest_path.is_file())
-                binding_manifest = json.loads(binding_manifest_path.read_text(encoding="utf-8"))
-                for entry in binding_manifest["entries"]:
-                    self.assertTrue((unity_project / entry["unity_path"]).is_file())
                 self.assertTrue(
                     (
                         unity_project / "Assets/GameTemplate/Generated/GenerationRequest.json"
                     ).is_file()
                 )
-                self.assertTrue(
+                self.assertFalse(
                     (
                         manager.ensure_project(final_state["project_id"])
                         / "game/diagnostic_integrated_unity_project.zip"

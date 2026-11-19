@@ -87,6 +87,10 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .feature-card h3 { margin: 13px 0 8px; }
 .feature-card p { margin-bottom: 8px; color: #9ba8bd; line-height: 1.5; }
 .feature-card small { color: #72809a; }
+.feature-card details { margin-top: 12px; color: #c5d2e8; }
+.feature-card summary { cursor: pointer; color: #a9c4f0; }
+.feature-card ul { margin: 9px 0 0; padding-left: 20px; line-height: 1.5; }
+.feature-card li + li { margin-top: 5px; }
 .origin { padding: 4px 7px; border-radius: 6px; background: #273650; color: #a9c8ff; font-size: .7rem; font-weight: 800; }
 .origin--requirement_dependency { background: #3b2d19; color: #ffd187; }
 .origin--genre_inferred { background: #253823; color: #9ee39a; }

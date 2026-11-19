@@ -59,7 +59,9 @@ def parse_input_node(state: ParseInputAgentInput) -> ParseInputAgentOutput:
         "contract_version": CONTRACT_VERSION,
         "image_style": state["image_style"],
         "mood_style": state["mood_style"],
-        "genre": state["genre"],
+        "genre": (
+            "타워 디펜스" if state["genre"].replace(" ", "") == "타워디펜스" else state["genre"]
+        ),
         "viewpoint": state["viewpoint"],
         "condition": state["condition"].strip(),
         "custom_image": custom_image,
