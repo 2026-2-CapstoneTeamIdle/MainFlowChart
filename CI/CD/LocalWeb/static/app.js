@@ -809,18 +809,35 @@ function renderFeatureWorkspace(job) {
 function renderFeatures(features) {
   const renderKey = JSON.stringify([features, [...expandedFeatureIds].sort()]);
   if (renderKey === lastFeatureRenderKey && featureList.childElementCount === features.length) return;
-  const openCriteria = new Set(
-    [...featureList.querySelectorAll(".checklist-item details[open]")].map((details) => {
-      const card = details.closest(".feature-card");
-      const criterion = details.closest(".checklist-item");
-      return `${card?.dataset.featureId}:${criterion?.dataset.criterionId}`;
-    }),
-  );
-  featureList.replaceChildren();
+  const previousCards = new Map([...featureList.children].map((card) => [card.dataset.featureId, card]));
+  const listScrollTop = featureList.scrollTop;
+  const visibleCard = [...featureList.children].find((card) => {
+    const bounds = card.getBoundingClientRect();
+    return bounds.bottom > 0 && bounds.top < window.innerHeight;
+  });
+  const anchorId = visibleCard?.dataset.featureId;
+  const anchorTop = visibleCard?.getBoundingClientRect().top;
   features.forEach((feature, index) => {
     const featureId = String(feature.feature_id || "feature");
     const status = feature.status || "pending";
     const expanded = expandedFeatureIds.has(featureId);
+    const cardRenderKey = JSON.stringify([feature, expanded]);
+    const previousCard = previousCards.get(featureId);
+    previousCards.delete(featureId);
+    if (previousCard?._featureRenderKey === cardRenderKey) {
+      if (featureList.children[index] !== previousCard) {
+        featureList.insertBefore(previousCard, featureList.children[index] || null);
+      }
+      return;
+    }
+    const openCriteria = new Set(
+      previousCard
+        ? [...previousCard.querySelectorAll(".checklist-item details[open]")].map(
+          (details) => details.closest(".checklist-item")?.dataset.criterionId,
+        )
+        : [],
+    );
+    const checklistScrollTop = previousCard?.querySelector(".feature-checklist ol")?.scrollTop || 0;
     const checklist = Array.isArray(feature.checklist) ? feature.checklist : [];
     const checklistItems = checklist.length
       ? checklist.map((criterion) => renderChecklistCriterion(criterion)).join("")
@@ -829,6 +846,7 @@ function renderFeatures(features) {
     item.className = `feature-card feature-card--${escapeHtml(status)}`;
     item.dataset.featureId = featureId;
     item.dataset.checklistCount = String(feature.checklist_count || 0);
+    item._featureRenderKey = cardRenderKey;
     item.style.setProperty("--card-index", String(index));
     item.tabIndex = 0;
     item.setAttribute("role", "button");
@@ -857,14 +875,24 @@ function renderFeatures(features) {
         </div>
         <ol>${checklistItems}</ol>
       </div>`;
-    featureList.append(item);
-  });
-  featureList.querySelectorAll(".checklist-item").forEach((criterion) => {
-    const card = criterion.closest(".feature-card");
-    if (openCriteria.has(`${card?.dataset.featureId}:${criterion.dataset.criterionId}`)) {
-      criterion.querySelector("details").open = true;
+    if (previousCard) previousCard.replaceWith(item);
+    else featureList.insertBefore(item, featureList.children[index] || null);
+    if (featureList.children[index] !== item) {
+      featureList.insertBefore(item, featureList.children[index] || null);
     }
+    item.querySelectorAll(".checklist-item").forEach((criterion) => {
+      if (openCriteria.has(criterion.dataset.criterionId)) {
+        criterion.querySelector("details").open = true;
+      }
+    });
+    item.querySelector(".feature-checklist ol").scrollTop = checklistScrollTop;
   });
+  previousCards.forEach((card) => card.remove());
+  featureList.scrollTop = listScrollTop;
+  const currentAnchor = [...featureList.children].find((card) => card.dataset.featureId === anchorId);
+  if (currentAnchor && anchorTop !== undefined) {
+    window.scrollBy(0, currentAnchor.getBoundingClientRect().top - anchorTop);
+  }
   lastFeatureRenderKey = renderKey;
 }
 
