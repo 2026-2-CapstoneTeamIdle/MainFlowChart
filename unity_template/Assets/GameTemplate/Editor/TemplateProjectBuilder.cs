@@ -44,9 +44,12 @@ namespace TeamIdle.GameTemplate.Editor
 
         public static void BuildForBatch()
         {
+            Debug.Log("UNITY_BATCH_BUILD_STAGE:module_catalog");
             ModuleComponentCatalog.ValidateForBatch();
+            Debug.Log("UNITY_BATCH_BUILD_STAGE:template_scene");
             BuildTemplate();
-            var config = AssetDatabase.LoadAssetAtPath<GameTemplateConfig>(ConfigPath);
+            var config = LoadOrCreateConfig();
+            Debug.Log("UNITY_BATCH_BUILD_STAGE:scene_validation");
             PrefabSceneAssembler.ValidateCurrentSceneForBatch(config);
             Debug.Log("UNITY_TEMPLATE_BUILD_OK");
         }
@@ -61,15 +64,10 @@ namespace TeamIdle.GameTemplate.Editor
             PlayerSettings.companyName = "Team IDLE";
             PlayerSettings.productName = "Generated 2D Game";
 
-            var config = AssetDatabase.LoadAssetAtPath<GameTemplateConfig>(ConfigPath);
-            if (config == null)
-            {
-                config = ScriptableObject.CreateInstance<GameTemplateConfig>();
-                AssetDatabase.CreateAsset(config, ConfigPath);
-            }
+            var config = LoadOrCreateConfig();
 
             var configuredModules =
-                config.SelectedModules.Count > 0
+                config.SelectedModules != null && config.SelectedModules.Count > 0
                     ? config.SelectedModules
                     : new[] { "game_bootstrap", "validation_probe" };
             config.Configure(
@@ -81,9 +79,18 @@ namespace TeamIdle.GameTemplate.Editor
                 configuredModules
             );
             EditorUtility.SetDirty(config);
+            AssetDatabase.SaveAssets();
 
             GeneratedAssetBinder.ImportAndConfigureAssets();
             AssetDatabase.Refresh();
+            // Refresh can reload imported assets and invalidate the previous ScriptableObject.
+            config = AssetDatabase.LoadAssetAtPath<GameTemplateConfig>(ConfigPath);
+            if (config == null)
+            {
+                throw new InvalidOperationException(
+                    $"GameTemplateConfig could not be reloaded after asset import: {ConfigPath}"
+                );
+            }
 
             var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
             scene.name = "Bootstrap";
@@ -99,13 +106,6 @@ namespace TeamIdle.GameTemplate.Editor
                 validationProbe
             );
 
-            var serializedBootstrap = new SerializedObject(bootstrap);
-            serializedBootstrap.FindProperty("config").objectReferenceValue = config;
-            serializedBootstrap.FindProperty("moduleRoot").objectReferenceValue = moduleRoot;
-            serializedBootstrap.FindProperty("validationProbe").objectReferenceValue =
-                validationProbe;
-            serializedBootstrap.ApplyModifiedPropertiesWithoutUndo();
-
             var cameraObject = new GameObject("Main Camera", typeof(Camera), typeof(AudioListener));
             cameraObject.tag = "MainCamera";
             cameraObject.transform.position = new Vector3(0f, 0f, -10f);
@@ -115,11 +115,23 @@ namespace TeamIdle.GameTemplate.Editor
             camera.clearFlags = CameraClearFlags.SolidColor;
             camera.backgroundColor = new Color(0.035f, 0.04f, 0.055f, 1f);
 
+            // Scene creation can trigger a delayed asset reload in batch mode.
+            config = LoadOrCreateConfig();
             PrefabSceneAssembler.Assemble(config, moduleRoot, camera, validationProbe);
             GeneratedAssetBinder.BindSceneAssets(
                 moduleRoot,
                 GameObject.Find("GeneratedGame").transform
             );
+
+            // Importing prefabs may reload the asset again. Bind the current handle only
+            // after all imports, immediately before serializing the scene.
+            config = LoadOrCreateConfig();
+            var serializedBootstrap = new SerializedObject(bootstrap);
+            serializedBootstrap.FindProperty("config").objectReferenceValue = config;
+            serializedBootstrap.FindProperty("moduleRoot").objectReferenceValue = moduleRoot;
+            serializedBootstrap.FindProperty("validationProbe").objectReferenceValue =
+                validationProbe;
+            serializedBootstrap.ApplyModifiedPropertiesWithoutUndo();
 
             if (!EditorSceneManager.SaveScene(scene, ScenePath))
             {
@@ -138,6 +150,32 @@ namespace TeamIdle.GameTemplate.Editor
         {
             var absolutePath = Path.Combine(Directory.GetCurrentDirectory(), assetPath);
             Directory.CreateDirectory(absolutePath);
+        }
+
+        private static GameTemplateConfig LoadOrCreateConfig()
+        {
+            var config = AssetDatabase.LoadAssetAtPath<GameTemplateConfig>(ConfigPath);
+            if (config != null)
+            {
+                return config;
+            }
+
+            if (File.Exists(ConfigPath))
+            {
+                AssetDatabase.ImportAsset(ConfigPath, ImportAssetOptions.ForceUpdate);
+                config = AssetDatabase.LoadAssetAtPath<GameTemplateConfig>(ConfigPath);
+                if (config == null)
+                {
+                    throw new InvalidOperationException(
+                        $"Existing GameTemplateConfig cannot be loaded: {ConfigPath}"
+                    );
+                }
+                return config;
+            }
+
+            config = ScriptableObject.CreateInstance<GameTemplateConfig>();
+            AssetDatabase.CreateAsset(config, ConfigPath);
+            return config;
         }
     }
 }

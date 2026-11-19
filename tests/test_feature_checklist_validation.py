@@ -50,6 +50,19 @@ class FeatureChecklistValidationTest(unittest.TestCase):
         )
         self.assertEqual(results[1].message, "jump velocity was zero")
 
+    def test_incompatible_static_projectile_test_is_not_sent_for_repair(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            report = Path(temporary_directory) / "results.xml"
+            report.write_text(
+                '<test-run><test-case fullname="Tests.FC03_AutoAttack" result="Failed" />'
+                '<test-case fullname="Tests.FC02_Movement" result="Passed" /></test-run>',
+                encoding="utf-8",
+            )
+            results = FeatureChecklistWorkflow._parse_nunit(
+                report, excluded_static_feature_ids={"FC03"}
+            )
+        self.assertEqual([item.feature_id for item in results], ["FC02"])
+
     def test_original_docx_is_preserved_and_checked_copy_is_annotated(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -61,7 +74,7 @@ class FeatureChecklistValidationTest(unittest.TestCase):
                 '<w:document xmlns:w="http://schemas.openxmlformats.org/'
                 'wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>원본</w:t>'
                 "</w:r></w:p><w:sectPr /></w:body></w:document>"
-            ).encode("utf-8")
+            ).encode()
             with zipfile.ZipFile(source, "w") as archive:
                 archive.writestr("word/document.xml", original_document)
             before = source.read_bytes()

@@ -128,6 +128,26 @@ class SceneVisualAssetsTest(unittest.TestCase):
 
         self.assertNotIn(STAGE_BACKGROUND_ASSET_ID, ids)
 
+    def test_sprite_description_excluding_background_does_not_suppress_background(self) -> None:
+        spec, design = _design("뱀서류")
+        spec = deepcopy(spec)
+        spec["asset_requirements"].append(
+            {
+                "asset_id": "primary_attack_visual",
+                "asset_type": "image",
+                "purpose": "회전하는 검",
+                "description": "검 한 자루만 그린다. 글자와 배경을 그리지 않는다.",
+                "required": True,
+            }
+        )
+
+        ids = [
+            item["asset_id"]
+            for item in scene_visual_requirements(spec, design["design_v2"]["level_plan"])
+        ]
+
+        self.assertIn(STAGE_BACKGROUND_ASSET_ID, ids)
+
     def test_merge_is_idempotent_and_keeps_preset_assets_first(self) -> None:
         spec, design = _design("플랫포머")
         level_plan = design["design_v2"]["level_plan"]

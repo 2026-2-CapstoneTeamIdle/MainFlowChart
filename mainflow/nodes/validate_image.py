@@ -25,6 +25,7 @@ from mainflow.image_generation import (
 )
 from mainflow.image_spritesheet import validate_sheet
 from mainflow.nodes._common import log
+from mainflow.nodes.asset_validation_spec import default_asset_validation_spec
 
 
 # Node 계약
@@ -49,7 +50,12 @@ def validate_image_node(
         AssetGenerationRequest,
         manager.read_json(state["image_asset_request"]),
     )
-    spec = cast(AssetValidationSpec, manager.read_json(state["asset_validation_spec"]))
+    spec_reference = state.get("asset_validation_spec")
+    spec = (
+        cast(AssetValidationSpec, manager.read_json(spec_reference))
+        if spec_reference is not None
+        else default_asset_validation_spec()
+    )
 
     # TODO: 비전 모델을 이용한 스타일 일치 검증 추가
     issues: list[ValidationIssue] = []

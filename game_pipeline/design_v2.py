@@ -236,14 +236,14 @@ def _presentation_plan(
                 "visual_direction": "compact survival HUD with strong danger and reward contrast",
                 "palette": ["#101827", "#E94F64", "#55D6BE", "#F6C453", "#F4F7FB"],
                 "typography": "high-contrast sans serif with large numeric counters",
-                "panel_style": "dark translucent cards with colored progress fills",
+                "panel_style": "opaque dark cards with colored progress fills",
             },
             "hud_layout": [
                 {
                     "region_id": "survival_status",
                     "anchor": "top-left",
                     "purpose": "keep survival state readable during dense combat",
-                    "visible_data": ["health bar", "level", "experience bar"],
+                    "visible_data": ["health bar", "level", "experience bar", "kill count"],
                 },
                 {
                     "region_id": "encounter_status",
@@ -262,7 +262,13 @@ def _presentation_plan(
                 {
                     "screen_id": "hud",
                     "purpose": "continuous combat and progression readability",
-                    "required_elements": ["health bar", "experience bar", "level", "timer"],
+                    "required_elements": [
+                        "health bar",
+                        "experience bar",
+                        "level",
+                        "timer",
+                        "kill count",
+                    ],
                     "activation_condition": "playing",
                 },
                 {
@@ -323,7 +329,7 @@ def _presentation_plan(
             "visual_direction": "adventure HUD with clear objective and traversal feedback",
             "palette": ["#111827", "#3B82F6", "#22C55E", "#FBBF24", "#F8FAFC"],
             "typography": "bold readable sans serif with compact supporting labels",
-            "panel_style": "layered translucent cards, rounded visual rhythm, bright progress fills",
+            "panel_style": "layered opaque cards, rounded visual rhythm, bright progress fills",
         },
         "hud_layout": [
             {

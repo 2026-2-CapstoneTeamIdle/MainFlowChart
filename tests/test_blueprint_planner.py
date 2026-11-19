@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from game_pipeline.blueprint_planner import (
     GameBlueprintPlanner,
+    _progression,
     create_blueprint_planner_from_environment,
 )
 from game_pipeline.game_blueprint import build_game_blueprint
@@ -68,6 +69,32 @@ class BlueprintPlannerTest(unittest.TestCase):
         self.assertIn("lava_fall", [item["entity_id"] for item in result["entities"]])
         self.assertIn("player_anchor", [item["archetype"] for item in result["entities"]])
         self.assertIn("fallback_blueprint", client.prompt)
+
+    def test_progression_contract_accepts_request_specific_weapon_stats(self) -> None:
+        options = _progression(
+            [
+                {
+                    "option_id": "larger_magazine",
+                    "display_name": "More rounds",
+                    "description": "Increase the live magazine capacity",
+                    "rarity": "common",
+                    "observable_stat_id": "gun.magazine_capacity",
+                    "expected_stat_change": "increase",
+                },
+                {
+                    "option_id": "faster_draw",
+                    "display_name": "Quick draw",
+                    "description": "Decrease the live bow draw time",
+                    "rarity": "rare",
+                    "observable_stat_id": "bow.draw_seconds",
+                    "expected_stat_change": "decrease",
+                },
+            ]
+        )
+
+        self.assertEqual(options[0]["observable_stat_id"], "gun.magazine_capacity")
+        self.assertEqual(options[1]["observable_stat_id"], "bow.draw_seconds")
+        self.assertEqual(options[1]["expected_stat_change"], "decrease")
 
     def test_missing_required_archetype_is_rejected(self) -> None:
         payload = copy.deepcopy(self.fallback)

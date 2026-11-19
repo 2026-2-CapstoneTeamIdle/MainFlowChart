@@ -8,7 +8,6 @@ from mainflow.contracts import WorkflowState
 from mainflow.nodes import (
     analysis_node,
     apply_assets_to_game_node,
-    create_asset_validation_spec_node,
     design_game_logic_node,
     final_validation_node,
     game_quality_validator_node,
@@ -44,11 +43,6 @@ def build_graph():
     add_node("generate_sound", generate_sound_node)
 
     add_node("validate_game", validate_game_node)
-
-    add_node(
-        "create_asset_validation_spec",
-        create_asset_validation_spec_node,
-    )
 
     add_node("validate_image", validate_image_node)
     add_node("validate_sound", validate_sound_node)
@@ -97,38 +91,16 @@ def build_graph():
         "design_game_logic",
         "validate_game",
     )
-    graph.add_edge(
-        "validate_game",
-        "create_asset_validation_spec",
-    )
+    # Asset criteria are static and no longer wait for game validation.
+    graph.add_edge("generate_image", "validate_image")
+    graph.add_edge("generate_sound", "validate_sound")
 
-    # 3. Image validation waits for:
-    #    - image generation
-    #    - asset validation spec
-    graph.add_edge(
-        [
-            "generate_image",
-            "create_asset_validation_spec",
-        ],
-        "validate_image",
-    )
-
-    # 4. Sound validation waits for:
-    #    - sound generation
-    #    - asset validation spec
-    graph.add_edge(
-        [
-            "generate_sound",
-            "create_asset_validation_spec",
-        ],
-        "validate_sound",
-    )
-
-    # 5. Apply assets only after both validations are done
+    # 5. Do not mutate the Unity project while the draft Unity validator is running.
     graph.add_edge(
         [
             "validate_image",
             "validate_sound",
+            "validate_game",
         ],
         "apply_assets_to_game",
     )

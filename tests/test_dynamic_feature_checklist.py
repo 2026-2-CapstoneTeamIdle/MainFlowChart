@@ -75,6 +75,64 @@ def _logic_analysis() -> LogicAnalysis:
 
 
 class DynamicFeatureChecklistTest(unittest.TestCase):
+    def test_grouped_feature_generates_one_batch_for_eight_rules(self) -> None:
+        logic = _logic_analysis()
+        logic["features"] = [
+            {
+                **logic["features"][0],
+                "acceptance_items": [f"점프 규칙 {index}" for index in range(8)],
+            }
+        ]
+        criteria = [
+            {
+                "feature_ids": ["feature-01"],
+                "title": f"점프 검증 {index}",
+                "category": "runtime",
+                "setup": "플레이어와 지면을 생성한다.",
+                "action": "점프 입력을 보낸다.",
+                "expected": "플레이어가 상승한다.",
+                "evidence": "위치 전후 비교",
+            }
+            for index in range(1, 11)
+        ]
+        client = FakeStructuredClient({"criteria": criteria})
+        checklist = DynamicFeatureChecklistGenerator(client, "test").generate(
+            project_id="20261102_02",
+            logic_analysis=logic,
+            source_root=Path("missing"),
+        )
+        self.assertEqual(len(client.prompts), 1)
+        self.assertEqual(len(checklist.criteria), 10)
+        self.assertIn("점프 규칙 7", client.prompts[0])
+
+        methods = [
+            {
+                "criterion_id": criterion.criterion_id,
+                "source_code": (
+                    "[UnityTest]\n"
+                    f"public IEnumerator {criterion.criterion_id}_Check() "
+                    "{ yield return null; Assert.That(true); }"
+                ),
+            }
+            for criterion in checklist.criteria
+        ]
+        test_client = FakeStructuredClient({"methods": methods})
+        UnityChecklistTestGenerator(test_client, "test").generate(
+            checklist=checklist.feature_checklists[0],
+            project_root=Path("missing"),
+        )
+        self.assertEqual(len(test_client.prompts), 1)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory)
+            persist_generated_checklist(
+                checklist,
+                workspace_root=workspace,
+                project_root=workspace / "game" / "unity_project",
+            )
+            restored = load_generated_checklist(workspace)
+            self.assertIsNotNone(restored)
+            self.assertEqual(len(restored.criteria), 10)
+
     def test_repository_checklists_each_have_thirty_items(self) -> None:
         docs = Path(__file__).resolve().parents[1] / "docs"
         paths = sorted(docs.glob("*Validator Checklist*.md"))

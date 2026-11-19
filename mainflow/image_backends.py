@@ -417,7 +417,9 @@ def postprocess(content: bytes, request: ImageRequest) -> bytes:
     with Image.open(io.BytesIO(content)) as source:
         image = source.convert("RGBA")
 
-    if request.plan.transparent:
+    if request.plan.asset_id == "hud_panel_frame":
+        image = _fit_ui_panel_frame(image, request.width, request.height, request.style)
+    elif request.plan.transparent:
         if not _has_transparency(image):
             image = remove_flat_background(image)
         anchor = "bottom" if is_grounded_object(request.plan.asset_id) else "center"
@@ -552,6 +554,26 @@ def _fit_sprite(
     top = height - resized.height if anchor == "bottom" else (height - resized.height) // 2
     canvas.alpha_composite(resized, ((width - resized.width) // 2, top))
     return canvas
+
+
+def _fit_ui_panel_frame(image: Image.Image, width: int, height: int, style: str) -> Image.Image:
+    """Fill the frame rect and reserve a quiet central area for live UI content."""
+    visible = image.getchannel("A").point(lambda value: 255 if value >= 32 else 0)
+    bounds = visible.getbbox() or image.getchannel("A").getbbox()
+    if bounds is not None:
+        image = image.crop(bounds)
+    image = image.resize((width, height), _resample(style))
+    opaque_panel = Image.new("RGBA", image.size, (15, 22, 31, 255))
+    opaque_panel.alpha_composite(image)
+    inner = (
+        round(width * 0.15),
+        round(height * 0.15),
+        round(width * 0.85),
+        round(height * 0.85),
+    )
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    ImageDraw.Draw(overlay).rectangle(inner, fill=(15, 22, 31, 230))
+    return Image.alpha_composite(opaque_panel, overlay)
 
 
 def _cover(image: Image.Image, width: int, height: int, style: str) -> Image.Image:

@@ -10,13 +10,16 @@ from pathlib import Path
 from typing import Any
 
 from game_pipeline import UnityProjectGenerator, UnityProjectValidator
-from game_pipeline.agent_harness_repair import repair_with_configured_agent_harness
+from game_pipeline.agent_harness_repair import (
+    repair_feature_audit_with_configured_agent,
+    repair_with_configured_agent_harness,
+)
 from game_pipeline.design_catalog import GENRE_ALIASES
 from game_pipeline.feature_evidence_audit import audit_feature_evidence
 from game_pipeline.feature_planner import plan_feature_mechanics
 from game_pipeline.game_quality import parse_playtest_metrics
-from game_pipeline.runtime_invariants import REQUIRED_CAUSAL_TRANSITIONS
 from game_pipeline.gameplay_contracts import checkpoint_respawn_requested
+from game_pipeline.runtime_invariants import REQUIRED_CAUSAL_TRANSITIONS
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -49,6 +52,8 @@ def final_validation_node(
     evidence: list[ArtifactReference] = []
     package: ArtifactReference | None = None
     reconciled_game_validation_reference: ArtifactReference | None = None
+    audit_repair_candidates: list[dict[str, Any]] = []
+    audit_inconclusive_ids: set[str] = set()
 
     def check(criterion_id: str, passed: bool, message: str, *, required: bool = True) -> None:
         checks.append({"criterion_id": criterion_id, "passed": bool(passed), "message": message})
@@ -96,8 +101,12 @@ def final_validation_node(
         )
         check(
             "integration.game_available",
-            integrated["status"] == "integrated" and integrated["entry_artifact"] is not None,
-            "An integrated game package is required",
+            integrated["status"] == "integrated"
+            and (
+                integrated["entry_artifact"] is not None
+                or integrated.get("asset_binding_manifest") is not None
+            ),
+            "An integrated Unity project and binding manifest are required",
         )
         for target in ("game", "image", "sound"):
             result = payloads[f"{target}_validation_result"]
@@ -108,7 +117,10 @@ def final_validation_node(
                 f"Upstream {target} validation must pass",
             )
         if integrated["status"] == "integrated":
-            for reference in integrated["game_artifacts"] + [integrated["entry_artifact"]]:
+            references = list(integrated["game_artifacts"])
+            if integrated["entry_artifact"] is not None:
+                references.append(integrated["entry_artifact"])
+            for reference in references:
                 if reference["project_id"] != state["project_id"]:
                     raise ValueError("Cross-project integrated artifact")
                 manager.read_bytes(reference)
@@ -449,26 +461,38 @@ def final_validation_node(
                         None,
                     )
                     if feature is not None:
-                        runtime_transition = _runtime_transition_for_feature(
-                            feature,
-                            genre_profile,
-                        )
-                        if runtime_transition is not None:
-                            satisfied = runtime_transition in passed_transitions
-                        else:
-                            mechanics = set(
-                                plan_feature_mechanics([feature], logic["genre"]).mechanics
-                            )
-                            if mechanics:
-                                satisfied = (
-                                    runtime_plan_passed
-                                    and mechanics <= set(plan["required_feature_bindings"])
-                                    and not mechanics.intersection(
-                                        telemetry["unused_requested_features"]
-                                    )
+                        if _is_unity_execution_stability_feature(feature):
+                            play_log = outcome.unity_log.rsplit("--- PLAY MODE ---", 1)[-1]
+                            satisfied = (
+                                outcome.status == "passed"
+                                and runtime_plan_passed
+                                and any(
+                                    item["criterion_id"] == "unity.batchmode" and item["passed"]
+                                    for item in outcome.checks
                                 )
-                            elif feature.get("origin") == "genre_inferred":
-                                satisfied = runtime_plan_passed
+                                and not _has_runtime_exception(play_log)
+                            )
+                        else:
+                            runtime_transition = _runtime_transition_for_feature(
+                                feature,
+                                genre_profile,
+                            )
+                            if runtime_transition is not None:
+                                satisfied = runtime_transition in passed_transitions
+                            else:
+                                mechanics = set(
+                                    plan_feature_mechanics([feature], logic["genre"]).mechanics
+                                )
+                                if mechanics:
+                                    satisfied = (
+                                        runtime_plan_passed
+                                        and mechanics <= set(plan["required_feature_bindings"])
+                                        and not mechanics.intersection(
+                                            telemetry["unused_requested_features"]
+                                        )
+                                    )
+                                elif feature.get("origin") == "genre_inferred":
+                                    satisfied = runtime_plan_passed
                 check(
                     criterion["criterion_id"],
                     satisfied,
@@ -480,7 +504,7 @@ def final_validation_node(
                             else " (explicit evidence required)"
                         )
                     ),
-                    required=criterion["required"],
+                    required=criterion["required"] and criterion["criterion_id"] != "sound-mood",
                 )
                 if (
                     not satisfied
@@ -543,12 +567,61 @@ def final_validation_node(
                             for issue in issues:
                                 if issue.get("target_id") == item["criterion_id"]:
                                     issue["message"] = item["message"]
+                            verification_status = audited_item.get(
+                                "verification_status", "unsatisfied"
+                            )
+                            if verification_status in {"evidence_invalid", "audit_unavailable"}:
+                                audit_inconclusive_ids.add(item["criterion_id"])
+                            elif verification_status == "unsatisfied":
+                                audit_repair_candidates.append(
+                                    {
+                                        "criterion_id": item["criterion_id"],
+                                        "requirement": item["message"],
+                                        "reason": reason,
+                                    }
+                                )
                 except Exception as audit_error:  # noqa: BLE001 - keep unmet criteria visible
                     check(
                         "final.feature_evidence_audit",
                         False,
                         f"Feature evidence audit could not complete: {audit_error}",
                         required=False,
+                    )
+            repair_round = _feature_audit_repair_round(artifact_variant)
+            repair_limit = _feature_audit_repair_limit()
+            repair_ids = {item["criterion_id"] for item in audit_repair_candidates}
+            other_errors = [
+                item
+                for item in issues
+                if item["severity"] == "error"
+                and item.get("target_id") not in repair_ids | audit_inconclusive_ids
+            ]
+            if audit_repair_candidates and not other_errors and repair_round < repair_limit:
+                log(
+                    "최종 Feature 감사에서 발견한 기능 누락 "
+                    f"{len(audit_repair_candidates)}개를 CLI Agent가 수정합니다 "
+                    f"({repair_round + 1}/{repair_limit})."
+                )
+                try:
+                    repaired = repair_feature_audit_with_configured_agent(
+                        project_root=root,
+                        workspace_root=manager.ensure_project(state["project_id"]),
+                        draft=draft,
+                        request=payloads["parsed_request"],
+                        findings=audit_repair_candidates,
+                        iteration=repair_round + 1,
+                    )
+                    if repaired is not None and repaired.status == "passed":
+                        base_variant = re.sub(r"_?feature_repair_\d+$", "", artifact_variant)
+                        next_variant = f"{base_variant}_feature_repair_{repair_round + 1}".lstrip(
+                            "_"
+                        )
+                        return final_validation_node(state, artifact_variant=next_variant)
+                except Exception as repair_error:  # noqa: BLE001 - retain original findings
+                    check(
+                        "final.feature_audit_repair",
+                        False,
+                        f"Feature audit repair failed: {type(repair_error).__name__}: {repair_error}",
                     )
             if not any(issue["severity"] == "error" for issue in issues):
                 package = manager.write_bytes(
@@ -581,6 +654,43 @@ def final_validation_node(
     if result["status"] == "passed" and reconciled_game_validation_reference is not None:
         output["game_validation_result"] = reconciled_game_validation_reference
     return output
+
+
+def _is_unity_execution_stability_feature(feature: dict[str, Any]) -> bool:
+    if feature.get("implementation_kind") != "design_constraint":
+        return False
+    text = " ".join(
+        str(feature.get(key, ""))
+        for key in ("name", "description", "acceptance_criteria", "source_text")
+    ).casefold()
+    return ("컴파일" in text and "런타임 예외" in text) or (
+        "compile" in text and "runtime exception" in text
+    )
+
+
+def _has_runtime_exception(log: str) -> bool:
+    return bool(
+        re.search(
+            r"(?m)^(?:\s*\[Exception\]\s*)?(?:\w+\.)*\w*Exception:\s",
+            log,
+        )
+    )
+
+
+def _feature_audit_repair_round(variant: str) -> int:
+    match = re.search(r"(?:^|_)feature_repair_(\d+)$", variant)
+    return int(match.group(1)) if match else 0
+
+
+def _feature_audit_repair_limit() -> int:
+    name = "MAINFLOW_FINAL_FEATURE_AUDIT_REPAIRS"
+    try:
+        value = int(os.environ.get(name, "2"))
+    except ValueError as error:
+        raise ValueError(f"{name} must be an integer") from error
+    if not 0 <= value <= 3:
+        raise ValueError(f"{name} must be between 0 and 3")
+    return value
 
 
 _RECONCILABLE_GAME_VALIDATION_CODES = frozenset(

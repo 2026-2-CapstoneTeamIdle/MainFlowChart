@@ -404,6 +404,20 @@ namespace TeamIdle.GameTemplate.Editor
                     ? SpriteImportMode.Multiple
                     : SpriteImportMode.Single;
             importer.spritePixelsPerUnit = Mathf.Max(1, entry.pixels_per_unit);
+            if (entry.asset_id == "hud_panel_frame")
+            {
+                var sourceTexture = AssetDatabase.LoadAssetAtPath<Texture2D>(entry.unity_path);
+                var border = Mathf.Max(
+                    4,
+                    Mathf.RoundToInt(
+                        Mathf.Min(
+                            sourceTexture != null ? sourceTexture.width : 128,
+                            sourceTexture != null ? sourceTexture.height : 128
+                        ) * 0.125f
+                    )
+                );
+                importer.spriteBorder = new Vector4(border, border, border, border);
+            }
             importer.alphaIsTransparency = entry.transparent;
             importer.mipmapEnabled = false;
             // Sliced and tiled draw modes (used to fit generated art to the planned object
@@ -595,12 +609,15 @@ namespace TeamIdle.GameTemplate.Editor
                         continue;
                     }
                     image.sprite = sprite;
-                    image.type = UnityEngine.UI.Image.Type.Simple;
+                    image.type =
+                        entry.asset_id == "hud_panel_frame"
+                            ? UnityEngine.UI.Image.Type.Sliced
+                            : UnityEngine.UI.Image.Type.Simple;
                     image.preserveAspect = entry.asset_id != "hud_panel_frame";
                     image.raycastTarget = false;
                     if (entry.asset_id == "hud_panel_frame")
                     {
-                        image.color = new Color(1f, 1f, 1f, 0.3f);
+                        image.color = Color.white;
                     }
                 }
                 return true;
@@ -622,7 +639,13 @@ namespace TeamIdle.GameTemplate.Editor
                     runtimeBinder =
                         generatedRoot.gameObject.AddComponent<GeneratedRuntimeSpriteBinder>();
                 }
-                runtimeBinder.Register(entry.asset_id, dynamicPrefix, sprite, animationController);
+                runtimeBinder.Register(
+                    entry.asset_id,
+                    dynamicPrefix,
+                    sprite,
+                    animationController,
+                    entry.kind == "background"
+                );
                 registeredForRuntime = true;
             }
             else if (

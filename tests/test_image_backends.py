@@ -231,6 +231,29 @@ class ModerationRetryTest(unittest.TestCase):
 
 
 class PostprocessTest(unittest.TestCase):
+    def test_hud_frame_fills_canvas_without_transparent_outer_margin(self) -> None:
+        item = asset_item("hud_panel_frame", "UI frame", "Dark panel frame", required=False)
+        request = image_asset_request([item])
+        plan = plan_assets(request)[0]
+        image_request = ImageRequest(
+            plan=plan,
+            style=request["image_style"],
+            mood_style=request["mood_style"],
+            viewpoint=request["viewpoint"],
+            genre=request["genre"],
+            width=plan.size[0],
+            height=plan.size[1],
+            prompt=build_prompt(plan, request),
+        )
+        source = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
+        ImageDraw.Draw(source).rectangle((120, 430, 904, 594), fill=(220, 220, 220, 255))
+
+        with Image.open(io.BytesIO(postprocess(_encode(source), image_request))) as output:
+            self.assertEqual(output.size, plan.size)
+            self.assertEqual(output.getchannel("A").getbbox(), (0, 0, *plan.size))
+            self.assertEqual(output.getchannel("A").getextrema(), (255, 255))
+            self.assertLess(max(output.getpixel((plan.size[0] // 2, plan.size[1] // 2))[:3]), 60)
+
     def test_sprite_is_resized_and_keeps_transparency(self) -> None:
         request = make_request("hero")
         info = inspect_png(postprocess(sprite_png(), request))

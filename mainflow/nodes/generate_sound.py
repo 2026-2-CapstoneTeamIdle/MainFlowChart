@@ -49,6 +49,25 @@ def generate_sound_node(
 ) -> GenerateSoundAgentOutput:
     """Generate one WAV per requested sound asset and return the draft reference."""
     manager = ArtifactManager()
+    game_draft_reference = state.get("game_logic_draft")
+    if (
+        game_draft_reference is not None
+        and manager.read_json(game_draft_reference)["status"] == "failed"
+    ):
+        log("게임 구현 실패로 사운드 API 호출을 생략합니다.")
+        draft: SoundDraft = {
+            "contract_version": CONTRACT_VERSION,
+            "draft_id": "sound-draft",
+            "status": "failed",
+            "assets": [],
+            "missing_required_asset_ids": [],
+            "notes": ["skipped: game generation failed"],
+        }
+        return {
+            "sound_draft": manager.write_json(
+                state["project_id"], "sound", "sound_draft.json", draft, producer="generate_sound"
+            )
+        }
     parsed = cast(ParsedRequest, manager.read_json(state["parsed_request"]))
     cast(AnalysisResult, manager.read_json(state["analysis"]))
     cast(LogicAnalysis, manager.read_json(state["logic_analysis"]))

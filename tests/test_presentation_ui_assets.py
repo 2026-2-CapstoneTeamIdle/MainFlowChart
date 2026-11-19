@@ -27,6 +27,10 @@ def test_hud_art_requests_only_icons_for_visible_data() -> None:
     assert all(item["required"] is False for item in updated["assets"])
     assert all(item["generation_spec"]["kind"] == "ui" for item in updated["assets"])
     assert updated["assets"][0]["unity_binding_key"] == "ui_object_prefix:HudArt_"
+    assert "nine-slice" in updated["assets"][0]["description"]
+    assert "central 70 percent" in updated["assets"][0]["description"]
+    assert updated["assets"][0]["generation_spec"]["transparent"] is False
+    assert all(item["generation_spec"]["transparent"] is True for item in updated["assets"][1:])
     assert (
         with_presentation_ui_assets(updated, {"hud_regions": [{"visible_data": ["gold"]}]})[1] == []
     )

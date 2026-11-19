@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from game_pipeline.requirement_constraints import (
     explicit_exclusions,
     feature_conflict_reason,
     filter_conflicting_features,
     filter_genre_conflicting_features,
+    forbids_player_projectiles,
 )
+from game_pipeline.unity_project_validator import UnityProjectValidator, UnityValidationOutcome
 
 
 class RequirementConstraintsTest(unittest.TestCase):
@@ -74,6 +78,35 @@ class RequirementConstraintsTest(unittest.TestCase):
 
         self.assertEqual([feature["feature_id"] for feature in accepted], ["tower-attack"])
         self.assertEqual([feature["feature_id"] for feature in rejected], ["player-attack"])
+
+    def test_orbiting_sword_excludes_player_projectiles_but_not_enemy_shots(self) -> None:
+        condition = (
+            "검이 자동으로 회전하며 적에게 피해를 준다. 검은 투사체로 대체하면 안 된다. "
+            "원거리 적은 투사체를 발사한다."
+        )
+        self.assertTrue(forbids_player_projectiles(condition))
+        self.assertIn("player_projectile_attack", explicit_exclusions(condition))
+        self.assertFalse(forbids_player_projectiles("원거리 적이 투사체를 발사한다."))
+
+    def test_preflight_rejects_player_projectile_module_for_orbiting_sword(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            config = root / UnityProjectValidator.REQUIRED_FILE_PATHS["config"]
+            config.parent.mkdir(parents=True)
+            config.write_text(
+                "  selectedModules:\n  - auto_target_system\n  - projectile_system\n",
+                encoding="utf-8",
+            )
+            outcome = UnityValidationOutcome()
+            UnityProjectValidator(mode="static")._check_attack_delivery(
+                outcome,
+                root,
+                {
+                    "condition": "검이 자동으로 회전한다. 검은 투사체로 대체하면 안 된다. 원거리 적은 투사체를 발사한다."
+                },
+            )
+        self.assertEqual(outcome.status, "failed")
+        self.assertEqual(outcome.issues[0]["code"], "UNITY_PLAYER_ATTACK_DELIVERY_CONFLICT")
 
 
 if __name__ == "__main__":

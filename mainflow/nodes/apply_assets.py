@@ -62,6 +62,27 @@ def apply_assets_to_game_node(
 
     manager = ArtifactManager()
     game_draft = cast(GameLogicDraft, manager.read_json(state["game_logic_draft"]))
+    if game_draft["status"] == "failed":
+        log("게임 구현 실패로 에셋 복사와 중간 Unity ZIP 생성을 생략합니다.")
+        integrated_game = {
+            "contract_version": CONTRACT_VERSION,
+            "status": "failed",
+            "entry_artifact": None,
+            "game_artifacts": [],
+            "applied_image_asset_ids": [],
+            "applied_sound_asset_ids": [],
+            "suppressed_placeholder_image_asset_ids": [],
+            "notes": ["skipped: game generation failed; diagnostic Unity project is retained"],
+        }
+        return {
+            "integrated_game": manager.write_json(
+                state["project_id"],
+                "game",
+                "integrated_game.json",
+                integrated_game,
+                producer="apply_assets_to_game",
+            )
+        }
     image_request = cast(
         AssetGenerationRequest,
         manager.read_json(state["image_asset_request"]),
@@ -83,7 +104,6 @@ def apply_assets_to_game_node(
 
     # 사운드 파일은 sound_draft.assets[].artifact로 찾는다. 요청서의 suggested_filename은
     # 항상 .wav지만 ELEVENLABS_OUTPUT_FORMAT=mp3_*이면 실제 파일은 .mp3다.
-    game_failed = game_draft["status"] == "failed"
     exclude_placeholder_images = placeholder_images_excluded()
     # 기본적으로 검증된 이미지를 적용한다. 명시적으로 off를 설정한 경우에만 생략한다.
     skip_image_application = not image_application_enabled()
@@ -103,7 +123,7 @@ def apply_assets_to_game_node(
             sound_draft,
             image_validation,
             sound_validation,
-            include_unvalidated_drafts=game_failed,
+            include_unvalidated_drafts=False,
             exclude_placeholder_images=exclude_placeholder_images,
             skip_image_application=skip_image_application,
         )
@@ -118,33 +138,29 @@ def apply_assets_to_game_node(
             state["project_id"],
             UnityAssetApplicator.UNITY_PROJECT_ROOT,
         )
-        archive_reference = manager.write_bytes(
-            state["project_id"],
-            "game",
-            (
-                "diagnostic_integrated_unity_project.zip"
-                if game_failed
-                else "integrated_unity_project.zip"
-            ),
-            UnityProjectGenerator().create_archive(unity_project_root),
-            producer="apply_assets_to_game",
-            media_type="application/zip",
-        )
-        notes = []
-        if game_failed:
-            notes.append(
-                "게임 생성은 실패했지만 진단용 Unity 프로젝트에 검증을 통과한 "
-                "이미지/사운드 에셋을 적용함"
+        archive_reference = (
+            manager.write_bytes(
+                state["project_id"],
+                "game",
+                "integrated_unity_project.zip",
+                UnityProjectGenerator().create_archive(unity_project_root),
+                producer="apply_assets_to_game",
+                media_type="application/zip",
             )
-        else:
-            notes.append("검증을 통과한 에셋을 Unity 프로젝트에 복사하고 바인딩 manifest를 생성함")
+            if not exclude_placeholder_images
+            else None
+        )
+        notes = ["검증을 통과한 에셋을 Unity 프로젝트에 복사하고 바인딩 manifest를 생성함"]
+        if archive_reference is None:
+            notes.append("최종 검증 후 Unity 프로젝트 ZIP을 생성함")
         notes.append("Unity Editor가 프로젝트를 열 때 importer 설정과 씬 바인딩을 적용함")
         notes.extend(application.manifest["warnings"])
         integrated_game = {
             "contract_version": CONTRACT_VERSION,
-            "status": "failed" if game_failed else "integrated",
+            "status": "integrated",
             "entry_artifact": archive_reference,
-            "game_artifacts": [manifest_reference, archive_reference],
+            "game_artifacts": [manifest_reference]
+            + ([archive_reference] if archive_reference is not None else []),
             "asset_binding_manifest": manifest_reference,
             "applied_image_asset_ids": application.applied_image_asset_ids,
             "applied_sound_asset_ids": application.applied_sound_asset_ids,
@@ -153,24 +169,8 @@ def apply_assets_to_game_node(
             ),
             "notes": notes,
         }
-    except Exception as error:
-        if not game_failed:
-            raise
-        integrated_game = {
-            "contract_version": CONTRACT_VERSION,
-            "status": "failed",
-            "entry_artifact": None,
-            "game_artifacts": [],
-            "applied_image_asset_ids": [],
-            "applied_sound_asset_ids": [],
-            "suppressed_placeholder_image_asset_ids": [],
-            "notes": [
-                (
-                    "게임 생성 실패 후 진단용 Unity 프로젝트에도 에셋을 적용하지 못함: "
-                    f"{type(error).__name__}: {error}"
-                )
-            ],
-        }
+    except Exception:
+        raise
     return {
         "integrated_game": manager.write_json(
             state["project_id"],

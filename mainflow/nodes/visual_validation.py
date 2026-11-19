@@ -104,6 +104,25 @@ def visual_validation_node(
 ) -> VisualValidationAgentOutput:
     manager = ArtifactManager()
     project_id = state["project_id"]
+    game_draft_reference = state.get("game_logic_draft")
+    game_draft = manager.read_json(game_draft_reference) if game_draft_reference else None
+    if game_draft is not None and game_draft["status"] == "failed":
+        log("게임 구현 실패로 Unity 화면 캡처와 VLM 검증을 생략합니다.")
+        return _write_result(
+            manager,
+            project_id,
+            {
+                "report_version": "1.0.0",
+                "contract_version": CONTRACT_VERSION,
+                "mode": "disabled",
+                "status": "skipped",
+                "model": "none",
+                "max_attempts": visual_attempt_limit(),
+                "attempts": [],
+                "target_image": None,
+                "summary": "Game generation failed before visual validation.",
+            },
+        )
     ui_readability = _audit_applied_ui(manager, state)
 
     if not visual_validation_enabled():

@@ -23,7 +23,6 @@ from tests.mock_nodes import (
     MockRuntime,
     mock_analysis_node,
     mock_apply_assets_node,
-    mock_asset_validation_spec_node,
     mock_design_game_logic_node,
     mock_final_validation_node,
     mock_game_quality_validator_node,
@@ -90,17 +89,12 @@ NODE_IO: dict[str, tuple[set[str], set[str]]] = {
         },
         {"game_validation_result"},
     ),
-    "create_asset_validation_spec": (
-        {"project_id", "parsed_request", "game_validation_result"},
-        {"asset_validation_spec"},
-    ),
     "validate_image": (
         {
             "project_id",
             "parsed_request",
             "image_asset_request",
             "image_draft",
-            "asset_validation_spec",
         },
         {"image_validation_result"},
     ),
@@ -110,7 +104,6 @@ NODE_IO: dict[str, tuple[set[str], set[str]]] = {
             "parsed_request",
             "sound_asset_request",
             "sound_draft",
-            "asset_validation_spec",
         },
         {"sound_validation_result"},
     ),
@@ -276,13 +269,6 @@ def run_mock_graph(runtime: MockRuntime) -> tuple[dict[str, Any], dict[str, Any]
         }
 
         state.update(generation_futures["validate_game"].result().output)
-        state.update(
-            execute(
-                "create_asset_validation_spec",
-                mock_asset_validation_spec_node,
-                dict(state),
-            ).output
-        )
         state.update(generation_futures["generate_image"].result().output)
         state.update(generation_futures["generate_sound"].result().output)
 
@@ -367,10 +353,6 @@ def build_mock_langgraph(runtime: MockRuntime):
         lambda state: mock_validate_game_node(state, runtime),
     )
     graph.add_node(
-        "create_asset_validation_spec",
-        lambda state: mock_asset_validation_spec_node(state, runtime),
-    )
-    graph.add_node(
         "validate_image",
         lambda state: mock_validate_image_node(state, runtime),
     )
@@ -399,17 +381,10 @@ def build_mock_langgraph(runtime: MockRuntime):
     graph.add_edge("design_game_logic", "generate_image")
     graph.add_edge("design_game_logic", "generate_sound")
     graph.add_edge("design_game_logic", "validate_game")
-    graph.add_edge("validate_game", "create_asset_validation_spec")
+    graph.add_edge("generate_image", "validate_image")
+    graph.add_edge("generate_sound", "validate_sound")
     graph.add_edge(
-        ["generate_image", "create_asset_validation_spec"],
-        "validate_image",
-    )
-    graph.add_edge(
-        ["generate_sound", "create_asset_validation_spec"],
-        "validate_sound",
-    )
-    graph.add_edge(
-        ["validate_image", "validate_sound"],
+        ["validate_image", "validate_sound", "validate_game"],
         "apply_assets_to_game",
     )
     graph.add_edge("apply_assets_to_game", "final_validation")

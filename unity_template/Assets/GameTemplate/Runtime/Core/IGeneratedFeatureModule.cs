@@ -10,6 +10,13 @@ namespace TeamIdle.GameTemplate.Core
         void BindGeneratedFeature(GeneratedFeatureBindingContext context);
     }
 
+    // Implement this on the gameplay component that owns an upgradeable value.
+    // Stat IDs are declared by each UpgradeDefinition rather than by weapon type.
+    public interface IGameplayStatSource
+    {
+        bool TryGetGameplayStat(string statId, out float value);
+    }
+
     public sealed class GeneratedFeatureBindingContext
     {
         public GeneratedFeatureBindingContext(

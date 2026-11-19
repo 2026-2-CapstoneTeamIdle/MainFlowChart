@@ -89,7 +89,6 @@ namespace TeamIdle.GameTemplate.Editor
         private static float genreEnemyHealthAtAttackStart;
         private static int genreExperienceAtAttackStart;
         private static int genreScenarioPhase;
-
         private static float PhaseElapsed => Time.realtimeSinceStartup - phaseStartedAt;
 
         static RuntimeSmokeValidator()
@@ -441,6 +440,186 @@ namespace TeamIdle.GameTemplate.Editor
             Canvas.ForceUpdateCanvases();
             foreach (var canvas in canvases)
             {
+                var decoratedImages = canvas
+                    .GetComponentsInChildren<Image>(true)
+                    .Where(image =>
+                        image.gameObject.activeInHierarchy
+                        && image.name.StartsWith("HudArt_", StringComparison.Ordinal)
+                    )
+                    .ToList();
+                var panelBackings = canvas
+                    .GetComponentsInChildren<Image>(true)
+                    .Where(image =>
+                        (
+                            image.name.StartsWith("HudArt_", StringComparison.Ordinal)
+                            || image.name.Contains("Panel", StringComparison.OrdinalIgnoreCase)
+                        )
+                        && image.GetComponentsInChildren<Text>(true).Length > 0
+                    );
+                var layoutIssues = new List<string>();
+                foreach (var image in panelBackings)
+                {
+                    if (image.color.a < 0.999f)
+                    {
+                        layoutIssues.Add(
+                            $"HUD panel '{image.name}' must have an opaque backing "
+                                + $"(alpha={image.color.a:0.###}, required=1). "
+                                + "Set the panel Image color alpha to 1, including its fallback before artwork is bound."
+                        );
+                    }
+                }
+                var artPanels = decoratedImages
+                    .Select(image => image.rectTransform)
+                    .Distinct()
+                    .ToList();
+                var contentOwners = new Dictionary<Graphic, RectTransform>();
+                foreach (var graphic in canvas.GetComponentsInChildren<Graphic>(false))
+                {
+                    if (!IsHudContent(graphic))
+                    {
+                        continue;
+                    }
+                    var ancestor = graphic.transform.parent;
+                    while (ancestor != null && ancestor != canvas.transform)
+                    {
+                        if (ancestor is RectTransform panel && artPanels.Contains(panel))
+                        {
+                            contentOwners[graphic] = panel;
+                            break;
+                        }
+                        ancestor = ancestor.parent;
+                    }
+                    if (contentOwners.ContainsKey(graphic))
+                    {
+                        continue;
+                    }
+
+                    // Some generated HUDs keep live text beside the decorative Image.
+                    // Associate those siblings by visible overlap, never by the Canvas root.
+                    var contentRect = ScreenRect(graphic.rectTransform, canvas);
+                    var contentArea = contentRect.width * contentRect.height;
+                    if (contentArea <= 0f)
+                    {
+                        continue;
+                    }
+                    RectTransform bestPanel = null;
+                    var bestCoverage = 0f;
+                    foreach (var panel in artPanels)
+                    {
+                        var peer = graphic.transform;
+                        while (peer.parent != null && peer.parent != panel.parent)
+                        {
+                            peer = peer.parent;
+                        }
+                        if (peer.parent != panel.parent || peer == panel)
+                        {
+                            continue;
+                        }
+                        var panelRect = ScreenRect(panel, canvas);
+                        var overlapWidth = Mathf.Max(
+                            0f,
+                            Mathf.Min(panelRect.xMax, contentRect.xMax)
+                                - Mathf.Max(panelRect.xMin, contentRect.xMin)
+                        );
+                        var overlapHeight = Mathf.Max(
+                            0f,
+                            Mathf.Min(panelRect.yMax, contentRect.yMax)
+                                - Mathf.Max(panelRect.yMin, contentRect.yMin)
+                        );
+                        var coverage = overlapWidth * overlapHeight / contentArea;
+                        if (coverage > bestCoverage)
+                        {
+                            bestCoverage = coverage;
+                            bestPanel = panel;
+                        }
+                    }
+                    if (bestPanel != null && bestCoverage >= 0.25f)
+                    {
+                        contentOwners[graphic] = bestPanel;
+                    }
+                }
+                foreach (var panel in artPanels)
+                {
+                    var panelRect = ScreenRect(panel, canvas);
+                    if (
+                        panelRect.width <= 0f
+                        || panelRect.height <= 0f
+                        || panelRect.xMin < -2f
+                        || panelRect.yMin < -2f
+                        || panelRect.xMax > Screen.width + 2f
+                        || panelRect.yMax > Screen.height + 2f
+                    )
+                    {
+                        layoutIssues.Add(
+                            $"HUD panel '{panel.name}' is outside the visible screen "
+                                + $"{Screen.width}x{Screen.height}: bounds {panelRect}. "
+                                + "Inspect its RectTransform anchors, pivot, anchoredPosition, and sizeDelta; "
+                                + "sizeDelta is width/height, not the upper-right corner."
+                        );
+                        continue;
+                    }
+                    var horizontalInset = Mathf.Min(panelRect.width * 0.15f, 40f);
+                    var verticalInset = Mathf.Min(panelRect.height * 0.15f, 40f);
+                    var safeRect = Rect.MinMaxRect(
+                        panelRect.xMin + horizontalInset,
+                        panelRect.yMin + verticalInset,
+                        panelRect.xMax - horizontalInset,
+                        panelRect.yMax - verticalInset
+                    );
+                    foreach (var entry in contentOwners)
+                    {
+                        if (entry.Value != panel)
+                        {
+                            continue;
+                        }
+                        var graphic = entry.Key;
+                        var contentRect = ScreenRect(graphic.rectTransform, canvas);
+                        if (
+                            contentRect.xMin < safeRect.xMin
+                            || contentRect.xMax > safeRect.xMax
+                            || contentRect.yMin < safeRect.yMin
+                            || contentRect.yMax > safeRect.yMax
+                        )
+                        {
+                            var overflowLeft = Mathf.Max(0f, safeRect.xMin - contentRect.xMin);
+                            var overflowRight = Mathf.Max(0f, contentRect.xMax - safeRect.xMax);
+                            var overflowBottom = Mathf.Max(0f, safeRect.yMin - contentRect.yMin);
+                            var overflowTop = Mathf.Max(0f, contentRect.yMax - safeRect.yMax);
+                            layoutIssues.Add(
+                                $"HUD content '{graphic.name}' escapes decorated panel '{panel.name}' "
+                                    + $"safe area {safeRect}; content bounds {contentRect}. "
+                                    + $"Overflow screen pixels: left={overflowLeft:0.##}, "
+                                    + $"right={overflowRight:0.##}, bottom={overflowBottom:0.##}, "
+                                    + $"top={overflowTop:0.##}. "
+                                    + $"Content anchoredPosition={graphic.rectTransform.anchoredPosition}, "
+                                    + $"sizeDelta={graphic.rectTransform.sizeDelta}, "
+                                    + $"Canvas scaleFactor={canvas.scaleFactor:0.###}. "
+                                    + "Correct all reported content together, leaving extra padding."
+                            );
+                        }
+                        if (
+                            graphic is Text label
+                            && (
+                                label.horizontalOverflow == HorizontalWrapMode.Overflow
+                                || label.verticalOverflow == VerticalWrapMode.Overflow
+                            )
+                        )
+                        {
+                            layoutIssues.Add(
+                                $"HUD text '{label.name}' in decorated panel '{panel.name}' uses "
+                                    + $"overflow modes: horizontal={label.horizontalOverflow}, "
+                                    + $"vertical={label.verticalOverflow}. Use Wrap or Truncate "
+                                    + "and keep the complete text readable inside the safe area."
+                            );
+                        }
+                    }
+                }
+                if (layoutIssues.Count > 0)
+                {
+                    issue = string.Join(" | ", layoutIssues);
+                    return false;
+                }
+
                 var hudPanels = canvas
                     .GetComponentsInChildren<RectTransform>(true)
                     .Where(rect =>
@@ -519,6 +698,17 @@ namespace TeamIdle.GameTemplate.Editor
                     + $"texts={texts.Count}:buttons={buttons.Count}"
             );
             return true;
+        }
+
+        private static bool IsHudContent(Graphic graphic)
+        {
+            return graphic is Text
+                || graphic.GetComponent<Button>() != null
+                || graphic is Image image
+                    && (
+                        image.type == Image.Type.Filled
+                        || image.name.StartsWith("HudIcon", StringComparison.Ordinal)
+                    );
         }
 
         private static Rect ScreenRect(RectTransform rect, Canvas canvas)
@@ -1359,6 +1549,46 @@ namespace TeamIdle.GameTemplate.Editor
             }
             MarkCausalTransition("survivor.xp_to_choices");
 
+            if (IsAgentHarnessProject())
+            {
+                foreach (var choice in upgrades.CurrentChoices)
+                {
+                    var definition = choice.Upgrade;
+                    var declaredStat = definition?.observableStatId?.Trim() ?? string.Empty;
+                    if (string.IsNullOrEmpty(declaredStat))
+                    {
+                        Finish(
+                            false,
+                            "runtime.survivor_upgrade_contract: offered choice has no observableStatId; "
+                                + $"upgrade={definition?.upgradeId ?? "unknown"}."
+                        );
+                        return;
+                    }
+                    if (
+                        definition.expectedStatChange != "change"
+                        && definition.expectedStatChange != "increase"
+                        && definition.expectedStatChange != "decrease"
+                    )
+                    {
+                        Finish(
+                            false,
+                            "runtime.survivor_upgrade_contract: invalid expectedStatChange; "
+                                + $"upgrade={definition.upgradeId}; direction={definition.expectedStatChange}."
+                        );
+                        return;
+                    }
+                    if (!TryFindGameplayStatSource(declaredStat, out _, out _))
+                    {
+                        Finish(
+                            false,
+                            "runtime.survivor_upgrade_contract: no unique live IGameplayStatSource "
+                                + $"exposes '{declaredStat}' for {definition.upgradeId}."
+                        );
+                        return;
+                    }
+                }
+            }
+
             var movement = UnityEngine.Object.FindFirstObjectByType<TopDownMovementModule>();
             var autoTarget = UnityEngine.Object.FindFirstObjectByType<AutoTargetSystemModule>();
             var moveSpeedBefore = movement?.MoveSpeed ?? -1f;
@@ -1367,15 +1597,54 @@ namespace TeamIdle.GameTemplate.Editor
             var projectileCountBefore = autoTarget?.ProjectileCount ?? -1;
             var maximumHealthBefore = playerHealth?.Maximum ?? -1f;
             var currentHealthBefore = playerHealth?.Current ?? -1f;
-            if (!upgrades.Select(0))
+            var selectedIndex = SelectObservableSurvivorUpgrade(upgrades, playerHealth);
+            var selectedUpgrade = upgrades.CurrentChoices[selectedIndex].Upgrade;
+            var selectedUpgradeId = selectedUpgrade?.upgradeId;
+            var statId = selectedUpgrade?.observableStatId?.Trim() ?? string.Empty;
+            var requiresEffectContract = IsAgentHarnessProject();
+            if (requiresEffectContract && string.IsNullOrEmpty(statId))
             {
                 Finish(
                     false,
-                    "runtime.survivor_upgrade_selection: first choice could not be selected"
+                    "runtime.survivor_upgrade_contract: selected choice has no observableStatId; "
+                        + $"selected_upgrade={selectedUpgradeId ?? "unknown"}. "
+                        + "Declare the gameplay value changed by this choice on UpgradeDefinition."
                 );
                 return;
             }
-            var upgradeChangedState =
+            MonoBehaviour statSource = null;
+            var statBefore = 0f;
+            if (
+                !string.IsNullOrEmpty(statId)
+                && !TryFindGameplayStatSource(statId, out statSource, out statBefore)
+            )
+            {
+                Finish(
+                    false,
+                    "runtime.survivor_upgrade_contract: no unique live IGameplayStatSource "
+                        + $"exposes '{statId}' for {selectedUpgradeId ?? "unknown"}."
+                );
+                return;
+            }
+            if (!upgrades.Select(selectedIndex))
+            {
+                Finish(
+                    false,
+                    "runtime.survivor_upgrade_selection: selected choice could not be selected"
+                );
+                return;
+            }
+            var statAfter = 0f;
+            var declaredEffectChanged =
+                statSource != null
+                && statSource is IGameplayStatSource gameplaySource
+                && gameplaySource.TryGetGameplayStat(statId, out statAfter)
+                && StatChangedInExpectedDirection(
+                    statBefore,
+                    statAfter,
+                    selectedUpgrade?.expectedStatChange
+                );
+            var legacyEffectChanged =
                 (movement != null && !Mathf.Approximately(movement.MoveSpeed, moveSpeedBefore))
                 || (
                     autoTarget != null
@@ -1392,11 +1661,20 @@ namespace TeamIdle.GameTemplate.Editor
                         || !Mathf.Approximately(playerHealth.Current, currentHealthBefore)
                     )
                 );
+            var upgradeChangedState = !string.IsNullOrEmpty(statId)
+                ? declaredEffectChanged
+                : !requiresEffectContract && legacyEffectChanged;
             if (!upgradeChangedState)
             {
                 Finish(
                     false,
-                    "runtime.survivor_upgrade_effect: selected choice changed no observable stat"
+                    "runtime.survivor_upgrade_effect: selected choice did not change its declared "
+                        + "live gameplay stat in the expected direction; "
+                        + $"selected_upgrade={selectedUpgradeId ?? "unknown"}; "
+                        + $"observable_stat_id={statId}; stat_before={statBefore:0.###}; "
+                        + $"stat_after={statAfter:0.###}; "
+                        + $"expected_change={selectedUpgrade?.expectedStatChange ?? "change"}. "
+                        + "Verify the selected effect mutates the stat source, not just the UI."
                 );
                 return;
             }
@@ -1409,6 +1687,103 @@ namespace TeamIdle.GameTemplate.Editor
                 true,
                 "runtime.survivor_like: enemy spawned, chased Player, and camera followed"
             );
+        }
+
+        private static int SelectObservableSurvivorUpgrade(
+            UpgradeSelectionSystemModule upgrades,
+            HealthComponent health
+        )
+        {
+            var fullHealth = health != null && Mathf.Approximately(health.Current, health.Maximum);
+            var fallback = 0;
+            var requireContract = IsAgentHarnessProject();
+            for (var index = 0; index < upgrades.CurrentChoices.Count; index++)
+            {
+                var choice = upgrades.CurrentChoices[index].Upgrade;
+                var id = choice?.upgradeId ?? string.Empty;
+                var healing =
+                    id.Contains("heal", StringComparison.OrdinalIgnoreCase)
+                    || id.Contains("restore", StringComparison.OrdinalIgnoreCase)
+                    || id.Contains("recover", StringComparison.OrdinalIgnoreCase);
+                if (healing && fullHealth)
+                {
+                    continue;
+                }
+                fallback = index;
+                if (requireContract)
+                {
+                    if (!string.IsNullOrWhiteSpace(choice?.observableStatId))
+                    {
+                        return index;
+                    }
+                    continue;
+                }
+                if (
+                    id.Contains("count", StringComparison.OrdinalIgnoreCase)
+                    || id.Contains("damage", StringComparison.OrdinalIgnoreCase)
+                    || id.Contains("speed", StringComparison.OrdinalIgnoreCase)
+                    || id.Contains("size", StringComparison.OrdinalIgnoreCase)
+                    || id.Contains("radius", StringComparison.OrdinalIgnoreCase)
+                    || id.Contains("range", StringComparison.OrdinalIgnoreCase)
+                    || id.Contains("max_health", StringComparison.OrdinalIgnoreCase)
+                )
+                {
+                    return index;
+                }
+            }
+            return fallback;
+        }
+
+        private static bool TryFindGameplayStatSource(
+            string statId,
+            out MonoBehaviour source,
+            out float value
+        )
+        {
+            source = null;
+            value = 0f;
+            foreach (var component in SceneObjects<MonoBehaviour>())
+            {
+                if (
+                    component == null
+                    || !component.isActiveAndEnabled
+                    || component is UpgradeSelectionSystemModule
+                    || component.GetComponentInParent<Canvas>() != null
+                    || component is not IGameplayStatSource gameplaySource
+                    || !gameplaySource.TryGetGameplayStat(statId, out var observed)
+                    || float.IsNaN(observed)
+                    || float.IsInfinity(observed)
+                )
+                {
+                    continue;
+                }
+                if (source != null)
+                {
+                    source = null;
+                    return false;
+                }
+                source = component;
+                value = observed;
+            }
+            return source != null;
+        }
+
+        private static bool StatChangedInExpectedDirection(
+            float before,
+            float after,
+            string direction
+        )
+        {
+            if (float.IsNaN(after) || float.IsInfinity(after) || Mathf.Approximately(before, after))
+            {
+                return false;
+            }
+            return direction?.ToLowerInvariant() switch
+            {
+                "increase" => after > before,
+                "decrease" => after < before,
+                _ => true,
+            };
         }
 
         private static void BeginAutoTraversalTest()

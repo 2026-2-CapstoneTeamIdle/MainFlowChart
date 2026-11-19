@@ -39,8 +39,21 @@ def create_asset_validation_spec_node(
         manager.read_json(state["game_validation_result"]),
     )
 
-    # TODO: game_validation_result를 이용해 실제 검증 기준 생성
-    spec: AssetValidationSpec = {
+    spec = default_asset_validation_spec()
+    return {
+        "asset_validation_spec": manager.write_json(
+            state["project_id"],
+            "validation",
+            "asset_validation_spec.json",
+            spec,
+            producer="create_asset_validation_spec",
+        )
+    }
+
+
+def default_asset_validation_spec() -> AssetValidationSpec:
+    """Return the fixed asset checks without depending on Unity validation."""
+    return {
         "contract_version": CONTRACT_VERSION,
         "spec_id": "asset-validation",
         "image_criteria": image_criteria(),
@@ -53,13 +66,4 @@ def create_asset_validation_spec_node(
             }
             for criterion_id, description, required in SOUND_CRITERIA
         ],
-    }
-    return {
-        "asset_validation_spec": manager.write_json(
-            state["project_id"],
-            "validation",
-            "asset_validation_spec.json",
-            spec,
-            producer="create_asset_validation_spec",
-        )
     }

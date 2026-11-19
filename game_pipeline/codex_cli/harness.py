@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -34,6 +33,8 @@ COMPLETION_SCHEMA: dict[str, Any] = {
         "tests_run": {"type": "array", "items": {"type": "string"}},
         "unresolved_requirements": {"type": "array", "items": {"type": "string"}},
         "recommended_validation": {"type": "array", "items": {"type": "string"}},
+        "host_validation_pending": {"type": "boolean"},
+        "implementation_blockers": {"type": "array", "items": {"type": "string"}},
         "visual_objects": {
             "type": "array",
             "maxItems": 64,
@@ -94,6 +95,8 @@ COMPLETION_SCHEMA: dict[str, Any] = {
         "tests_run",
         "unresolved_requirements",
         "recommended_validation",
+        "host_validation_pending",
+        "implementation_blockers",
         "visual_objects",
         "sound_events",
     ],
@@ -331,6 +334,18 @@ class CodexGameHarness:
         prompt = _implementation_prompt(
             design, request, instruction_filename=self.instruction_filename
         )
+        if _staged_implementation_enabled(design):
+            try:
+                prompt = self._run_source_checkpoint(project_root, design, request, prompt)
+            except Exception as error:  # noqa: BLE001 - fall back to the full implementation turn
+                self._record(
+                    f"{self.provider}_source_checkpoint_unavailable",
+                    {"error": f"{type(error).__name__}: {error}"},
+                )
+                prompt = (
+                    "An optional source checkpoint could not complete. Inspect the current "
+                    "project state and finish the whole requested game.\n\n" + prompt
+                )
         self.implementation = self.runner.run(
             project_root=project_root,
             prompt=prompt,
@@ -349,6 +364,87 @@ class CodexGameHarness:
         )
         self._record(f"{self.provider}_implementation", self.implementation.final_response)
         return self.implementation
+
+    def _run_source_checkpoint(
+        self,
+        project_root: Path,
+        design: GameLogicDesign,
+        request: ParsedRequest,
+        prompt: str,
+    ) -> str:
+        editor = UnityProjectValidator.find_unity_editor(
+            UnityProjectValidator._read_project_version(project_root)
+        )
+        if editor is None or not editor.is_file():
+            return prompt
+        scaffold = self.runner.run(
+            project_root=project_root,
+            prompt=_compilable_foundation_prompt(
+                design, request, instruction_filename=self.instruction_filename
+            ),
+            schema=COMPLETION_SCHEMA,
+            audit_directory=self.audit_root / "source_foundation",
+        )
+        self._record(f"{self.provider}_source_foundation", scaffold.final_response)
+        compiler = UnityProjectValidator(
+            mode="required",
+            unity_editor=editor,
+            timeout_seconds=int(os.environ.get("MAINFLOW_UNITY_VALIDATION_TIMEOUT_SECONDS", "300")),
+        )
+        compile_outcome = compiler.compile_sources(project_root)
+        self._record_source_checkpoint(0, compile_outcome)
+        for repair_attempt in range(1, 3):
+            if compile_outcome.status == "passed":
+                break
+            if any(
+                issue["code"] in {"UNITY_SOURCE_COMPILATION_UNAVAILABLE", "UNITY_EDITOR_NOT_FOUND"}
+                for issue in compile_outcome.issues
+            ):
+                break
+            repair = self.runner.run(
+                project_root=project_root,
+                prompt=(
+                    "Fix only the Unity C# source compilation errors in the current project. "
+                    "Read the class definitions before editing. Preserve the requested game "
+                    "design and do not edit tests or generated contracts. The host will run "
+                    "Unity after you return.\n\n" + compile_outcome.unity_log[-12000:]
+                ),
+                schema=COMPLETION_SCHEMA,
+                audit_directory=(
+                    self.audit_root / "source_foundation" / f"compile_repair_{repair_attempt}"
+                ),
+            )
+            self._record(
+                f"{self.provider}_source_checkpoint_repair_{repair_attempt}",
+                repair.final_response,
+            )
+            compile_outcome = compiler.compile_sources(project_root)
+            self._record_source_checkpoint(repair_attempt, compile_outcome)
+        return (
+            "Continue from the existing Unity source foundation. Complete every requested "
+            "gameplay, scene, HUD, and content requirement. The host source checkpoint result "
+            "is included below; address any remaining compiler errors while completing the "
+            "game.\n\n"
+            + json.dumps(
+                {
+                    "checks": compile_outcome.checks,
+                    "diagnostics": _signature_diagnostics(compile_outcome.unity_log),
+                },
+                ensure_ascii=False,
+            )
+            + "\n\n"
+            + prompt
+        )
+
+    def _record_source_checkpoint(self, attempt: int, outcome: UnityValidationOutcome) -> None:
+        self._record(
+            f"{self.provider}_source_checkpoint_{attempt}",
+            {
+                "checks": outcome.checks,
+                "issues": outcome.issues,
+                "diagnostics": _signature_diagnostics(outcome.unity_log),
+            },
+        )
 
     def validate_and_repair(
         self,
@@ -466,6 +562,9 @@ health-zero transition still reaches the checkpoint. Keep the existing Unity smo
 If the only unfinished step is host-owned Unity validation, put it in
 `recommended_validation` and report `status=completed` after making the source edits.
 Use `needs_attention` only for implementation work you could not finish.
+Set `host_validation_pending=true` when Unity compilation or Play Mode must be run by the
+host. Put only unfinished source implementation in `implementation_blockers` and
+`unresolved_requirements`; leave both arrays empty for host-only validation.
 Return the required structured report.
 """
         try:
@@ -531,7 +630,15 @@ Return the required structured report.
                         max_retries=0,
                     )
                     checklist = load_generated_checklist(workspace_root)
-                    results, checklist_log = workflow._run_tests(project_root, checklist)
+                    from game_pipeline.requirement_constraints import forbids_player_projectiles
+
+                    results, checklist_log = workflow._run_tests(
+                        project_root,
+                        checklist,
+                        excluded_static_feature_ids=(
+                            {"FC03"} if forbids_player_projectiles(request["condition"]) else set()
+                        ),
+                    )
                     self._record(
                         f"{self.provider}_quality_feature_checklists_{iteration}",
                         {
@@ -580,9 +687,14 @@ Return the required structured report.
             timeout_seconds=int(os.environ.get("MAINFLOW_UNITY_VALIDATION_TIMEOUT_SECONDS", "300")),
         )
         started = time.monotonic()
+        phase_budget = _validation_time_budget(phase, self.settings.total_timeout_seconds)
+        deadline = started + phase_budget
         attempts: list[dict[str, Any]] = []
         repairs: list[CodexCliResult] = []
-        signatures: dict[str, tuple[str, int]] = {}
+        signature_counts: dict[str, int] = {}
+        distinct_signatures: set[str] = set()
+        best_ui_metrics: _UiQualityMetrics | None = None
+        improving_signatures: set[str] = set()
         pending_snapshot: _ProjectSourceSnapshot | None = None
         pending_baseline_outcome: UnityValidationOutcome | None = None
         pending_baseline_evidence: dict[str, Any] | None = None
@@ -597,10 +709,16 @@ Return the required structured report.
         active_repair_limit = repair_limit
         attempt = 0
         while attempt <= active_repair_limit:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"{phase} exceeded its {phase_budget}s validation budget "
+                    "before the next Unity check"
+                )
             outcome = (
                 initial_outcome
                 if attempt == 0 and initial_outcome is not None
-                else validator.validate(project_root, draft, request)
+                else validator.validate(project_root, draft, request, time_budget_seconds=remaining)
             )
             evidence = {
                 "attempt": attempt,
@@ -657,18 +775,41 @@ Return the required structured report.
             if outcome.status == "passed":
                 return outcome, tuple(repairs), tuple(attempts)
             signature = _failure_signature(outcome)
-            source_digest = _project_source_digest(project_root)
-            previous_digest, previous_count = signatures.get(signature, ("", 0))
-            signature_count = previous_count + 1 if previous_digest == source_digest else 1
-            signatures[signature] = (source_digest, signature_count)
+            ui_metrics = _ui_quality_metrics(outcome.unity_log)
+            if ui_metrics is not None:
+                if best_ui_metrics is not None and _ui_quality_improved(
+                    best_ui_metrics, ui_metrics
+                ):
+                    signature_counts[signature] = 0
+                    improving_signatures.add(signature)
+                    self._record(
+                        f"{self.provider}_{phase}_ui_layout_progress_{attempt}",
+                        {
+                            "previous": best_ui_metrics.__dict__,
+                            "current": ui_metrics.__dict__,
+                        },
+                    )
+                    print(
+                        "[AGENT][repair] HUD 안전영역 또는 텍스트 넘침 오류가 감소했습니다.",
+                        flush=True,
+                    )
+                if best_ui_metrics is None or _ui_quality_improved(best_ui_metrics, ui_metrics):
+                    best_ui_metrics = ui_metrics
+            signature_count = signature_counts.get(signature, 0) + 1
+            signature_counts[signature] = signature_count
+            distinct_signatures.add(signature)
             if signature_count >= 3:
                 raise RuntimeError(
-                    f"{self.agent_label} repair stopped because the same Unity failure repeated "
-                    "three times: "
+                    f"{self.agent_label} repair stopped because the same root Unity failure "
+                    "was found three times despite source repairs: "
                     f"{outcome.issues}; diagnostics={_signature_diagnostics(outcome.unity_log)}"
                 )
             if attempt >= active_repair_limit:
-                if adaptive_repairs and attempt < hard_repair_limit:
+                if (
+                    adaptive_repairs
+                    and attempt < hard_repair_limit
+                    and (len(distinct_signatures) > 1 or signature in improving_signatures)
+                ):
                     previous_limit = active_repair_limit
                     active_repair_limit = min(
                         hard_repair_limit,
@@ -680,6 +821,7 @@ Return the required structured report.
                         "extended_limit": active_repair_limit,
                         "hard_limit": hard_repair_limit,
                         "failure_signature_count": signature_count,
+                        "distinct_failure_count": len(distinct_signatures),
                         "diagnostics": _signature_diagnostics(outcome.unity_log),
                     }
                     self._record(
@@ -698,9 +840,18 @@ Return the required structured report.
                         f"{outcome.issues}; "
                         f"diagnostics={_signature_diagnostics(outcome.unity_log)}"
                     )
-            if time.monotonic() - started >= self.settings.total_timeout_seconds:
-                raise TimeoutError(f"{self.total_timeout_environment} was exhausted")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"{phase} exceeded its {phase_budget}s validation budget after Unity check"
+                )
             feedback = _bounded_feedback(evidence)
+            ui_guidance = _ui_layout_repair_guidance(outcome.unity_log)
+            if ui_guidance:
+                feedback["ui_layout_corrections"] = ui_guidance
+            opacity_guidance = _ui_opacity_violations(outcome.unity_log)
+            if opacity_guidance:
+                feedback["ui_opacity_corrections"] = opacity_guidance
             if regression_evidence is not None:
                 feedback["rolled_back_regression"] = _bounded_feedback(regression_evidence)
                 feedback["repair_constraint"] = (
@@ -731,6 +882,7 @@ Return the required structured report.
                     prompt=_repair_prompt(feedback, attempt + 1, phase=phase),
                     schema=COMPLETION_SCHEMA,
                     audit_directory=self.audit_root / phase / f"repair_{attempt + 1:02d}",
+                    timeout_seconds=min(self.settings.invocation_timeout_seconds, remaining),
                 )
                 _require_agent_completion(
                     repair,
@@ -780,12 +932,26 @@ def _require_agent_completion(
     """Stop immediately when the CLI reports that it could not inspect or edit the project."""
 
     response = result.final_response
-    if response.get("status") == "completed":
+    blockers = response.get("implementation_blockers", [])
+    unresolved = response.get("unresolved_requirements", [])
+    if (
+        response.get("status") == "completed"
+        and not blockers
+        and isinstance(unresolved, list)
+        and all(
+            _is_host_only_note(item)
+            or (
+                allow_host_validation_pending
+                and response.get("host_validation_pending") is True
+                and _is_explicit_unity_validation_note(item)
+            )
+            for item in unresolved
+        )
+    ):
         return
     if allow_host_validation_pending and _only_host_validation_pending(response):
         return
     summary = str(response.get("summary", "Agent could not complete the requested work"))
-    unresolved = response.get("unresolved_requirements", [])
     detail = "; ".join(str(item) for item in unresolved[:5]) if isinstance(unresolved, list) else ""
     suffix = f" Unresolved: {detail}" if detail else ""
     raise RuntimeError(f"AGENT_IMPLEMENTATION_INCOMPLETE ({phase}): {summary}.{suffix}")
@@ -798,29 +964,92 @@ def _only_host_validation_pending(response: dict[str, Any]) -> bool:
     unresolved = response.get("unresolved_requirements")
     if response.get("status") != "needs_attention" or not isinstance(changed, list) or not changed:
         return False
-    if not isinstance(unresolved, list) or not unresolved:
+    if not isinstance(unresolved, list):
         return False
-    for item in unresolved:
-        if not isinstance(item, str):
+    if "host_validation_pending" in response:
+        if response["host_validation_pending"] is not True:
             return False
-        normalized = " ".join(item.lower().split())
-        if (
-            not any(word in normalized for word in ("host", "project instruction"))
-            or "unity" not in normalized
-            or not any(word in normalized for word in ("validat", "test", "compil", "play mode"))
-            or not any(
-                word in normalized
-                for word in ("pending", "remain", "required", "needed", "not run", "not executed")
-            )
-            or any(
-                word in normalized
-                for word in ("failed", "broken", "missing", "incomplete", "cannot", "unable")
-            )
-            or ";" in normalized
-            or "\n" in item
-        ):
+        blockers = response.get("implementation_blockers")
+        if not isinstance(blockers, list) or blockers:
             return False
-    return True
+        return all(
+            _is_host_only_note(item) or _is_explicit_unity_validation_note(item)
+            for item in unresolved
+        )
+    return bool(unresolved) and all(_is_host_validation_note(item) for item in unresolved)
+
+
+def _is_host_only_note(item: Any) -> bool:
+    if _is_host_validation_note(item):
+        return True
+    if not isinstance(item, str) or "\n" in item:
+        return False
+    normalized = " ".join(item.lower().split())
+    return (
+        "format" in normalized
+        and any(tool in normalized for tool in ("ruff", "csharpier"))
+        and not any(
+            concern in normalized for concern in ("source", "implementation", "compile", "invalid")
+        )
+        and any(
+            status in normalized for status in ("unavailable", "not installed", "could not run")
+        )
+    )
+
+
+def _is_explicit_unity_validation_note(item: Any) -> bool:
+    """The explicit host flag permits a brief pending Unity check without a host suffix."""
+
+    if not isinstance(item, str) or "\n" in item:
+        return False
+    normalized = " ".join(item.lower().split()).rstrip(".")
+    return (
+        normalized.startswith("unity ")
+        and any(word in normalized for word in ("validation", "compilation", "play mode"))
+        and normalized.endswith(("is pending", "remains pending", "has not been run"))
+    )
+
+
+def _is_host_validation_note(item: Any) -> bool:
+    """Accept legacy host-only notes without treating source gaps as host work."""
+
+    if not isinstance(item, str) or "\n" in item:
+        return False
+    normalized = " ".join(item.lower().split())
+    if any(
+        word in normalized
+        for word in (
+            "failed",
+            "broken",
+            "missing",
+            "incomplete",
+            "cannot",
+            "unable",
+            "not implemented",
+            "not wired",
+            "not connected",
+        )
+    ):
+        return False
+    return (
+        any(word in normalized for word in ("host", "project instruction"))
+        and "unity" in normalized
+        and any(word in normalized for word in ("validat", "test", "compil", "play mode"))
+        and any(
+            word in normalized
+            for word in (
+                "pending",
+                "remain",
+                "required",
+                "needed",
+                "not run",
+                "not executed",
+                "not been verified",
+                "not verified",
+                "unverified",
+            )
+        )
+    )
 
 
 def prepare_design_for_codex(design: GameLogicDesign) -> GameLogicDesign:
@@ -861,8 +1090,8 @@ def _adaptive_repair_limits(initial_limit: int) -> tuple[int, int]:
     hard_limit_name = "MAINFLOW_AGENT_HARD_MAX_REPAIRS"
     extension_name = "MAINFLOW_AGENT_REPAIR_EXTENSION"
     try:
-        configured_hard_limit = int(os.environ.get(hard_limit_name, "12"))
-        extension = int(os.environ.get(extension_name, "3"))
+        configured_hard_limit = int(os.environ.get(hard_limit_name, "8"))
+        extension = int(os.environ.get(extension_name, "2"))
     except ValueError as error:
         raise ValueError(f"{hard_limit_name} and {extension_name} must be integers") from error
     if not 1 <= configured_hard_limit <= 24:
@@ -872,22 +1101,20 @@ def _adaptive_repair_limits(initial_limit: int) -> tuple[int, int]:
     return max(initial_limit, configured_hard_limit), extension
 
 
-def _project_source_digest(project_root: Path) -> str:
-    """Hash host-owned project sources so real edits reset repeated-failure detection."""
-
-    snapshot = _ProjectSourceSnapshot.capture(project_root)
-    digest = hashlib.sha256()
-    source_paths = [
-        relative_path
-        for relative_path in snapshot.files
-        if Path(relative_path).suffix.lower() in {".cs", ".asmdef", ".asmref"}
-    ]
-    for relative_path in sorted(source_paths):
-        digest.update(relative_path.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(snapshot.files[relative_path])
-        digest.update(b"\0")
-    return digest.hexdigest()
+def _validation_time_budget(phase: str, total_timeout_seconds: int) -> int:
+    name = (
+        "MAINFLOW_AGENT_FINAL_VALIDATION_BUDGET_SECONDS"
+        if phase == "final_validation"
+        else "MAINFLOW_AGENT_VALIDATION_BUDGET_SECONDS"
+    )
+    default = 1500 if phase == "final_validation" else 1800
+    try:
+        configured = int(os.environ.get(name, str(default)))
+    except ValueError as error:
+        raise ValueError(f"{name} must be an integer") from error
+    if not 60 <= configured <= 21600:
+        raise ValueError(f"{name} must be between 60 and 21600")
+    return min(configured, total_timeout_seconds)
 
 
 def run_codex_quality_review(
@@ -918,6 +1145,9 @@ screen, live value binding, and primary action against runtime source and scene 
 Inspect `visual_validation_result.ui_readability` and its post-asset screenshot when present.
 Off-screen text, missing backing panels, and low contrast are concrete UI defects even if the
 optional VLM comparison is disabled. An unavailable capture is only missing evidence.
+Compare the 1280x720 and 1920x1080 HUD audit findings. Inspect applied background art for
+obvious oversized source pixels or stretched single-image coverage; request a tiled or
+appropriately detailed source when the actual game camera exposes these defects.
 If visual validation was deliberately disabled or skipped because the image backend produced
 placeholders, record the missing VLM comparison only as an info-level limitation; do not fail the
 game solely for that skip. Judge actual readability and visual defects separately.
@@ -1020,6 +1250,9 @@ Read every file below before editing code:
 - Work only inside this Unity project.
 - Do not change generated design JSON, `GenerationManifest.json`, package identity, or tests to hide failures.
 - Do not commit, push, install unrelated software, or access credentials.
+- This Unity directory is generated output. The host formats tracked repository source; do not
+  run the parent repository's `tools/format_repo.py` over generated project files. If a formatter
+  is unavailable here, record that in `tests_run` rather than `unresolved_requirements`.
 - Prefer project APIs already present. Inspect definitions before referencing a class, member, tag, layer, or package.
 - You may refactor copied runtime gameplay modules, prototype controllers, and copied editor-side
   assembly code when necessary for a request-specific game. Preserve the host validation entry
@@ -1038,12 +1271,36 @@ Read every file below before editing code:
   state source, every required state screen opens on its actual transition, and each primary
   action works. Inspect the game at both reference resolutions and keep world interaction
   points clickable outside HUD raycast areas.
+- Enumerate every value the user explicitly requests on screen and show each one in the live
+  playing HUD. For SurvivorLike this includes the current kill count as enemies die; showing
+  kills only on the result screen is insufficient. Bind each counter to its authoritative
+  runtime state and verify that it changes at the corresponding gameplay transition.
 - For each HUD panel, use anchor and offset pairs that keep its visible RectTransform inside
   the screen at 1280x720 and 1920x1080. In a top-left panel, both x offsets should be small
   positive insets; do not combine a fractional-width anchor with a large positive right offset.
   Give labels, health/XP bars, and timer separate non-overlapping rows inside their panels.
+- If a HUD helper accepts `(position, size)`, its second Vector2 is width and height,
+  not the far corner. Compute `size = maxCorner - minCorner` before passing corner
+  coordinates. Check the actual RectTransform world corners after Canvas scaling;
+  leave several screen pixels beyond the required safe inset for rounding.
+- Before finishing a HUD, calculate each label and gauge rectangle in the panel's local
+  coordinates. Account for its anchors, pivot, width and height; the right edge of a
+  left-anchored child is `anchoredPosition.x + sizeDelta.x` when its pivot.x is zero.
+  Reserve separate rows for status, gauges, and timers. If they do not all fit within
+  the panel's 15-percent border inset (capped at 40 screen pixels), split the panel
+  instead of placing a timer beyond its right edge. Check every child, not just the
+  first one, at the CanvasScaler reference resolution.
+- Keep every live HUD label at least 14px. Set both Text overflow modes to Wrap or
+  Truncate, never Overflow. Give wrapped text enough height to remain readable;
+  shrinking the font below 14px or merely clipping required values is not a layout fix.
+  The safe width is panel width minus twice its 15-percent inset (capped at 40 screen
+  pixels per side). Size status text, health/XP bars, and icons to that width before
+  creating their RectTransforms; split a crowded panel into separate panels.
 - Put each live HUD text group and transient announcement inside an anchored uGUI panel with
-  a dark, translucent `UnityEngine.UI.Image` backing (alpha at least 0.7). Keep text colors
+  a solid dark `UnityEngine.UI.Image` backing (alpha 1.0). HUD, menu and button backings
+  must be opaque even when initially inactive; do not use 0.95, 0.96, 0.97, or 0.99 for
+  `HudArt_` or text-bearing panel Images. Reserve alpha fades for transient effects only.
+  Keep text colors
   high contrast, padding around every label, and panels inside the visible screen at both
   reference resolutions. Do not place white or warning text directly over world artwork.
   Keep decorative Images `raycastTarget = false`; interactive Button graphics alone receive
@@ -1052,10 +1309,20 @@ Read every file below before editing code:
   with a visible silhouette instead of disabling its only SpriteRenderer for repeated frames.
 - Add a non-interactive `UnityEngine.UI.Image` child named `HudArt_...` behind text within each
   HUD panel; the host will bind the optional `hud_panel_frame` artwork after generation. Use
+  the `HudArt_...` RectTransform itself as the parent for its live text, gauges, and buttons,
+  or put both the decoration and content under one shared panel RectTransform. Do not leave
+  live content as unrelated children of the Canvas and rely on screen position alone. Use
   the exact `HudIconHealth`, `HudIconCurrency`, `HudIconWave`, `HudIconTimer`, and
   `HudIconObjective` prefixes only for icons requested in `image_asset_request.json`. Their
   Image components must stay within their panel and must not consume pointer input. Preserve
   the dark panel fallback and legible text if generated artwork is unavailable or too bright.
+  Treat the artwork as a nine-slice decoration: its source pixel dimensions do not define the
+  panel's layout. The image reserves the middle 70 percent for live content. Place every label,
+  gauge and button inside an inset content RectTransform, at least 15 percent of panel width
+  and height from the visible border (up to 40 screen pixels per side). Enlarge or split a panel
+  when its content cannot fit inside that safe rectangle; never let text or bars overlap frame
+  ornaments. The `HudArt_` image may be the panel itself or a child behind content. Keep this
+  safe rectangle and an opaque dark backing even when artwork is absent.
 - Treat `pacing_contract.json` as the normal human-play contract. Author traversal, enemy,
   obstacle, wave, or decision content in each segment to reach its target duration. A long
   idle countdown, movement-against-a-wall gate, and a fast automated smoke test are not evidence
@@ -1065,11 +1332,24 @@ Read every file below before editing code:
   controls playtest is available; author content that supports the target without artificial gates.
 - Disable or remove the copied `PrototypeSceneController` IMGUI debug panel in the finished game.
   `OnGUI`, loose debug labels, and unstyled test buttons do not count as player-facing UI. If no
-  generated image asset is available, use restrained solid/translucent uGUI shapes and the built-in
+  generated image asset is available, use restrained solid uGUI shapes and the built-in
   font; never leave gameplay unreadable behind placeholder patterns.
 - Connect HUD values and screen visibility to actual runtime state. Health, objective/progress,
   currency/score/time, pause, choice, clear, failure, restart, and genre-specific controls must
   update from the systems they represent instead of displaying hard-coded sample text.
+- For every offered SurvivorLike upgrade, set `UpgradeDefinition.observableStatId` to a
+  request-specific numeric gameplay value and `expectedStatChange` to `increase`, `decrease`,
+  or `change`. Preserve these fields on `UpgradeDefinition` even when replacing its source.
+  The component that owns that live value must implement
+  `IGameplayStatSource.TryGetGameplayStat(statId, out value)` and expose it before and after
+  selection. A bow may expose draw speed, a gun magazine capacity, or a melee weapon reach.
+  Never report selection counts, UI text, or parallel bookkeeping as the effect. Map every
+  blueprint progression option as well as options added in code. Blueprint options without
+  an observable stat are omitted in Agent Harness mode; populate a request-specific pool
+  with at least three actual choices rather than relying on copied sample options.
+  Apply the selected effect
+  directly or through a subscribed `Selected` handler; a button calling `Select(index)` alone
+  is incomplete.
 - When an upgrade can be previewed before purchase, its player-facing panel must show the current
   and projected post-upgrade values (`before -> after`) for every affected combat stat, including
   damage, attacks per second/cooldown, range, and splash radius when applicable. Use the same
@@ -1141,6 +1421,9 @@ Read every file below before editing code:
   its exact `GeneratedGameModule` identity instead.
 - Preserve every already selected/generated module ID. A repair may not remove, rename, merge, or
   replace a working module merely to address a different runtime failure.
+- `GameBootstrap` initializes `GameTemplateConfig.asset` selected modules in list order.
+  Any service read by `context.GetRequired<T>()` during `OnInitialize` must be registered by
+  an earlier selected module; keep prerequisite modules before their consumers.
 - Do not launch Unity Editor, Unity Hub, `Unity.exe`, a Unity batch-mode process, or a command
   that opens this project. Do not use the Unity CLI/pipeline/MCP to connect to or start an Editor.
   The host process exclusively owns Unity compilation, Play Mode tests, licensing, and project
@@ -1149,6 +1432,41 @@ Read every file below before editing code:
   checks in the structured result instead of running them yourself.
 """
     (project_root / filename).write_text(text, encoding="utf-8", newline="\n")
+
+
+def _staged_implementation_enabled(design: GameLogicDesign) -> bool:
+    setting = os.environ.get("MAINFLOW_AGENT_STAGED_IMPLEMENTATION", "auto").strip().lower()
+    if setting in {"0", "false", "off"}:
+        return False
+    if setting in {"1", "true", "on"}:
+        return True
+    if setting != "auto":
+        raise ValueError("MAINFLOW_AGENT_STAGED_IMPLEMENTATION must be auto, on, or off")
+    features = design.get("agent_harness_feature_requirements", [])
+    return isinstance(features, list) and len(features) >= 24
+
+
+def _compilable_foundation_prompt(
+    design: GameLogicDesign,
+    request: ParsedRequest,
+    *,
+    instruction_filename: str,
+) -> str:
+    return f"""Prepare the compile-safe C# foundation for the complete Unity game.
+
+User request: {request["condition"]}
+Genre: {request["genre"]}
+Feature requirements: {json.dumps(design.get("agent_harness_feature_requirements", []), ensure_ascii=False)}
+
+Read {instruction_filename} and the generated design contracts. Implement the shared runtime
+state, component interfaces, and cross-script dependencies for the requested mechanics first.
+Build enough real behavior to establish the connected core loop. This is an intermediate source
+checkpoint: the host will compile the project now, and a second agent turn will finish scene
+content, HUD, polish, and remaining mechanics. Do not use dummy no-op implementations to hide
+missing behavior. Do not launch Unity, edit tests, or change generated contracts. Return the
+required structured completion report, listing deferred game requirements in
+`unresolved_requirements` and setting `host_validation_pending=true`.
+"""
 
 
 def _implementation_prompt(
@@ -1184,6 +1502,10 @@ Before coding, read `Assets/GameTemplate/Generated/Design/pacing_contract.json` 
 `Assets/GameTemplate/Generated/Design/ui_contract.json`. Preserve the requested normal
 playtime, connect every required collectible and checkpoint to the real traversable route,
 and make each HUD value and result screen reflect the current runtime state.
+For each SurvivorLike upgrade, set `UpgradeDefinition.observableStatId` and
+`expectedStatChange` and expose the corresponding live value from its authoritative
+gameplay component through `IGameplayStatSource`. Keep blueprint progression options
+and any code-added choices consistent with that contract for any requested weapon type.
 Keep timed or rising hazards local to their authored zone. A player teleported or respawned into
 an earlier zone must still take ordinary enemy and trap damage without the final-zone controller
 immediately overriding that contact or resetting the player.
@@ -1232,6 +1554,9 @@ runtime dependency is missing. In particular, a tower-defense controller must ne
 Do not edit validation tests or immutable design/manifest JSON to make checks pass. Do not launch
 Unity or use Unity CLI/pipeline/MCP commands; Unity validation is run only by the host after you
 return. Return the required structured completion report after making the edits.
+Set `host_validation_pending=true` for host-owned Unity checks. Put actual unfinished source
+work in `implementation_blockers` and `unresolved_requirements`, never host-only checks.
+If source edits are complete, report `status=completed` even before host validation.
 """
 
 
@@ -1257,6 +1582,9 @@ JSON. Keep already working requested features intact. Do not create or modify `.
 hand-edit `Bootstrap.unity`; let the host assembler regenerate bindings. Do not create or modify
 `.asmdef`/`.asmref` files and do not add dynamic `Assembly.Load` workarounds. Keep one public
 MonoBehaviour per filename-matched `.cs` file and preserve every existing generated module ID.
+For `UNITY_MODULE_DEPENDENCY_INVALID` or a missing service in `OnInitialize`, inspect both
+modules and their IDs. Put the provider before its consumer in `GameTemplateConfig.asset`
+`selectedModules` without removing either module; then let the host rerun Unity validation.
 Every generated module class must be public and individually serializable; split any file that
 contains multiple `[GeneratedGameModule]` classes instead of keeping an internal class bundle.
 When the phase is `validate_game`, starts with `feature_checklist`, or is `final_validation`,
@@ -1265,7 +1593,9 @@ files, their binding IDs, and asset manifests. Fix gameplay source, scene assemb
 initialization, and state transitions without replacing validated assets or reverting the game to
 the copied genre prototype.
 When the phase starts with `feature_checklist`, treat every failed checklist assertion as an
-acceptance criterion. Read the referenced production type and the checklist source, then implement
+acceptance criterion only if it is compatible with the user's explicit attack delivery and
+exclusions. A generic projectile checklist must never turn an explicitly orbiting melee sword
+into a player projectile attack. Read the referenced production type and checklist source, then implement
 the missing observable runtime behavior or compatible public contract in production code.
 Never edit, delete, disable, or weaken the checklist test itself.
 If a runtime exception reports a null route, spawn point, module, or HUD object, repair the source
@@ -1279,6 +1609,32 @@ that can move or respawn the player before the hazard's damage callback. Scope t
 hazard checks to their own zone and restore that zone's state on respawn. Confirm the ordinary
 hazard changes the authoritative player health; do not bypass contact damage or change the host
 smoke test to hide the failure.
+If `runtime.ui_quality` fails, fix every panel in `ui_opacity_corrections` in one edit.
+Set each named panel Image's
+color alpha to exactly 1.0; values such as 0.95 or 0.99 are insufficient for the
+opaque HUD contract. Keep the backing and verify its final color after helpers and
+artwork binders run, including panels initially inactive for level-ups or boss fights.
+Do not relax the validator or hide the panel to avoid the check.
+Inspect the failing panel's actual RectTransform geometry before moving labels. Confirm
+that helper arguments use position plus width/height rather
+than position plus far corner; correct oversized or off-screen panels first. Then place
+content inside the reported safe rectangle with several screen pixels of spare padding
+at every edge. Fix *every* item in `ui_layout_corrections` in one edit; the host lists
+all currently overflowing HUD children, not just the first. For an item that fits inside
+the safe rectangle, move it by the reported screen-pixel correction (plus padding);
+for one wider or taller than the safe rectangle, reduce/reflow its RectTransform or split
+the HUD into distinct panels. With a Screen Space Overlay Canvas, convert screen pixels
+to a direct child's local `anchoredPosition` using `Canvas.scaleFactor`. Do not enlarge
+one panel to chase a child if that moves the panel outside the screen or into another HUD.
+Fix every `text_overflow_modes` item even if its rectangle is already inside the safe area.
+Set horizontal and vertical modes to `Wrap` or `Truncate` as appropriate, and ensure
+required values remain fully readable. Keep each Text font size at least 14px; reflow
+or split panels instead of making the type too small.
+Put live text, bars, and buttons under the intended decorated panel's
+RectTransform; if they are siblings, verify that their actual screen rectangles overlap
+that panel. A `HudArt_` decoration must never make the entire Canvas its content panel.
+Check anchors, pivot, `sizeDelta`, and CanvasScaler at the failing screen resolution.
+Do not solve a 1-pixel overflow by changing text clipping alone.
 If `runtime.survivor_player_identity`, `runtime.survivor_player_binding`, or
 `runtime.survivor_movement` fails, inspect all Player creation paths and Rigidbody2D bindings.
 Keep one active scene Player, bind TopDownMovementModule, camera, health, enemy targets, and UI
@@ -1288,6 +1644,14 @@ If validation reports that a selected action or upgrade changed no observable st
 initialization order and reacquire late-bound dependencies when the action executes. Ensure every
 selectable option ID maps to a real state mutation, and keep one authoritative owner for the state
 instead of updating a parallel controller that the UI or validator does not observe.
+For `runtime.survivor_upgrade_contract` or `runtime.survivor_upgrade_effect`, inspect the
+selected `UpgradeDefinition.observableStatId` and `expectedStatChange`. The live gameplay
+component owning that value must implement `IGameplayStatSource` and return a finite number
+for the same stat ID before and after selection. Set the stat ID on blueprint-imported options
+as well as options added in code. Read `stat_before`, `stat_after`, and `expected_change` in
+the smoke log. If the value did not move as declared, repair the actual effect application,
+its runtime binding, or its `Selected` subscription. Do not replace it with a UI/acquired
+counter or change the host validator to accept an unrelated state change.
 If the tower-defense smoke test reports `runtime.tower_build_visibility`, position every build
 point inside the camera view and set its SpriteRenderer sorting order above the background.
 If it reports `runtime.tower_build_clickability` or `runtime.tower_build_input`, check the
@@ -1309,6 +1673,8 @@ Do not launch Unity Editor or run Unity,
 Unity CLI/pipeline/MCP, or batch-mode commands; the host owns the next validation attempt. Return
 the required structured report. If source edits are complete and only host Unity validation is
 pending, report `status=completed` and list that check in `recommended_validation`.
+Set `host_validation_pending=true` for host-owned Unity checks and leave
+`implementation_blockers` empty when source implementation is complete.
 """
 
 
@@ -1361,14 +1727,232 @@ def _bounded_feedback(evidence: dict[str, Any]) -> dict[str, Any]:
 
 
 def _failure_signature(outcome: UnityValidationOutcome) -> str:
-    """Identify the actual compiler/runtime transition, not the generic failed check label."""
+    """Keep a root failure stable when edits shift line numbers or wrapper messages."""
 
-    payload = {
-        "issues": outcome.issues,
-        "failed": [item for item in outcome.checks if not item["passed"]],
-        "diagnostics": _signature_diagnostics(outcome.unity_log),
-    }
+    log = outcome.unity_log
+    issue_codes = sorted({item["code"] for item in outcome.issues})
+    runtime = re.search(r"UNITY_RUNTIME_SMOKE_FAILED:\s*([\w.]+)", log)
+    if runtime:
+        payload = {"issues": issue_codes, "runtime_transition": runtime.group(1)}
+        if runtime.group(1) == "runtime.ui_quality":
+            ui_content = _ui_layout_overflow(log)
+            if ui_content is not None:
+                payload["ui_target"] = [ui_content[0], ui_content[1]]
+            else:
+                ui_panel = re.search(r"HUD panel '([^']+)'", log)
+                if ui_panel:
+                    payload["ui_target"] = ui_panel.group(1)
+    else:
+        compiler = re.findall(r"error (CS\d+):\s*([^\r\n]+)", log)
+        if compiler:
+            payload = {"issues": issue_codes, "compiler": sorted(set(compiler))[:5]}
+        else:
+            validation = re.findall(r"VALIDATION_FAIL:([\w.]+)", log)
+            if validation:
+                payload = {"issues": issue_codes, "validation": sorted(set(validation))[:5]}
+            else:
+                exception = re.search(r"(?m)^([\w.]+Exception):", log)
+                method = re.search(r"executeMethod method ([\w.]+) threw exception", log)
+                if exception:
+                    payload = {
+                        "issues": issue_codes,
+                        "exception": exception.group(1),
+                        "method": method.group(1) if method else "",
+                    }
+                else:
+                    payload = {
+                        "issues": issue_codes,
+                        "diagnostics": _signature_diagnostics(log)[:5],
+                    }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _ui_layout_violations(
+    log: str,
+) -> list[tuple[str, str, tuple[float, float, float, float], tuple[float, float, float, float]]]:
+    """Collect every reported HUD content rectangle, including later failures."""
+
+    pattern = re.compile(
+        r"HUD content '([^']+)' escapes decorated panel '([^']+)' "
+        r"safe area \(([^)]+)\); content bounds \(([^)]+)\)",
+    )
+
+    def bounds(raw: str) -> tuple[float, float, float, float] | None:
+        values = {
+            name: float(value)
+            for name, value in re.findall(r"(x|y|width|height):\s*(-?\d+(?:\.\d+)?)", raw)
+        }
+        if len(values) != 4:
+            return None
+        return (
+            values["x"],
+            values["y"],
+            values["x"] + values["width"],
+            values["y"] + values["height"],
+        )
+
+    violations = []
+    for match in pattern.finditer(log):
+        safe = bounds(match.group(3))
+        content = bounds(match.group(4))
+        if safe is not None and content is not None:
+            violations.append((match.group(2), match.group(1), safe, content))
+    return violations
+
+
+def _ui_layout_repair_guidance(log: str) -> list[dict[str, Any]]:
+    """Give the repair agent actionable screen-space deltas for all HUD violations."""
+
+    guidance = []
+    for panel, content_name, safe, content in _ui_layout_violations(log)[:24]:
+        left = max(0.0, safe[0] - content[0])
+        bottom = max(0.0, safe[1] - content[1])
+        right = max(0.0, content[2] - safe[2])
+        top = max(0.0, content[3] - safe[3])
+        safe_width = safe[2] - safe[0]
+        safe_height = safe[3] - safe[1]
+        width = content[2] - content[0]
+        height = content[3] - content[1]
+        guidance.append(
+            {
+                "panel": panel,
+                "content": content_name,
+                "overflow_screen_px": {
+                    "left": round(left, 1),
+                    "right": round(right, 1),
+                    "bottom": round(bottom, 1),
+                    "top": round(top, 1),
+                },
+                "move_screen_px_with_8px_padding": {
+                    "x": round(left + 8 if left else -(right + 8) if right else 0, 1),
+                    "y": round(bottom + 8 if bottom else -(top + 8) if top else 0, 1),
+                }
+                if width <= safe_width - 16 and height <= safe_height - 16
+                else None,
+                "maximum_content_size_screen_px_with_8px_padding": {
+                    "width": round(max(0.0, safe_width - 16), 1),
+                    "height": round(max(0.0, safe_height - 16), 1),
+                },
+            }
+        )
+    for match in re.finditer(
+        r"HUD text '([^']+)' in decorated panel '([^']+)' uses overflow modes: "
+        r"horizontal=(\w+), vertical=(\w+)",
+        log,
+    ):
+        guidance.append(
+            {
+                "panel": match.group(2),
+                "content": match.group(1),
+                "text_overflow_modes": {
+                    "horizontal": match.group(3),
+                    "vertical": match.group(4),
+                },
+                "required_action": "Use Wrap or Truncate and keep text readable at 14px or larger",
+            }
+        )
+    return guidance
+
+
+def _ui_layout_overflow(log: str) -> tuple[str, str, float] | None:
+    """Measure the worst HUD overflow rather than only the first diagnostic."""
+
+    violations = _ui_layout_violations(log)
+    if not violations:
+        return None
+    panel, content_name, safe, content = max(
+        violations,
+        key=lambda item: sum(
+            (
+                max(0.0, item[2][0] - item[3][0]),
+                max(0.0, item[2][1] - item[3][1]),
+                max(0.0, item[3][2] - item[2][2]),
+                max(0.0, item[3][3] - item[2][3]),
+            )
+        ),
+    )
+    overflow = sum(
+        (
+            max(0.0, safe[0] - content[0]),
+            max(0.0, safe[1] - content[1]),
+            max(0.0, content[2] - safe[2]),
+            max(0.0, content[3] - safe[3]),
+        )
+    )
+    return panel, content_name, overflow
+
+
+def _ui_opacity_violations(log: str) -> list[dict[str, str | float | None]]:
+    violations: list[dict[str, str | float | None]] = []
+    for match in re.finditer(
+        r"HUD panel '([^']+)' must have an opaque backing"
+        r"(?: \(alpha=([0-9.]+), required=1\))?",
+        log,
+    ):
+        violations.append(
+            {
+                "panel": match.group(1),
+                "alpha": float(match.group(2)) if match.group(2) else None,
+                "required_alpha": 1.0,
+            }
+        )
+    return violations
+
+
+@dataclass(frozen=True)
+class _UiQualityMetrics:
+    opacity_count: int
+    geometry_count: int
+    overflow_pixels: float
+    text_overflow_count: int
+    undersized_text_count: int
+
+
+def _ui_quality_metrics(log: str) -> _UiQualityMetrics | None:
+    if "UNITY_RUNTIME_SMOKE_FAILED: runtime.ui_quality:" not in log:
+        return None
+    geometry = _ui_layout_violations(log)
+    overflow_pixels = sum(
+        max(0.0, safe[0] - content[0])
+        + max(0.0, safe[1] - content[1])
+        + max(0.0, content[2] - safe[2])
+        + max(0.0, content[3] - safe[3])
+        for _, _, safe, content in geometry
+    )
+    old_text_modes = re.findall(r"Text overflow modes: horizontal=(\w+), vertical=(\w+)", log)
+    new_text_modes = re.findall(
+        r"HUD text '[^']+' in decorated panel '[^']+' uses overflow modes: "
+        r"horizontal=(\w+), vertical=(\w+)",
+        log,
+    )
+    text_overflow_count = sum(
+        horizontal == "Overflow" or vertical == "Overflow"
+        for horizontal, vertical in (*old_text_modes, *new_text_modes)
+    )
+    return _UiQualityMetrics(
+        opacity_count=len(_ui_opacity_violations(log)),
+        geometry_count=len(geometry),
+        overflow_pixels=overflow_pixels,
+        text_overflow_count=text_overflow_count,
+        undersized_text_count=len(re.findall(r"text '[^']+' is too small \(\d+px\)", log)),
+    )
+
+
+def _ui_quality_improved(baseline: _UiQualityMetrics, candidate: _UiQualityMetrics) -> bool:
+    return (
+        candidate.opacity_count <= baseline.opacity_count
+        and candidate.geometry_count <= baseline.geometry_count
+        and candidate.overflow_pixels <= baseline.overflow_pixels + 0.5
+        and candidate.text_overflow_count <= baseline.text_overflow_count
+        and candidate.undersized_text_count <= baseline.undersized_text_count
+        and (
+            candidate.opacity_count < baseline.opacity_count
+            or candidate.geometry_count < baseline.geometry_count
+            or candidate.overflow_pixels < baseline.overflow_pixels - 0.5
+            or candidate.text_overflow_count < baseline.text_overflow_count
+            or candidate.undersized_text_count < baseline.undersized_text_count
+        )
+    )
 
 
 def _signature_diagnostics(log: str) -> list[str]:
@@ -1405,6 +1989,8 @@ def _signature_diagnostics(log: str) -> list[str]:
                 "Access to the path",
                 "Access is denied",
                 "UnauthorizedAccessException",
+                "ArgumentNullException:",
+                "Parameter name:",
                 "FileNotFoundException",
                 "Could not load the file",
                 "executeMethod class",
@@ -1493,6 +2079,22 @@ def _repair_is_regression(
     candidate_progress = _validation_progress(candidate)
     if candidate_progress != baseline_progress:
         return candidate_progress < baseline_progress
+    baseline_ui = _ui_quality_metrics(baseline.unity_log)
+    candidate_ui = _ui_quality_metrics(candidate.unity_log)
+    if baseline_ui is not None and candidate_ui is not None:
+        if candidate_ui.opacity_count > baseline_ui.opacity_count:
+            return True
+        if candidate_ui.undersized_text_count > baseline_ui.undersized_text_count:
+            return True
+        if _ui_quality_improved(baseline_ui, candidate_ui):
+            return False
+        # At the same UI stage, a changed classifier target is not evidence that
+        # fewer HUD violations became a more severe Unity failure.
+        return (
+            candidate_ui.geometry_count >= baseline_ui.geometry_count
+            and candidate_ui.overflow_pixels > baseline_ui.overflow_pixels + 0.5
+            and candidate_ui.text_overflow_count >= baseline_ui.text_overflow_count
+        )
     return _failure_severity(candidate) > (
         _failure_severity(baseline) if baseline_severity is None else baseline_severity
     )

@@ -59,6 +59,42 @@ def repair_with_configured_agent_harness(
     )
 
 
+def repair_feature_audit_with_configured_agent(
+    *,
+    project_root: Path,
+    workspace_root: Path,
+    draft: GameLogicDraft,
+    request: ParsedRequest,
+    findings: list[dict[str, Any]],
+    iteration: int,
+) -> UnityValidationOutcome | None:
+    """Repair source-grounded missing requirements, then rerun Unity validation."""
+    builder = resolve_game_builder()
+    if builder == "pipeline" or not findings:
+        return None
+    if builder == "codex_cli":
+        settings = CodexHarnessSettings.from_environment()
+        harness = CodexGameHarness(
+            settings, audit_root=workspace_root / "validation" / "codex" / "feature_audit_repair"
+        )
+    else:
+        from game_pipeline.claude_code import ClaudeCodeGameHarness
+        from game_pipeline.claude_code.config import ClaudeCodeHarnessSettings
+
+        settings = ClaudeCodeHarnessSettings.from_environment()
+        harness = ClaudeCodeGameHarness(
+            settings,
+            audit_root=workspace_root / "validation" / "claude_code" / "feature_audit_repair",
+        )
+    return harness.repair_quality_findings(
+        project_root=project_root,
+        draft=draft,
+        request=request,
+        findings=findings,
+        iteration=iteration,
+    )
+
+
 def _post_validation_repairs() -> int:
     name = "MAINFLOW_AGENT_POST_VALIDATION_REPAIRS"
     try:

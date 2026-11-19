@@ -48,6 +48,9 @@ screen, live value binding, and primary action against runtime source and scene 
 Inspect `visual_validation_result.ui_readability` and its post-asset screenshot when present.
 Treat off-screen text, missing backing panels, and low contrast as concrete UI defects even if
 the optional VLM comparison is disabled. An unavailable capture is only missing evidence.
+Compare the 1280x720 and 1920x1080 HUD audit findings. Inspect applied background art for
+obvious oversized source pixels or stretched single-image coverage; request a tiled or
+appropriately detailed source when the actual game camera exposes these defects.
 If visual validation was deliberately disabled or skipped because the image backend produced
 placeholders, record the missing VLM comparison only as an info-level limitation; do not fail
 solely for that skip. Judge actual readability and visual defects separately. Prefer post-quality

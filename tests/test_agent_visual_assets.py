@@ -97,3 +97,31 @@ def test_agent_visuals_reject_invalid_binding_and_honor_explicit_kind() -> None:
     assert added == ["visual_hud_badge"]
     assert request["assets"][-1]["generation_spec"]["kind"] == "ui"
     assert request["assets"][-1]["unity_binding_key"] == "ui_object_prefix:HudBadge_"
+
+
+def test_runtime_background_is_requested_as_detailed_repeatable_art() -> None:
+    request, added = with_agent_visual_assets(
+        _request(),
+        [
+            {
+                "visual_objects": [
+                    {
+                        "asset_id": "forest_floor_art",
+                        "scene_object_prefix": "ForestFloor_",
+                        "purpose": "forest floor",
+                        "description": "Dark forest floor behind the traversable area.",
+                        "kind": "background",
+                    }
+                ]
+            }
+        ],
+    )
+
+    assert added == ["forest_floor_art"]
+    floor = request["assets"][-1]
+    assert floor["generation_spec"]["kind"] == "background"
+    assert (floor["generation_spec"]["width"], floor["generation_spec"]["height"]) == (
+        1024,
+        768,
+    )
+    assert "Seamlessly repeatable" in floor["description"]

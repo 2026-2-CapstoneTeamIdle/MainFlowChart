@@ -40,15 +40,40 @@ namespace TeamIdle.GameTemplate.VisualTests
 
             Assert.That(Camera.main, Is.Not.Null, "Bootstrap scene needs a MainCamera.");
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
-            var pixels = CaptureCamera(Camera.main, outputPath);
+            var pixels = CaptureCamera(Camera.main, outputPath, 1280, 720);
+            var report = AuditVisibleUi(pixels, 1280, 720);
+            for (var index = 0; index < report.issues.Count; index++)
+            {
+                report.issues[index] = $"1280x720:{report.issues[index]}";
+            }
+            Screen.SetResolution(1920, 1080, false);
+            for (var frame = 0; frame < 3; frame++)
+            {
+                yield return null;
+            }
+            var largePath = Path.Combine(
+                Path.GetDirectoryName(outputPath),
+                Path.GetFileNameWithoutExtension(outputPath) + "_1920x1080.ppm"
+            );
+            var largePixels = CaptureCamera(Camera.main, largePath, 1920, 1080);
+            var largeReport = AuditVisibleUi(largePixels, 1920, 1080);
+            report.visibleTextCount = Math.Min(
+                report.visibleTextCount,
+                largeReport.visibleTextCount
+            );
+            foreach (var issue in largeReport.issues)
+            {
+                report.issues.Add($"1920x1080:{issue}");
+            }
+            if (largeReport.visibleTextCount == 0)
+            {
+                report.issues.Add("1920x1080:missing_visible_text");
+            }
             var auditPath = Environment.GetEnvironmentVariable("MAINFLOW_UI_AUDIT_PATH");
             if (!string.IsNullOrEmpty(auditPath))
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(auditPath));
-                File.WriteAllText(
-                    auditPath,
-                    JsonUtility.ToJson(AuditVisibleUi(pixels, 1280, 720), true)
-                );
+                File.WriteAllText(auditPath, JsonUtility.ToJson(report, true));
             }
 
             Assert.That(
@@ -173,10 +198,13 @@ namespace TeamIdle.GameTemplate.VisualTests
                 + 0.0722f * Linear(color.b);
         }
 
-        private static Color32[] CaptureCamera(Camera camera, string outputPath)
+        private static Color32[] CaptureCamera(
+            Camera camera,
+            string outputPath,
+            int width,
+            int height
+        )
         {
-            const int width = 1280;
-            const int height = 720;
             foreach (
                 var canvas in UnityEngine.Object.FindObjectsByType<Canvas>(FindObjectsSortMode.None)
             )

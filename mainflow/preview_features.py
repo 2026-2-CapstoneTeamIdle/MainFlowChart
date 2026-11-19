@@ -55,6 +55,7 @@ def main() -> int:
                 "rationale": feature.get("rationale", ""),
                 "acceptance_criteria": feature.get("acceptance_criteria", ""),
                 "checklist": feature.get("checklist", {}),
+                "acceptance_items": feature.get("acceptance_items", []),
             }
             for feature in logic["features"]
         ],

@@ -119,6 +119,14 @@ BLUEPRINT_SCHEMA: dict[str, Any] = {
                     "display_name": {"type": "string", "minLength": 1, "maxLength": 48},
                     "description": {"type": "string", "minLength": 1, "maxLength": 100},
                     "rarity": {"type": "string", "enum": ["common", "rare", "epic", "legendary"]},
+                    "observable_stat_id": {
+                        "type": "string",
+                        "pattern": "^$|^[a-z][a-z0-9_.]{0,63}$",
+                    },
+                    "expected_stat_change": {
+                        "type": "string",
+                        "enum": ["change", "increase", "decrease"],
+                    },
                 },
             },
         },
@@ -170,6 +178,10 @@ class GameBlueprintPlanner:
             "file paths, assets, or Markdown. Preserve player_anchor and objective entities, "
             "and preserve the content archetypes from the fallback. You may improve positions, "
             "counts, names, presentation, landmarks, UI labels, and survivor progression. "
+            "For each survivor progression option, describe the live gameplay value it changes "
+            "with observable_stat_id (for example weapon.damage or player.move_speed) and "
+            "expected_stat_change (increase, decrease, or change). These IDs are contracts "
+            "for the implementation agent, not fixed weapon-specific names. "
             "The runtime owns all behavior.\n\n"
             + json.dumps(
                 {
@@ -324,6 +336,15 @@ def _progression(value: Any) -> list[BlueprintProgressionOption]:
         rarity = item.get("rarity")
         if rarity not in {"common", "rare", "epic", "legendary"}:
             raise ValueError("progression rarity is invalid")
+        observable_stat_id = item.get("observable_stat_id", "")
+        if not isinstance(observable_stat_id, str) or (
+            observable_stat_id != ""
+            and not re.fullmatch(r"[a-z][a-z0-9_.]{0,63}", observable_stat_id)
+        ):
+            raise ValueError("progression observable_stat_id is invalid")
+        expected_stat_change = item.get("expected_stat_change", "change")
+        if expected_stat_change not in {"change", "increase", "decrease"}:
+            raise ValueError("progression expected_stat_change is invalid")
         result.append(
             {
                 "option_id": option_id,
@@ -334,6 +355,10 @@ def _progression(value: Any) -> list[BlueprintProgressionOption]:
                     item.get("description"), option_id.replace("_", " "), 100
                 ),
                 "rarity": cast(Literal["common", "rare", "epic", "legendary"], rarity),
+                "observable_stat_id": observable_stat_id,
+                "expected_stat_change": cast(
+                    Literal["change", "increase", "decrease"], expected_stat_change
+                ),
             }
         )
     return result

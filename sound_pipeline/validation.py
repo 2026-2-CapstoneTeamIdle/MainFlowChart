@@ -2,8 +2,9 @@
 
 Implements stage 1-2 of ``SoundValidationPlan.md``: G1 technical checks, G2 DSP
 fixes (always tried before regeneration), set-level duplicate detection and the
-PASS / FIX / REGENERATE / REVIEW decision. Model-based content checks (G3),
-candidate selection and the regeneration loop are not implemented yet.
+PASS / FIX / REGENERATE / REVIEW decision. The validate_sound node handles
+bounded regeneration of failed required assets; model-based content checks (G3)
+are not implemented here.
 """
 
 from __future__ import annotations
@@ -333,11 +334,18 @@ def failed_checks(metrics: dict[str, float], plan: SoundPlan) -> list[str]:
 
 
 def apply_fixes(
-    samples: np.ndarray, rate: int, failed: list[str], loop: bool
+    samples: np.ndarray, rate: int, failed: list[str], loop: bool, *, kind: str
 ) -> tuple[np.ndarray, list[str]]:
     """G2: zero-cost DSP repairs for the G1 failures that editing can fix."""
     fixes: list[str] = []
     fade = int(rate * FADE_MS / 1000)
+    if "sound-channel-layout" in failed and kind == "sfx" and samples.shape[1] == 2:
+        # An anti-phase stereo average can nearly erase an effect on mono speakers.
+        # Keep the stronger channel instead of averaging two cancelling channels.
+        channel_energy = np.mean(samples.astype(np.float64) ** 2, axis=0)
+        chosen_channel = int(np.argmax(channel_energy))
+        samples = samples[:, chosen_channel : chosen_channel + 1].copy()
+        fixes.append(f"mono_from_{'left' if chosen_channel == 0 else 'right'}")
     if "sound-dc-offset" in failed:
         samples = samples - samples.mean(axis=0)
         fixes.append("remove_dc")
@@ -350,19 +358,54 @@ def apply_fixes(
         samples[-fade:] *= (np.linspace(1.0, 0.0, fade, dtype=np.float32) ** 3)[:, None]
         fixes.append(f"fade_out_{FADE_MS:g}ms")
     if "sound-loop-seam" in failed and loop and len(samples) > 2 * fade:
-        # Preserve duration and blend a longer mirrored tail into the head. A short
-        # overlap can close the sample jump but leave the first and last 50 ms at
-        # very different loudness, which fails loop validation after two repairs.
+        # Preserve the original onset and blend a mirrored copy of it into the
+        # tail. Generated BGM often ends in silence; blending the quiet tail into
+        # the head instead closes the sample jump but leaves a large RMS mismatch.
         loop_fade = min(len(samples) // 4, max(fade, int(rate * 0.2)))
         ramp = np.linspace(0.0, 1.0, loop_fade, dtype=np.float32)[:, None]
         samples = samples.copy()
-        samples[:loop_fade] = samples[-loop_fade:][::-1] * (1 - ramp) + samples[:loop_fade] * ramp
+        samples[-loop_fade:] = samples[-loop_fade:] * (1 - ramp) + samples[:loop_fade][::-1] * ramp
         fixes.append(f"loop_crossfade_{loop_fade / rate * 1000:g}ms")
+    if "sound-true-peak" in failed:
+        samples, repaired_peaks = _repair_short_clipped_peaks(samples)
+        if repaired_peaks:
+            fixes.append(f"declip_short_peaks_{repaired_peaks}")
     peak = float(np.abs(samples).max()) if samples.size else 0.0
     if "sound-true-peak" in failed and peak > 0:
         samples = samples * (10 ** ((PEAK_LIMIT_DBFS - 0.1) / 20) / peak)
         fixes.append("normalize_peak_-1dbfs")
     return samples.astype(np.float32), fixes
+
+
+def _repair_short_clipped_peaks(samples: np.ndarray) -> tuple[np.ndarray, int]:
+    """Interpolate brief flat tops; leave substantial clipping for regeneration."""
+    if samples.shape[0] < 5:
+        return samples, 0
+    peak = float(np.abs(samples).max())
+    if peak <= 0.5:
+        return samples, 0
+    repaired = samples.copy()
+    count = 0
+    for channel in range(samples.shape[1]):
+        values = samples[:, channel]
+        flat = (
+            (values[1:-1] == values[:-2])
+            & (values[1:-1] == values[2:])
+            & (np.abs(values[1:-1]) >= 0.99 * peak)
+        )
+        centers = np.flatnonzero(flat) + 1
+        if not centers.size:
+            continue
+        for group in np.split(centers, np.flatnonzero(np.diff(centers) > 1) + 1):
+            left, right = int(group[0] - 1), int(group[-1] + 1)
+            length = right - left + 1
+            if length > 8 or left == 0 or right == len(values) - 1:
+                continue
+            repaired[left : right + 1, channel] = np.linspace(
+                values[left - 1], values[right + 1], length + 2, dtype=np.float32
+            )[1:-1]
+            count += 1
+    return repaired, count
 
 
 def _decide(qc: AssetQC, criteria: dict[str, bool], placeholder: bool) -> None:
@@ -409,7 +452,7 @@ def check_asset(
         ]
         if not failed or failed == ["sound-file-valid"]:
             break
-        samples, fixes = apply_fixes(samples, rate, failed, plan.loop)
+        samples, fixes = apply_fixes(samples, rate, failed, plan.loop, kind=plan.kind)
         if not fixes:
             break
         qc.applied_fixes += fixes
