@@ -25,10 +25,9 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from sound_pipeline import procedural
-from sound_pipeline.planner import SoundPlan
+from sound_pipeline.planner import SOUND_EFFECTS_MAX_SECONDS, SoundPlan
 
 ELEVENLABS_URL = "https://api.elevenlabs.io"
-SOUND_EFFECTS_MAX_SECONDS = 30.0
 MUSIC_PATH = "/v1/music"
 # Key and permission errors (and detail.status == "quota_exceeded") fail every later request too.
 RUN_FATAL_STATUSES = frozenset({401, 403})

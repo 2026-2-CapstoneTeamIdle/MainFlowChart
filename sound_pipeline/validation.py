@@ -163,7 +163,8 @@ def failed_checks(metrics: dict[str, float], plan: SoundPlan) -> list[str]:
         failed.append("sound-duration-match")
     if metrics["peak_dbfs"] > PEAK_LIMIT_DBFS or metrics["clipped_runs"] > 0:
         failed.append("sound-true-peak")
-    if plan.kind == "sfx" and not plan.loop:
+    # Every one-shot (sfx, ui, voice): generation_spec keeps kind "ui"/"voice", not "sfx".
+    if plan.kind != "bgm" and not plan.loop:
         if metrics["onset_ms"] > ONSET_LIMIT_MS.get(plan.category, 10.0):
             failed.append("sound-onset-latency")
         if metrics["tail_dbfs"] > TAIL_DBFS or metrics["last_sample"] > 0.01:

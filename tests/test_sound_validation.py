@@ -95,6 +95,12 @@ class AssetCheckTest(unittest.TestCase):
         self.assertEqual(qc.decision, "FIX")
         self.assertIn("fade_out_20ms", qc.applied_fixes)
 
+    def test_ui_kind_from_generation_spec_gets_onset_and_tail_checks(self):
+        samples = impact(seconds=0.5, pad=0.2)[: int(0.5 * RATE)]  # 200 ms silence, cut tail
+        qc = qc_of(samples, plan("click", "ui", 0.5, kind="ui"))
+        self.assertIn("trim_leading_silence", qc.applied_fixes)
+        self.assertIn("fade_out_20ms", qc.applied_fixes)
+
     def test_loop_seam_click_is_crossfaded(self):
         t = np.arange(4 * RATE) / RATE
         ramp = (0.5 * np.sin(2 * np.pi * 110 * t) + 0.4 * (t / t[-1])).astype(np.float32)
