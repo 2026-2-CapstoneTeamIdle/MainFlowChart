@@ -15,12 +15,13 @@ import numpy as np
 
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.nodes.validate_sound import validate_sound_node
-from sound_pipeline.planner import SoundPlan
+from sound_pipeline.planner import SoundPlan, plan_sound_assets
 from sound_pipeline.validation import (
     SoundDecoderUnavailable,
     check_asset,
     decode,
     encode_wav,
+    failed_checks,
     loudness_lufs,
 )
 from tests.test_sound_generation import PARSED, item, request
@@ -100,6 +101,40 @@ class AssetCheckTest(unittest.TestCase):
     def test_keyword_ui_sound_uses_ui_target(self):
         qc = qc_of(impact(seconds=0.5), plan("click", "ui", 0.5))  # kind "sfx", category "ui"
         self.assertEqual(qc.metrics["loudness_target_lufs"], -16.0)
+
+    def test_initial_normalization_gain_respects_limiter_cap(self):
+        t = np.arange(int(0.7 * RATE)) / RATE
+        samples = (0.025 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        fade = int(0.02 * RATE)
+        samples[-fade:] *= np.linspace(1, 0, fade) ** 3
+        samples[int(0.1 * RATE)] = 0.8
+        qc = qc_of(samples[:, None])
+        self.assertLessEqual(qc.metrics["limiter_reduction_db"], 12.0)
+        self.assertEqual(qc.decision, "REGENERATE")
+        self.assertIn("sound-loudness-match", qc.failed)
+
+    def test_final_checks_reject_excess_limiting_even_at_target_loudness(self):
+        metrics = qc_of(impact()).metrics
+        metrics["loudness_lufs"] = metrics["loudness_target_lufs"]
+        metrics["limiter_reduction_db"] = 12.01
+        self.assertIn("sound-loudness-match", failed_checks(metrics, plan()))
+        metrics["limiter_reduction_db"] = 12.0
+        self.assertNotIn("sound-loudness-match", failed_checks(metrics, plan()))
+
+    def test_explicit_bgm_kind_overrides_menu_keywords_for_loudness(self):
+        asset = item("menu_track", "Menu", "Calm looping backdrop")
+        asset["generation_spec"] = {
+            "kind": "bgm",
+            "loop": True,
+            "target_duration_seconds": 4.0,
+            "mixer_group": "Music",
+        }
+        sound_plan = plan_sound_assets(request(asset), PARSED)[0]
+        t = np.arange(4 * RATE) / RATE
+        samples = (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)[:, None]
+        qc = qc_of(samples, sound_plan)
+        self.assertEqual(qc.metrics["loudness_target_lufs"], -18.0)
+        self.assertAlmostEqual(qc.metrics["loudness_lufs"], -18.0, delta=0.5)
 
     def test_music_target_is_quieter_than_sfx(self):
         t = np.arange(4 * RATE) / RATE

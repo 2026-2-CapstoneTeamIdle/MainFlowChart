@@ -181,11 +181,12 @@ def normalize_loudness(
         limited, reduction = _limit(samples * np.float32(10 ** (gain_db / 20)), rate)
         return limited, reduction, loudness_lufs(limited, rate)
 
-    gain = target_lufs - measured
-    best = (gain, *render(gain))
-    floor = target_lufs - LOUDNESS_TOLERANCE_LU / 2
     peak_db = 20 * float(np.log10(max(float(np.abs(samples).max()), 1e-9)))
     high = LIMIT_CEILING_DBFS - peak_db + MAX_LIMITER_REDUCTION_DB
+    # The initial normalization must obey the same limiting cap as the make-up search.
+    gain = min(target_lufs - measured, high)
+    best = (gain, *render(gain))
+    floor = target_lufs - LOUDNESS_TOLERANCE_LU / 2
     if best[3] < floor and high > gain:
         best = (high, *render(high))
         if best[3] >= floor:  # reachable within the cap: find the least limiting that does it
@@ -209,7 +210,9 @@ def normalize_loudness(
 
 def loudness_target(plan: SoundPlan) -> float:
     # Keyword-classified items keep kind "sfx"; their category still says UI or ambience.
-    kind = plan.category if plan.category in ("ui", "ambience") else plan.kind
+    kind = (
+        plan.category if plan.kind == "sfx" and plan.category in ("ui", "ambience") else plan.kind
+    )
     return LOUDNESS_TARGET_LUFS.get(kind, LOUDNESS_TARGET_LUFS["sfx"])
 
 
@@ -307,7 +310,7 @@ def failed_checks(metrics: dict[str, float], plan: SoundPlan) -> list[str]:
     if (
         "loudness_target_lufs" in metrics
         and abs(metrics["loudness_lufs"] - metrics["loudness_target_lufs"]) > LOUDNESS_TOLERANCE_LU
-    ):
+    ) or metrics.get("limiter_reduction_db", 0.0) > MAX_LIMITER_REDUCTION_DB:
         failed.append("sound-loudness-match")
     requested = plan.duration_seconds
     if abs(metrics["duration_s"] - requested) > max(0.2 * requested, 0.1):
