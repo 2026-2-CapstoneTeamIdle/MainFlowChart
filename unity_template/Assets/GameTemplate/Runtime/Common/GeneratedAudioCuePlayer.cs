@@ -53,6 +53,9 @@ namespace TeamIdle.GameTemplate.Common
         [SerializeField, Range(1, 100)]
         private int ambienceVolume = 50;
 
+        // Level last shown per group, to tell which slider the user actually moved.
+        private readonly Dictionary<string, int> shownLevels = new();
+
         public IReadOnlyList<Binding> Bindings => bindings;
 
         public void AddBinding(string cue, AudioSource source, bool music, string group = "") =>
@@ -124,21 +127,20 @@ namespace TeamIdle.GameTemplate.Common
         private static int ToLevel(float gain) =>
             Mathf.Clamp(Mathf.RoundToInt(gain * 100f), 1, 100);
 
-        private float GroupGain(string group) =>
-            (
-                group switch
-                {
-                    GameAudioMixer.Music => musicVolume,
-                    GameAudioMixer.Sfx => sfxVolume,
-                    GameAudioMixer.Ui => uiVolume,
-                    GameAudioMixer.Voice => voiceVolume,
-                    GameAudioMixer.Ambience => ambienceVolume,
-                    _ => 50,
-                }
-            ) / 100f;
+        private int GroupLevel(string group) =>
+            group switch
+            {
+                GameAudioMixer.Music => musicVolume,
+                GameAudioMixer.Sfx => sfxVolume,
+                GameAudioMixer.Ui => uiVolume,
+                GameAudioMixer.Voice => voiceVolume,
+                GameAudioMixer.Ambience => ambienceVolume,
+                _ => 50,
+            };
 
         private void SetGroupField(string group, int volume)
         {
+            shownLevels[group] = volume;
             switch (group)
             {
                 case GameAudioMixer.Music:
@@ -178,12 +180,15 @@ namespace TeamIdle.GameTemplate.Common
                 }
                 else
                 {
-                    GameAudioMixer.SetVolume(group, GroupGain(group));
+                    SetGroupField(group, GroupLevel(group));
+                    GameAudioMixer.SetVolume(group, GroupLevel(group) / 100f);
                 }
             }
         }
 
-        // Inspector slider moved during Play mode: push it to the shared mixer.
+        // Inspector slider moved during Play mode: push only the slider that changed. A volume set
+        // through the API below level 1 (e.g. muted at 0) shows as 1 but must stay untouched when
+        // another group's slider moves.
         private void OnValidate()
         {
             if (!Application.isPlaying)
@@ -192,10 +197,13 @@ namespace TeamIdle.GameTemplate.Common
             }
             foreach (var group in Groups)
             {
-                if (!Mathf.Approximately(GameAudioMixer.GetVolume(group), GroupGain(group)))
+                var level = GroupLevel(group);
+                if (shownLevels.TryGetValue(group, out var shown) && shown == level)
                 {
-                    GameAudioMixer.SetVolume(group, GroupGain(group));
+                    continue;
                 }
+                shownLevels[group] = level;
+                GameAudioMixer.SetVolume(group, level / 100f);
             }
         }
 

@@ -37,6 +37,7 @@ CRITERIA = {
     "sound-channel-layout": False,
     "sound-set-duplicate": True,
     "sound-not-placeholder": False,
+    "sound-loudness-match": True,
 }
 
 
@@ -81,6 +82,24 @@ class AssetCheckTest(unittest.TestCase):
             self.assertEqual(qc.metrics["loudness_target_lufs"], -14.0)
             self.assertAlmostEqual(qc.metrics["loudness_lufs"], -14.0, delta=1.0)
             self.assertLessEqual(qc.metrics["peak_dbfs"], -1.0)
+
+    def test_fast_decaying_hit_reaches_target_through_make_up_gain(self):
+        qc = qc_of(impact(gain=0.7) * np.exp(-np.arange(int(0.7 * RATE)) / RATE * 62)[:, None])
+        self.assertEqual(qc.decision, "PASS")
+        self.assertGreater(qc.metrics["limiter_reduction_db"], 0)
+        self.assertAlmostEqual(qc.metrics["loudness_lufs"], -14.0, delta=1.0)
+
+    def test_hit_that_needs_too_much_limiting_is_regenerated(self):
+        t = np.arange(int(0.7 * RATE)) / RATE
+        click = 0.7 * np.random.default_rng(1).uniform(-1, 1, t.size) * np.exp(-t * 300)
+        qc = qc_of(click.astype(np.float32)[:, None])
+        self.assertEqual(qc.decision, "REGENERATE")
+        self.assertIn("sound-loudness-match", qc.failed)
+        self.assertEqual(qc.metrics["limiter_reduction_db"], 12.0)
+
+    def test_keyword_ui_sound_uses_ui_target(self):
+        qc = qc_of(impact(seconds=0.5), plan("click", "ui", 0.5))  # kind "sfx", category "ui"
+        self.assertEqual(qc.metrics["loudness_target_lufs"], -16.0)
 
     def test_music_target_is_quieter_than_sfx(self):
         t = np.arange(4 * RATE) / RATE

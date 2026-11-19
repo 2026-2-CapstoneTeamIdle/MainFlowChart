@@ -136,6 +136,7 @@ uv run --locked python -m unittest tests.test_sound_generation tests.test_sound_
   - Edit 모드에서 바꾸면 씬에 저장되는 시작 볼륨이 된다.
   - Play 모드에서 바꾸면 즉시 반영된다. 이 값은 Play 종료 시 Unity 규칙대로 되돌아간다.
   - 코드에서 바꾼 값(`GameAudioMixer.SetVolume`, 옵션 메뉴 등)도 슬라이더에 반영된다.
+  - Play 중 Inspector에서는 **실제로 움직인 그룹만** 믹서에 적용된다. 코드로 1 미만(예: 0으로 음소거)으로 바꾼 그룹은 슬라이더에 1로 표시되지만, 그 그룹의 슬라이더를 직접 움직이기 전까지 실제 볼륨(0)이 유지된다.
   - 한 세션에서 이미 정해진 그룹 볼륨은 씬을 다시 불러와도 유지되며, 씬에 저장된 시작 볼륨보다 우선한다.
 - 개별 사운드의 AudioSource **Volume**은 그룹 볼륨이 곱해지기 전의 기본값으로 유지된다. 최종 볼륨은 AudioSource Volume × (그룹 값/100) × 전체 볼륨이다.
 
@@ -153,6 +154,10 @@ uv run --locked python -m unittest tests.test_sound_generation tests.test_sound_
 - 측정은 ITU-R BS.1770 integrated loudness다. K-weighting과 400 ms 블록 게이팅을 쓴다. 0.4초보다 짧은 효과음은 클립 전체를 한 블록으로 본다.
 - mono 에셋은 Unity가 양쪽 스피커로 재생하므로 stereo와 같은 기준이 되도록 +3 dB로 계산한다.
 - 목표 gain을 적용한 뒤 피크가 -1.1 dBFS를 넘으면 5 ms look-ahead 리미터로 누른다.
+- 리미터는 피크와 함께 라우드니스도 깎는다. 감쇠가 빠른 타격음은 에너지가 순간적인 시작음에 몰려 있어 특히 많이 깎인다. 그래서 결과가 목표보다 0.5 LU 이상 낮으면, 목표에 도달하는 make-up gain을 이분 탐색한다. 탐색 범위는 리미터 감쇠 **최대 12 dB**까지다.
+- 최종 라우드니스가 목표의 **±1 LU**를 벗어나면 `sound-loudness-match`(필수) 실패로 **REGENERATE** 판정한다. 12 dB 넘게 눌러야 하는 소리는 타격감이 뭉개지므로 정규화로 억지로 맞추지 않는다.
+  - `generate_sound`가 ElevenLabs로 한 번 재생성한다. 그래도 실패하면 절차적 합성으로 대체한다. 절차적 합성 결과는 모든 kind에서 목표 ±0.5 LU 안에 든다.
+- 키워드로 분류된 에셋(`generation_spec` 없음)은 kind가 `sfx`로 남는다. 그래서 목표는 category가 `ui`·`ambience`이면 그 값을 따른다.
 - 측정값(`source_loudness_lufs`, `loudness_lufs`, `normalize_gain_db`, `limiter_reduction_db`)은 `sound_profile.json`의 `metrics`에 남는다.
 - 정규화는 보정(FIX)으로 치지 않는다. 문제없는 에셋은 PASS인 채로 정규화 사본이 적용된다.
 - 그룹 이름은 `game_pipeline/asset_specs.py`의 `mixer_group`과 `GameAudioMixer` 상수가 같아야 하며 `tests/test_unity_template.py`가 검사한다.

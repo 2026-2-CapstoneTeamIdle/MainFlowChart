@@ -31,7 +31,7 @@ Unity GeneratedAssetBinder ── AudioImporter 설정 + AudioSource 생성, Gen
 |---|---|
 | `generate_sound` | ElevenLabs(효과음·환경음·UI·voice → `/v1/sound-generation`, BGM → `/v1/music`) 또는 절차적 합성. 기본 출력 `pcm_44100`(WAV 래핑), 401/403 시 `pcm_24000` 재시도. 에셋 실패 시 절차적 합성으로 대체, 치명 오류(401/403·quota·연결 실패)는 이후 에셋 호출 생략(circuit breaker) |
 | `validate_sound` | G1 기술 QC + G2 DSP 보정 + 세트 중복 검사 + PASS/FIX/REGENERATE/REVIEW 판정 구현 (`sound_pipeline/validation.py`) |
-| `asset_validation_spec.sound_criteria` | `SOUND_CRITERIA` 10개로 채워짐 |
+| `asset_validation_spec.sound_criteria` | `SOUND_CRITERIA` 11개로 채워짐 |
 | 재생성 | `generate_sound` 안에서 **1회**. ElevenLabs 결과에 `check_asset()`(validate_sound와 같은 G1·G2 판정, 기본 `SOUND_CRITERIA`)을 바로 돌려 REGENERATE면 같은 요청으로 다시 생성. 두 번째도 실패하면 절차적 합성으로 대체(`fallback_asset_ids`에 표시). `SOUND_FALLBACK=none`이면 두 번째 결과를 그대로 넘겨 validate_sound가 판정. 절차적 합성은 asset_id 시드로 결정적이라 재시도하지 않음. 그래프 루프·증상 → 프롬프트 수정은 없음. 여전히 REGENERATE·REVIEW인 에셋은 `validated_asset_ids`에서 빠져 **게임에 적용되지 않고** status가 `needs_revision`이 되며, `final_validation`은 `passed`만 통과시킨다 |
 | 후보 선택, G3, G5, G6 | 미구현 |
 
@@ -101,7 +101,7 @@ generate_sound ─▶ 후보 N개 ─▶ G1 기술 QC ─▶ G2 DSP 보정 ─�
 
 ### G1. 기술 QC (자동, 결정적)
 
-> 구현 차이: `sound-true-peak`는 4x 오버샘플 true peak가 아니라 **sample peak** ≤ -1 dBFS + 평평한 피크(동일 샘플 3개 이상) 검사. `sound-duration-match`는 ±20% (최소 0.1 s), BGM 마디 허용 없음. `sound-loop-bar-aligned`, 초저역 비율, mono/stereo 강제는 미구현이며 `sound-channel-layout`은 좌우 상관계수 > 0만 보는 선택(required=false) 기준. 구현에는 아래 표 외에 `sound-set-duplicate`, `sound-not-placeholder`가 추가로 있다. 실제 목록은 `validation.py::SOUND_CRITERIA`가 기준이다.
+> 구현 차이: `sound-true-peak`는 4x 오버샘플 true peak가 아니라 **sample peak** ≤ -1 dBFS + 평평한 피크(동일 샘플 3개 이상) 검사. `sound-duration-match`는 ±20% (최소 0.1 s), BGM 마디 허용 없음. `sound-loop-bar-aligned`, 초저역 비율, mono/stereo 강제는 미구현이며 `sound-channel-layout`은 좌우 상관계수 > 0만 보는 선택(required=false) 기준. 구현에는 아래 표 외에 `sound-set-duplicate`, `sound-not-placeholder`, `sound-loudness-match`(정규화 후 kind별 목표 ±1 LU, 필수)가 추가로 있다. 실제 목록은 `validation.py::SOUND_CRITERIA`가 기준이다.
 
 | criterion_id | 검사 | 기준 (초기값) | 근거 |
 |---|---|---|---|
@@ -119,7 +119,7 @@ generate_sound ─▶ 후보 N개 ─▶ G1 기술 QC ─▶ G2 DSP 보정 ─�
 
 현업의 편집·마스터링 단계. **API 비용 0**이므로 재생성보다 항상 먼저 시도한다.
 
-> 구현됨: DC 제거, 앞 무음 trim(2 ms 여유), 20 ms cubic fade-out, 루프 이음매 크로스페이드(최대 200 ms, 길이 유지), kind별 라우드니스(LUFS) 정규화 + -1.1 dBFS look-ahead 리미터(모든 에셋에 항상 적용, G2 보정 전에 실행). G2→G1을 최대 2회 반복. 클리핑은 리미터가 평평한 피크를 가리기 전 원본에서 판정한다. 미구현: 고역통과, 제로크로싱 정렬, 마디 경계 자르기.
+> 구현됨: DC 제거, 앞 무음 trim(2 ms 여유), 20 ms cubic fade-out, 루프 이음매 크로스페이드(최대 200 ms, 길이 유지), kind별 라우드니스(LUFS) 정규화 + -1.1 dBFS look-ahead 리미터(모든 에셋에 항상 적용, G2 보정 전에 실행). 리미터로 목표에 못 미치면 리미터 감쇠 12 dB 한도 안에서 make-up gain을 이분 탐색하고, 그래도 ±1 LU를 벗어나면 `sound-loudness-match` 실패(REGENERATE). G2→G1을 최대 2회 반복. 클리핑은 리미터가 평평한 피크를 가리기 전 원본에서 판정한다. 미구현: 고역통과, 제로크로싱 정렬, 마디 경계 자르기.
 
 | 증상 (G1 실패) | 보정 |
 |---|---|
@@ -221,7 +221,7 @@ Slop을 가장 확실하게 줄이는 단계.
 | BGM | 30 s~ | — | ✓ | stereo | integrated LUFS | 마디 단위 길이, 보컬 없음, 분위기 일치 |
 | 엔딩·징글 | 2–8 s | — | ✗ | stereo | integrated LUFS | 명확한 끝맺음 |
 
-라우드니스 목표 (구현값, `validation.py::LOUDNESS_TARGET_LUFS`, BS.1770 integrated, 짧은 클립은 전체를 한 블록으로 측정):
+라우드니스 목표 (구현값, `validation.py::LOUDNESS_TARGET_LUFS`, BS.1770 integrated, 짧은 클립은 전체를 한 블록으로 측정, 허용 오차 ±1 LU):
 
 | kind | 목표 (integrated LUFS) |
 |---|---|

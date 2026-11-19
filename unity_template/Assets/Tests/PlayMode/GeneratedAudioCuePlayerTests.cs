@@ -135,6 +135,24 @@ namespace TeamIdle.GameTemplate.FeatureTests
         }
 
         [UnityTest]
+        public IEnumerator InspectorChangeToOtherGroupKeepsApiMute()
+        {
+            root.SetActive(true);
+            yield return null;
+
+            GameAudioMixer.SetVolume(GameAudioMixer.Music, 0f); // muted from code
+            SetSlider("sfxVolume", 80); // then another group's slider moves in the Inspector
+
+            Assert.That(GameAudioMixer.GetVolume(GameAudioMixer.Music), Is.EqualTo(0f));
+            Assert.That(
+                GameAudioMixer.GetVolume(GameAudioMixer.Sfx),
+                Is.EqualTo(0.8f).Within(1e-4f)
+            );
+            GameAudioMixer.SetVolume(GameAudioMixer.Music, GameAudioMixer.DefaultVolume);
+            GameAudioMixer.SetVolume(GameAudioMixer.Sfx, GameAudioMixer.DefaultVolume);
+        }
+
+        [UnityTest]
         public IEnumerator ReenablingDoesNotDuplicateSubscription()
         {
             var before = RaisedHandlerCount();
@@ -160,6 +178,14 @@ namespace TeamIdle.GameTemplate.FeatureTests
             source.clip = AudioClip.Create(cue, 44100, 1, 44100, false);
             player.AddBinding(cue, source, music, group);
             return source;
+        }
+
+        // Simulates an Inspector edit: Unity sets the serialized field, then calls OnValidate.
+        private void SetSlider(string field, int level)
+        {
+            const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Instance;
+            typeof(GeneratedAudioCuePlayer).GetField(field, flags).SetValue(player, level);
+            typeof(GeneratedAudioCuePlayer).GetMethod("OnValidate", flags).Invoke(player, null);
         }
 
         private static int RaisedHandlerCount()

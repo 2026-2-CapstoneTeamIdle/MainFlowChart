@@ -33,6 +33,11 @@ SOUND_CRITERIA: tuple[tuple[str, str, bool], ...] = (
     ("sound-channel-layout", "stereo의 좌우 상관계수 > 0 (mono 합산 시 상쇄 없음)", False),
     ("sound-set-duplicate", "서로 다른 에셋이 같은 파일이 아님", True),
     ("sound-not-placeholder", "절차적 합성 대체물이 아님 (대체물은 사람 리뷰)", False),
+    (
+        "sound-loudness-match",
+        "정규화 후 라우드니스가 kind별 목표의 ±1 LU 이내 (리미터 감쇠 최대 12 dB)",
+        True,
+    ),
 )
 
 ONSET_LIMIT_MS = {"ui": 5.0, "explosion": 20.0}  # other sfx: 10 ms, BGM/ambience: not checked
@@ -46,6 +51,9 @@ FADE_MS = 20.0
 LOUDNESS_TARGET_LUFS = {"sfx": -14.0, "ui": -16.0, "voice": -16.0, "bgm": -18.0, "ambience": -22.0}
 LIMIT_CEILING_DBFS = PEAK_LIMIT_DBFS - 0.1
 LIMITER_WINDOW_MS = 5.0
+LOUDNESS_TOLERANCE_LU = 1.0
+# More limiting than this flattens a hit into a click-less blob; such a take is regenerated.
+MAX_LIMITER_REDUCTION_DB = 12.0
 
 
 class SoundDecodeError(ValueError):
@@ -159,22 +167,49 @@ def _limit(samples: np.ndarray, rate: int) -> tuple[np.ndarray, float]:
 def normalize_loudness(
     samples: np.ndarray, rate: int, target_lufs: float
 ) -> tuple[np.ndarray, dict[str, float]]:
-    """Gain to the target loudness, then limit peaks to the ceiling."""
+    """Gain to the target loudness, then limit peaks to the ceiling.
+
+    Limiting removes loudness again, most on fast-decaying hits whose energy sits in the
+    transient. When that leaves the take short of the target, the make-up gain is searched
+    (loudness rises monotonically with gain) up to MAX_LIMITER_REDUCTION_DB of limiting.
+    """
     measured = loudness_lufs(samples, rate)
     if not np.isfinite(measured):  # silence: nothing to normalize, file-valid fails later
         return samples, {}
-    gained = samples * np.float32(10 ** ((target_lufs - measured) / 20))
-    limited, reduction = _limit(gained, rate)
+
+    def render(gain_db: float) -> tuple[np.ndarray, float, float]:
+        limited, reduction = _limit(samples * np.float32(10 ** (gain_db / 20)), rate)
+        return limited, reduction, loudness_lufs(limited, rate)
+
+    gain = target_lufs - measured
+    best = (gain, *render(gain))
+    floor = target_lufs - LOUDNESS_TOLERANCE_LU / 2
+    peak_db = 20 * float(np.log10(max(float(np.abs(samples).max()), 1e-9)))
+    high = LIMIT_CEILING_DBFS - peak_db + MAX_LIMITER_REDUCTION_DB
+    if best[3] < floor and high > gain:
+        best = (high, *render(high))
+        if best[3] >= floor:  # reachable within the cap: find the least limiting that does it
+            low = gain
+            for _ in range(12):
+                middle = (low + high) / 2
+                candidate = (middle, *render(middle))
+                if candidate[3] >= floor:
+                    high, best = middle, candidate
+                else:
+                    low = middle
+    gain, limited, reduction, reached = best
     return limited, {
         "source_loudness_lufs": round(measured, 2),
         "loudness_target_lufs": target_lufs,
-        "normalize_gain_db": round(target_lufs - measured, 2),
+        "normalize_gain_db": round(gain, 2),
         "limiter_reduction_db": round(reduction, 2),
+        "loudness_lufs": round(reached, 2),
     }
 
 
 def loudness_target(plan: SoundPlan) -> float:
-    kind = "ambience" if plan.category == "ambience" else plan.kind
+    # Keyword-classified items keep kind "sfx"; their category still says UI or ambience.
+    kind = plan.category if plan.category in ("ui", "ambience") else plan.kind
     return LOUDNESS_TARGET_LUFS.get(kind, LOUDNESS_TARGET_LUFS["sfx"])
 
 
@@ -269,6 +304,11 @@ def failed_checks(metrics: dict[str, float], plan: SoundPlan) -> list[str]:
     failed: list[str] = []
     if metrics["peak_dbfs"] <= SILENCE_DBFS:
         return ["sound-file-valid"]
+    if (
+        "loudness_target_lufs" in metrics
+        and abs(metrics["loudness_lufs"] - metrics["loudness_target_lufs"]) > LOUDNESS_TOLERANCE_LU
+    ):
+        failed.append("sound-loudness-match")
     requested = plan.duration_seconds
     if abs(metrics["duration_s"] - requested) > max(0.2 * requested, 0.1):
         failed.append("sound-duration-match")
