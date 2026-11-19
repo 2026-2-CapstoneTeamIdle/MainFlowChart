@@ -10,6 +10,11 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from game_pipeline.gameplay_contracts import (
+    requested_collectible_count,
+    requested_play_minutes,
+    requested_zone_count,
+)
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import LogicAnalysis, WorkflowState
 from mainflow.nodes import analysis_node, logic_analysis_node, parse_input_node, user_input_node
@@ -382,10 +387,43 @@ def test_reject_keeps_cards_and_applies_feedback_to_preview_request(tmp_path: Pa
     payload = json.loads(preview_request.read_text(encoding="utf-8"))
     assert _request_payload()["condition"] in payload["condition"]
     assert "Feature 재구성 요청: 공격은 빼고 탐험 기능을 추가해줘" in payload["condition"]
+    assert payload["condition"].index("공격은 빼고") < payload["condition"].index(
+        _request_payload()["condition"]
+    )
     feedback_record = json.loads(
         (job_root / "feature_revision_feedback.json").read_text(encoding="utf-8")
     )
     assert feedback_record["revision"] == 1
+
+
+def test_latest_reject_numeric_changes_override_earlier_condition(tmp_path: Path):
+    service = _load_service_module()
+    job_root = tmp_path / "job"
+    job_root.mkdir()
+    request_file = job_root / "request.json"
+    request = _request_payload()
+    request["condition"] = "약 5분 게임. 최소 4개 구역. 시간의 파편 12개를 배치한다."
+    request_file.write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
+    job = service.WorkflowJob(
+        job_id="job-id",
+        mode="generate",
+        request_file=request_file,
+        job_root=job_root,
+        feature_revision=2,
+        feature_revision_feedback=[
+            "게임 시간을 약 8분으로 변경",
+            "게임 시간을 약 10분으로 변경하고 6개 구역과 시간의 파편 20개를 배치",
+        ],
+    )
+
+    revised_path = service.WorkflowJobManager._feature_preview_request(job)
+    condition = json.loads(revised_path.read_text(encoding="utf-8"))["condition"]
+
+    assert condition.index("10분") < condition.index("8분") < condition.index("5분")
+    assert requested_play_minutes(condition) == 10
+    assert requested_zone_count(condition, default=3) == 6
+    assert requested_collectible_count(condition) == 20
+    assert json.loads(request_file.read_text(encoding="utf-8"))["condition"] == request["condition"]
 
 
 def test_confirmed_generation_uses_revised_condition(tmp_path: Path):

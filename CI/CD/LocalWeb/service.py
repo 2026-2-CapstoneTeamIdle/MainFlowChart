@@ -936,7 +936,12 @@ class WorkflowJobManager:
             condition = str(payload["condition"]).strip()
         except (OSError, TypeError, KeyError, json.JSONDecodeError) as error:
             raise ValueError(f"원본 Feature 요청을 읽지 못했습니다: {error}") from error
-        payload["condition"] = condition + "\n\nFeature 재구성 요청: " + " / ".join(feedback)
+        payload["condition"] = (
+            "Feature 재구성 요청: "
+            + " / ".join(reversed(feedback))
+            + "\n최신 수정 요청은 원본 Condition보다 우선합니다. "
+            "충돌하는 원본 수치와 기능은 적용하지 않습니다." + "\n\n원본 Condition:\n" + condition
+        )
         preview_request = job.job_root / f"feature_request_{revision:02d}.json"
         _atomic_write_json(preview_request, payload)
         return preview_request
