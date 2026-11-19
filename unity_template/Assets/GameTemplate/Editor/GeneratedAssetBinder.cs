@@ -1095,15 +1095,9 @@ namespace TeamIdle.GameTemplate.Editor
                     .AddBinding(
                         entry.audio_cue,
                         source,
-                        entry.kind == "bgm" || entry.kind == "ambience"
+                        entry.kind == "bgm" || entry.kind == "ambience",
+                        entry.mixer_group
                     );
-            }
-            if (!string.IsNullOrWhiteSpace(entry.mixer_group))
-            {
-                report.warnings.Add(
-                    $"Requested mixer group '{entry.mixer_group}' for {entry.asset_id}; "
-                        + "routing requires an existing project AudioMixer."
-                );
             }
             report.scene_bound_asset_ids.Add(entry.asset_id);
         }

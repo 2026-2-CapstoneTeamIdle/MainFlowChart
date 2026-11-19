@@ -119,7 +119,7 @@ generate_sound ─▶ 후보 N개 ─▶ G1 기술 QC ─▶ G2 DSP 보정 ─�
 
 현업의 편집·마스터링 단계. **API 비용 0**이므로 재생성보다 항상 먼저 시도한다.
 
-> 구현됨: DC 제거, 앞 무음 trim(2 ms 여유), 20 ms cubic fade-out, 루프 이음매 크로스페이드(최대 200 ms, 길이 유지), peak -1.1 dBFS 정규화. G2→G1을 최대 2회 반복. 미구현: 고역통과, 라우드니스(LUFS) 정규화, 제로크로싱 정렬, 마디 경계 자르기.
+> 구현됨: DC 제거, 앞 무음 trim(2 ms 여유), 20 ms cubic fade-out, 루프 이음매 크로스페이드(최대 200 ms, 길이 유지), kind별 라우드니스(LUFS) 정규화 + -1.1 dBFS look-ahead 리미터(모든 에셋에 항상 적용, G2 보정 전에 실행). G2→G1을 최대 2회 반복. 클리핑은 리미터가 평평한 피크를 가리기 전 원본에서 판정한다. 미구현: 고역통과, 제로크로싱 정렬, 마디 경계 자르기.
 
 | 증상 (G1 실패) | 보정 |
 |---|---|
@@ -221,7 +221,18 @@ Slop을 가장 확실하게 줄이는 단계.
 | BGM | 30 s~ | — | ✓ | stereo | integrated LUFS | 마디 단위 길이, 보컬 없음, 분위기 일치 |
 | 엔딩·징글 | 2–8 s | — | ✗ | stereo | integrated LUFS | 명확한 끝맺음 |
 
-라우드니스 목표:
+라우드니스 목표 (구현값, `validation.py::LOUDNESS_TARGET_LUFS`, BS.1770 integrated, 짧은 클립은 전체를 한 블록으로 측정):
+
+| kind | 목표 (integrated LUFS) |
+|---|---|
+| sfx | -14 |
+| ui · voice | -16 |
+| bgm | -18 |
+| ambience | -22 |
+
+Unity 그룹 볼륨 기본값 50(gain 0.5)에서 이 레벨이 그대로 재생된다 (`docs/SoundManager.md` 믹서 그룹 참고).
+
+참고 기준:
 - 플랫폼 기준을 따른다. 참고: Sony ASWG-R001 권장값은 콘솔(홈) -24 LUFS, 모바일·휴대 -18 LUFS. PC·웹 인디 게임은 BGM을 -16 ~ -18 LUFS로 맞추는 경우가 많다.
 - 짧은 효과음은 integrated LUFS가 의미가 없으므로 **peak 또는 short-term 기준**으로 두고, BGM 대비 상대 레벨로 관리한다.
 - 프로젝트 목표 플랫폼이 정해지면 `SOUND_TARGET_PLATFORM` 같은 설정으로 표를 전환한다.
@@ -290,7 +301,7 @@ Slop을 가장 확실하게 줄이는 단계.
 workspace/{project_id}/
 ├─ generated/sounds/
 │  ├─ <stem>.wav (mp3_* 설정 시 .mp3)  # 원본 (stem = suggested_filename)
-│  ├─ processed/<stem>.wav            # G2 보정본 (있으면 게임 적용 대상)
+│  ├─ processed/<stem>.wav            # 라우드니스 정규화 + G2 보정본 (게임 적용 대상)
 │  └─ sound_draft.json
 └─ validation/
    ├─ sound_validation_result.json    # checks, issues, validated_asset_ids, validated_assets, fallback_asset_ids

@@ -21,6 +21,7 @@ from sound_pipeline.validation import (
     check_asset,
     decode,
     encode_wav,
+    loudness_lufs,
 )
 from tests.test_sound_generation import PARSED, item, request
 
@@ -63,7 +64,29 @@ class AssetCheckTest(unittest.TestCase):
     def test_clean_sound_passes_without_fixes(self):
         qc = qc_of(impact())
         self.assertEqual((qc.decision, qc.failed, qc.applied_fixes), ("PASS", [], []))
-        self.assertIsNone(qc.processed_wav)
+        # Loudness normalization is not a repair, but it always produces the copy to apply.
+        self.assertIsNotNone(qc.processed_wav)
+
+    def test_loudness_meter_matches_bs1770_reference(self):
+        t = np.arange(3 * 48000) / 48000
+        tone = np.sin(2 * np.pi * 997 * t)
+        one_channel = np.stack([tone, np.zeros_like(tone)], axis=1).astype(np.float32)
+        self.assertAlmostEqual(loudness_lufs(one_channel, 48000), -3.01, delta=0.1)
+
+    def test_same_kind_assets_end_up_equally_loud(self):
+        quiet = qc_of(impact(gain=0.05))
+        loud = qc_of(impact(gain=0.9, seed=4))
+        for qc in (quiet, loud):
+            self.assertEqual(qc.decision, "PASS")
+            self.assertEqual(qc.metrics["loudness_target_lufs"], -14.0)
+            self.assertAlmostEqual(qc.metrics["loudness_lufs"], -14.0, delta=1.0)
+            self.assertLessEqual(qc.metrics["peak_dbfs"], -1.0)
+
+    def test_music_target_is_quieter_than_sfx(self):
+        t = np.arange(4 * RATE) / RATE
+        tone = (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)[:, None]
+        qc = qc_of(tone, plan("bgm", "bgm", 4.0, loop=True, kind="bgm"))
+        self.assertAlmostEqual(qc.metrics["loudness_lufs"], -18.0, delta=0.5)
 
     def test_padding_peak_and_dc_are_fixed_by_dsp(self):
         qc = qc_of(impact(seconds=0.6, gain=0.99, pad=0.1, dc=0.02))
@@ -72,7 +95,8 @@ class AssetCheckTest(unittest.TestCase):
         self.assertEqual(
             qc.applied_fixes,
             # DC on the padding hides it until the first pass removes the DC.
-            ["remove_dc", "fade_out_20ms", "normalize_peak_-1dbfs", "trim_leading_silence"],
+            # Peaks are already limited during loudness normalization.
+            ["remove_dc", "fade_out_20ms", "trim_leading_silence"],
         )
         fixed, _ = decode(qc.processed_wav, "wav")
         self.assertLessEqual(np.abs(fixed).max(), 10 ** (-1 / 20))
@@ -206,7 +230,10 @@ class ValidateSoundNodeTest(unittest.TestCase):
             profile["assets"][1]["processed_path"], "generated/sounds/processed/shot.wav"
         )
         selected = {asset["asset_id"]: asset for asset in result["validated_assets"]["assets"]}
-        self.assertEqual(selected["hit"]["artifact"]["relative_path"], "generated/sounds/hit.wav")
+        # Even a clean PASS is applied as its loudness-normalized copy.
+        self.assertEqual(
+            selected["hit"]["artifact"]["relative_path"], "generated/sounds/processed/hit.wav"
+        )
         self.assertEqual(
             selected["shot"]["artifact"]["relative_path"], profile["assets"][1]["processed_path"]
         )

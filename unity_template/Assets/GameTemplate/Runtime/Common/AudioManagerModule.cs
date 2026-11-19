@@ -36,12 +36,14 @@ namespace TeamIdle.GameTemplate.Common
         {
             if (musicSource != null)
                 musicSource.volume = Mathf.Clamp01(value);
+            GameAudioMixer.SetVolume(GameAudioMixer.Music, value);
         }
 
         public void SetEffectsVolume(float value)
         {
             if (effectsSource != null)
                 effectsSource.volume = Mathf.Clamp01(value);
+            GameAudioMixer.SetVolume(GameAudioMixer.Sfx, value);
         }
 
         protected override void OnInitialize(GameContext context)

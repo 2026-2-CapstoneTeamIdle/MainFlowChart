@@ -109,13 +109,62 @@ uv run --locked python -m unittest tests.test_sound_generation tests.test_sound_
 
 맞는 큐가 없는 효과음은 재생되지 않고 매니페스트 `warnings`에 남는다.
 
+### 믹서 그룹
+
+종류별 믹서 그룹은 Unity `AudioMixer` 에셋이 아니라 코드(`Runtime/Core/GameAudioMixer.cs`)로 구현한다.
+- `AudioMixer` 에셋과 그룹은 Unity Editor의 Audio Mixer 창에서만 만들 수 있다(공개 API 없음). 자동 생성 파이프라인에서는 사람이 이 작업을 할 수 없다.
+- Web(WebGL) 빌드는 `AudioMixer`에서 그룹 볼륨만 지원하고 이펙트는 지원하지 않는다. 그래서 코드로 만든 그룹 볼륨 표와 기능 차이가 없다.
+
+| 사운드 kind | 그룹 (`generation_spec.mixer_group`) |
+|---|---|
+| bgm | `Music` |
+| sfx | `SFX` |
+| ui | `UI` |
+| voice | `Voice` |
+| ambience | `Ambience` |
+
+- `GeneratedAssetBinder`가 각 사운드의 `mixer_group`을 `GeneratedAudioCuePlayer` 바인딩에 기록한다.
+- 효과음은 재생할 때 그룹 볼륨을 적용한다(`PlayOneShot` volumeScale).
+- 음악·환경음은 `GameAudioMixer.SetVolume(group, value)`가 호출되면 재생 중에도 즉시 볼륨이 바뀐다.
+- `AudioManagerModule.SetMusicVolume` / `SetEffectsVolume`은 각각 `Music` / `SFX` 그룹 볼륨도 바꾼다. 전체 볼륨은 기존대로 `AudioListener.volume`이다.
+- **볼륨 단위**: 그룹 볼륨은 **1–100**, 기본값 **50**이다.
+  - 50은 원본 사운드다. 즉 `validate_sound`가 라우드니스 정규화한 에셋을 그대로 재생하는 레벨이다.
+  - 실제 gain은 값/100이다. 50이면 0.5(−6 dB), 100이면 1.0(+6 dB)이다.
+  - Unity `AudioSource.volume`은 1.0을 넘을 수 없다. 그래서 모든 소리를 기본 50에서 같은 6 dB 헤드룸을 두고 재생해야 100까지 올릴 수 있다. 소리 간 비율은 원본 그대로이고, 전체 크기는 기기 볼륨이 맞춘다.
+  - 코드 API(`GameAudioMixer.SetVolume`, `AudioManagerModule.SetMusicVolume` 등)는 gain(0–1)을 받는다. 0.5가 기본이다.
+- **에디터 조절**: 생성된 씬의 `GeneratedGame/Audio` 오브젝트(`GeneratedAudioCuePlayer`) 인스펙터 **Mixer Group Volume (1-100, 50 = original)**에서 그룹별 슬라이더로 조절한다.
+  - Edit 모드에서 바꾸면 씬에 저장되는 시작 볼륨이 된다.
+  - Play 모드에서 바꾸면 즉시 반영된다. 이 값은 Play 종료 시 Unity 규칙대로 되돌아간다.
+  - 코드에서 바꾼 값(`GameAudioMixer.SetVolume`, 옵션 메뉴 등)도 슬라이더에 반영된다.
+  - 한 세션에서 이미 정해진 그룹 볼륨은 씬을 다시 불러와도 유지되며, 씬에 저장된 시작 볼륨보다 우선한다.
+- 개별 사운드의 AudioSource **Volume**은 그룹 볼륨이 곱해지기 전의 기본값으로 유지된다. 최종 볼륨은 AudioSource Volume × (그룹 값/100) × 전체 볼륨이다.
+
+### 원본 에셋 라우드니스
+
+`validate_sound`는 모든 에셋을 kind별 목표 라우드니스로 정규화한 사본(`generated/sounds/processed/<stem>.wav`)을 만들고, 게임에는 항상 이 사본을 적용한다. 같은 kind의 에셋은 같은 크기로 들리고, 그룹 슬라이더가 모두 50인 기본 믹스에서도 효과음이 음악보다 앞에 들린다.
+
+| kind | 목표 (integrated LUFS) |
+|---|---|
+| sfx | -14 |
+| ui · voice | -16 |
+| bgm | -18 |
+| ambience | -22 |
+
+- 측정은 ITU-R BS.1770 integrated loudness다. K-weighting과 400 ms 블록 게이팅을 쓴다. 0.4초보다 짧은 효과음은 클립 전체를 한 블록으로 본다.
+- mono 에셋은 Unity가 양쪽 스피커로 재생하므로 stereo와 같은 기준이 되도록 +3 dB로 계산한다.
+- 목표 gain을 적용한 뒤 피크가 -1.1 dBFS를 넘으면 5 ms look-ahead 리미터로 누른다.
+- 측정값(`source_loudness_lufs`, `loudness_lufs`, `normalize_gain_db`, `limiter_reduction_db`)은 `sound_profile.json`의 `metrics`에 남는다.
+- 정규화는 보정(FIX)으로 치지 않는다. 문제없는 에셋은 PASS인 채로 정규화 사본이 적용된다.
+- 그룹 이름은 `game_pipeline/asset_specs.py`의 `mixer_group`과 `GameAudioMixer` 상수가 같아야 하며 `tests/test_unity_template.py`가 검사한다.
+- 덕킹, 리버브 같은 그룹 이펙트는 없다.
+
 같은 큐에 사운드가 여러 개 연결되면 음악은 첫 번째 트랙 하나만 재생하고(다른 음악은 모두 정지), 효과음은 매번 하나를 무작위로 골라 재생한다.
 
 큐 분류는 키워드 매칭이다. 영문 키워드는 단어 단위로만 맞추고(`ui`가 `guitar`·`build`에 걸리지 않음), `피해`·`사망`·`clear`처럼 뜻이 여러 개인 단어는 `피해를 입`·`플레이어 사망`·`stage clear` 같은 구문으로만 맞춘다.
 
 ## 6. 현재 한계
 
-- `validate_sound`는 `sound_pipeline/SoundValidationPlan.md`의 G1(기술 QC)·G2(DSP 보정)·중복 검사·판정까지 구현돼 있다 (`sound_pipeline/validation.py`). 결과는 `validation/sound_validation_result.json`·`validation/sound_profile.json`, 보정본은 `generated/sounds/processed/<asset>.wav`에 저장한다. `mp3_*` 형식을 쓸 때만 MP3 디코딩에 ffmpeg가 필요하다(기본 PCM/WAV는 필요 없음). Docker 이미지에는 포함돼 있지만 Windows에서 `uv run`으로 실행하면 직접 설치해 PATH에 넣어야 한다 (예: `winget install Gyan.FFmpeg`). ffmpeg가 없으면 MP3 에셋은 결함으로 보지 않고 `sound-validator-unavailable` issue와 함께 REVIEW로 둔다.
+- `validate_sound`는 `sound_pipeline/SoundValidationPlan.md`의 G1(기술 QC)·G2(DSP 보정)·중복 검사·판정까지 구현돼 있다 (`sound_pipeline/validation.py`). 결과는 `validation/sound_validation_result.json`·`validation/sound_profile.json`, 라우드니스 정규화·보정본은 `generated/sounds/processed/<asset>.wav`에 저장하며 게임에는 이 파일을 적용한다. `mp3_*` 형식을 쓸 때만 MP3 디코딩에 ffmpeg가 필요하다(기본 PCM/WAV는 필요 없음). Docker 이미지에는 포함돼 있지만 Windows에서 `uv run`으로 실행하면 직접 설치해 PATH에 넣어야 한다 (예: `winget install Gyan.FFmpeg`). ffmpeg가 없으면 MP3 에셋은 결함으로 보지 않고 `sound-validator-unavailable` issue와 함께 REVIEW로 둔다.
 - 절차적 합성 대체물도 결정적 검사를 통과하면 PASS/FIX로 적용되고, `sound_validation_result.json`의 `fallback_asset_ids`에 표시된다.
 - G3(내용 적합성 모델)·후보 선택·G5 믹스 테스트·라우드니스 위계는 아직 없다. 재생성은 `generate_sound` 안의 1회뿐이므로, `validate_sound`에서 REGENERATE가 나오면(예: 중복, binding key 불일치) 그 에셋은 빠진 채로 적용되고 최종 검증은 실패한다.
 - 프롬프트에는 요청서의 한국어 설명과 조건이 그대로 들어간다. 영어 번역 단계를 추가하면 ElevenLabs 결과가 더 안정적일 수 있다.

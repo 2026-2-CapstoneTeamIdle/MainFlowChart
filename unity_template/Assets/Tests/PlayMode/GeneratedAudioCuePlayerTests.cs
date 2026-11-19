@@ -80,6 +80,61 @@ namespace TeamIdle.GameTemplate.FeatureTests
         }
 
         [UnityTest]
+        public IEnumerator MusicFollowsItsMixerGroupVolume()
+        {
+            var bgm = AddSource(GameAudioCues.SceneStart, true, GameAudioMixer.Music);
+            var other = AddSource(GameAudioCues.GameClear, true, GameAudioMixer.Ambience);
+            root.SetActive(true);
+            yield return null;
+
+            GameAudioMixer.SetVolume(GameAudioMixer.Music, 0.25f);
+
+            Assert.That(bgm.volume, Is.EqualTo(0.25f).Within(1e-4f));
+            Assert.That(other.volume, Is.EqualTo(1f));
+            GameAudioMixer.SetVolume(GameAudioMixer.Music, GameAudioMixer.DefaultVolume);
+        }
+
+        [UnityTest]
+        public IEnumerator SourceVolumeIsKeptAsBaseUnderGroupVolume()
+        {
+            var bgm = AddSource(GameAudioCues.SceneStart, true, GameAudioMixer.Music);
+            bgm.volume = 0.5f; // set in the Inspector after binding
+            root.SetActive(true);
+            yield return null;
+
+            GameAudioMixer.SetVolume(GameAudioMixer.Music, 0.5f);
+
+            Assert.That(bgm.volume, Is.EqualTo(0.25f).Within(1e-4f));
+            GameAudioMixer.SetVolume(GameAudioMixer.Music, GameAudioMixer.DefaultVolume);
+        }
+
+        [UnityTest]
+        public IEnumerator DefaultLevelFiftyPlaysAtHalfGain()
+        {
+            var bgm = AddSource(GameAudioCues.SceneStart, true, GameAudioMixer.Voice);
+            root.SetActive(true);
+            yield return null;
+
+            Assert.That(bgm.volume, Is.EqualTo(0.5f).Within(1e-4f));
+        }
+
+        [UnityTest]
+        public IEnumerator CodeVolumeChangeIsMirroredToInspectorSlider()
+        {
+            root.SetActive(true);
+            yield return null;
+
+            GameAudioMixer.SetVolume(GameAudioMixer.Sfx, 0.4f);
+
+            var slider = typeof(GeneratedAudioCuePlayer).GetField(
+                "sfxVolume",
+                BindingFlags.NonPublic | BindingFlags.Instance
+            );
+            Assert.That((int)slider.GetValue(player), Is.EqualTo(40));
+            GameAudioMixer.SetVolume(GameAudioMixer.Sfx, GameAudioMixer.DefaultVolume);
+        }
+
+        [UnityTest]
         public IEnumerator ReenablingDoesNotDuplicateSubscription()
         {
             var before = RaisedHandlerCount();
@@ -96,14 +151,14 @@ namespace TeamIdle.GameTemplate.FeatureTests
             Assert.That(RaisedHandlerCount(), Is.EqualTo(before));
         }
 
-        private AudioSource AddSource(string cue, bool music)
+        private AudioSource AddSource(string cue, bool music, string group = "")
         {
             var source = new GameObject(cue).AddComponent<AudioSource>();
             source.transform.SetParent(root.transform);
             source.playOnAwake = false;
             source.loop = music;
             source.clip = AudioClip.Create(cue, 44100, 1, 44100, false);
-            player.AddBinding(cue, source, music);
+            player.AddBinding(cue, source, music, group);
             return source;
         }
 
