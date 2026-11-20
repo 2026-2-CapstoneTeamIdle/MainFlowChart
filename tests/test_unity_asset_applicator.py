@@ -244,6 +244,32 @@ class UnityAssetApplicatorTest(unittest.TestCase):
             {"player_sprite", "survivor_bgm"},
         )
 
+        # Diagnostic builds may add rejected drafts, but must keep normalized selections.
+        diagnostic = UnityAssetApplicator(self.manager).apply(
+            self.project_id,
+            image_request,
+            sound_request,
+            image_draft,
+            sound_draft,
+            image_validation,
+            sound_validation,
+            include_unvalidated_drafts=True,
+        )
+        diagnostic_bgm = next(
+            entry for entry in diagnostic.manifest["entries"] if entry["asset_id"] == "survivor_bgm"
+        )
+        self.assertTrue(diagnostic_bgm["unity_path"].endswith(".wav"))
+        self.assertEqual(
+            self.manager.read_project_file(
+                self.project_id, "game/unity_project/" + diagnostic_bgm["unity_path"]
+            ),
+            b"corrected-wav",
+        )
+        self.assertEqual(diagnostic.applied_image_asset_ids, ["enemy_sprite", "player_sprite"])
+        self.assertTrue(
+            any("enemy_sprite" in warning for warning in diagnostic.manifest["warnings"])
+        )
+
         placeholder_draft = cast(
             ImageDraft,
             {**image_draft, "notes": ["generator=placeholder"]},

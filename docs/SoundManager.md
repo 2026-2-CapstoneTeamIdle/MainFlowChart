@@ -160,6 +160,7 @@ uv run --locked python -m unittest tests.test_sound_generation tests.test_sound_
 - 키워드로 분류된 에셋(`generation_spec` 없음)은 kind가 `sfx`로 남는다. 그래서 목표는 category가 `ui`·`ambience`이면 그 값을 따른다.
 - 측정값(`source_loudness_lufs`, `loudness_lufs`, `normalize_gain_db`, `limiter_reduction_db`)은 `sound_profile.json`의 `metrics`에 남는다.
 - 정규화는 보정(FIX)으로 치지 않는다. 문제없는 에셋은 PASS인 채로 정규화 사본이 적용된다.
+- 처리 순서는 원본 클리핑 검사 → DSP 보정(DC 제거·무음 트리밍·페이드·루프 연결) → 최종 라우드니스 정규화·리미터 → 최종 검증이다. 보정 전에는 리미터를 적용하지 않으므로 감쇠가 누적되지 않는다. 정규화 후 피크·꼬리·루프 연결부도 다시 검사한다.
 - 그룹 이름은 `game_pipeline/asset_specs.py`의 `mixer_group`과 `GameAudioMixer` 상수가 같아야 하며 `tests/test_unity_template.py`가 검사한다.
 - 덕킹, 리버브 같은 그룹 이펙트는 없다.
 

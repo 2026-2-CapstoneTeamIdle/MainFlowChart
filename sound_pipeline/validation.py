@@ -398,17 +398,23 @@ def check_asset(
 
     # Clipping is judged on the raw take: the limiter's smooth gain would hide flat peaks.
     source_clipped = measure(samples, rate)["clipped_runs"] > 0
-    samples, loudness = normalize_loudness(samples, rate, loudness_target(plan))
 
     # Two G2 passes: one repair can expose another (DC removal reveals padded silence).
     for _ in range(2):
-        failed = [c for c in failed_checks(measure(samples, rate), plan) if c in criteria]
+        # Peak control belongs to the final normalization, after all waveform repairs.
+        failed = [
+            c
+            for c in failed_checks(measure(samples, rate), plan)
+            if c in criteria and c != "sound-true-peak"
+        ]
         if not failed or failed == ["sound-file-valid"]:
             break
         samples, fixes = apply_fixes(samples, rate, failed, plan.loop)
         if not fixes:
             break
         qc.applied_fixes += fixes
+    # Normalize only the repaired waveform; never feed a limited result into another limiter.
+    samples, loudness = normalize_loudness(samples, rate, loudness_target(plan))
     # Loudness normalization is not a repair (PASS stays PASS) but always yields the copy to apply.
     if qc.applied_fixes or loudness:
         qc.processed_wav = encode_wav(samples, rate)

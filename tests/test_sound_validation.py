@@ -23,6 +23,7 @@ from sound_pipeline.validation import (
     encode_wav,
     failed_checks,
     loudness_lufs,
+    normalize_loudness,
 )
 from tests.test_sound_generation import PARSED, item, request
 
@@ -63,6 +64,24 @@ def qc_of(samples, sound_plan=None, placeholder=False):
 
 
 class AssetCheckTest(unittest.TestCase):
+    def test_short_ui_sound_is_normalized_after_tail_repair(self):
+        seconds = 0.04
+        t = np.arange(int(seconds * RATE)) / RATE
+        samples = (0.15 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)[:, None]
+        with mock.patch(
+            "sound_pipeline.validation.normalize_loudness", wraps=normalize_loudness
+        ) as normalize:
+            qc = qc_of(samples, plan("click", "ui", seconds, kind="ui"))
+        # One final normalization must receive the faded waveform, not an already limited take.
+        self.assertEqual(normalize.call_count, 1)
+        self.assertEqual(float(normalize.call_args.args[0][-1, 0]), 0.0)
+        self.assertEqual(qc.decision, "FIX")
+        self.assertIn("fade_out_20ms", qc.applied_fixes)
+        saved, rate = decode(qc.processed_wav, "wav")
+        self.assertAlmostEqual(loudness_lufs(saved, rate), -16.0, delta=0.1)
+        self.assertLessEqual(qc.metrics["peak_dbfs"], -1.0)
+        self.assertEqual(qc.failed, [])
+
     def test_clean_sound_passes_without_fixes(self):
         qc = qc_of(impact())
         self.assertEqual((qc.decision, qc.failed, qc.applied_fixes), ("PASS", [], []))
@@ -149,7 +168,7 @@ class AssetCheckTest(unittest.TestCase):
         self.assertEqual(
             qc.applied_fixes,
             # DC on the padding hides it until the first pass removes the DC.
-            # Peaks are already limited during loudness normalization.
+            # Peak limiting is deferred to the final loudness normalization.
             ["remove_dc", "fade_out_20ms", "trim_leading_silence"],
         )
         fixed, _ = decode(qc.processed_wav, "wav")

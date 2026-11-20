@@ -214,7 +214,11 @@ class UnityAssetApplicator:
                 "Diagnostic project includes generated but unvalidated "
                 f"{asset_type} assets: " + ", ".join(unvalidated)
             )
-        return draft_assets, draft_ids
+        # Keep validated replacements (including normalized audio) in diagnostic builds.
+        selected_by_id = {str(asset["asset_id"]): asset for asset in selected}
+        return [
+            selected_by_id.get(str(asset["asset_id"]), asset) for asset in draft_assets
+        ], draft_ids
 
     @staticmethod
     def _selected_assets(
