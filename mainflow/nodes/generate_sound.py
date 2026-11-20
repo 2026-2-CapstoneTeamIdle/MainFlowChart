@@ -18,12 +18,23 @@ from mainflow.contracts import (
 )
 from mainflow.nodes._common import log
 from sound_pipeline import (
+    ProviderResult,
+    SoundPlan,
     SoundProviderError,
     audio_duration,
     fallback_provider,
     plan_sound_assets,
     primary_provider,
 )
+from sound_pipeline.validation import SOUND_CRITERIA, check_asset
+
+_QC_CRITERIA = {criterion_id: required for criterion_id, _, required in SOUND_CRITERIA}
+
+
+def _qc_failures(result: ProviderResult, plan: SoundPlan) -> list[str]:
+    """Required G1 failures that G2 cannot repair: the same check validate_sound runs."""
+    qc = check_asset(result.audio, result.file_format, plan, _QC_CRITERIA, placeholder=False)
+    return qc.failed if qc.decision == "REGENERATE" else []
 
 
 # Node 계약
@@ -64,6 +75,17 @@ def generate_sound_node(
             if tripped is not None:  # circuit breaker: don't wait out the same failure per asset
                 raise SoundProviderError(f"이전 에셋 오류로 호출 생략 - {tripped}")
             result = provider.generate(plan)
+            # Procedural output is seeded per asset, so only a non-deterministic provider retries.
+            failures = _qc_failures(result, plan) if provider.name != "procedural" else []
+            if failures:
+                notes.append(f"{plan.asset_id}: 기술 QC 실패({', '.join(failures)})로 1회 재생성")
+                result = provider.generate(plan)
+                failures = _qc_failures(result, plan)
+            if failures:
+                if fallback is not None and fallback.name != provider.name:
+                    raise SoundProviderError(f"재생성 후에도 기술 QC 실패: {', '.join(failures)}")
+                # No fallback: keep the take so validate_sound reports the defect.
+                notes.append(f"{plan.asset_id}: 재생성 후에도 기술 QC 실패, 대체 없음")
         except SoundProviderError as error:
             if error.fatal:
                 tripped = error

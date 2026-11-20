@@ -15,12 +15,15 @@ import numpy as np
 
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.nodes.validate_sound import validate_sound_node
-from sound_pipeline.planner import SoundPlan
+from sound_pipeline.planner import SoundPlan, plan_sound_assets
 from sound_pipeline.validation import (
     SoundDecoderUnavailable,
     check_asset,
     decode,
     encode_wav,
+    failed_checks,
+    loudness_lufs,
+    normalize_loudness,
 )
 from tests.test_sound_generation import PARSED, item, request
 
@@ -36,6 +39,7 @@ CRITERIA = {
     "sound-channel-layout": False,
     "sound-set-duplicate": True,
     "sound-not-placeholder": False,
+    "sound-loudness-match": True,
 }
 
 
@@ -60,10 +64,102 @@ def qc_of(samples, sound_plan=None, placeholder=False):
 
 
 class AssetCheckTest(unittest.TestCase):
+    def test_short_ui_sound_is_normalized_after_tail_repair(self):
+        seconds = 0.04
+        t = np.arange(int(seconds * RATE)) / RATE
+        samples = (0.15 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)[:, None]
+        with mock.patch(
+            "sound_pipeline.validation.normalize_loudness", wraps=normalize_loudness
+        ) as normalize:
+            qc = qc_of(samples, plan("click", "ui", seconds, kind="ui"))
+        # One final normalization must receive the faded waveform, not an already limited take.
+        self.assertEqual(normalize.call_count, 1)
+        self.assertEqual(float(normalize.call_args.args[0][-1, 0]), 0.0)
+        self.assertEqual(qc.decision, "FIX")
+        self.assertIn("fade_out_20ms", qc.applied_fixes)
+        saved, rate = decode(qc.processed_wav, "wav")
+        self.assertAlmostEqual(loudness_lufs(saved, rate), -16.0, delta=0.1)
+        self.assertLessEqual(qc.metrics["peak_dbfs"], -1.0)
+        self.assertEqual(qc.failed, [])
+
     def test_clean_sound_passes_without_fixes(self):
         qc = qc_of(impact())
         self.assertEqual((qc.decision, qc.failed, qc.applied_fixes), ("PASS", [], []))
-        self.assertIsNone(qc.processed_wav)
+        # Loudness normalization is not a repair, but it always produces the copy to apply.
+        self.assertIsNotNone(qc.processed_wav)
+
+    def test_loudness_meter_matches_bs1770_reference(self):
+        t = np.arange(3 * 48000) / 48000
+        tone = np.sin(2 * np.pi * 997 * t)
+        one_channel = np.stack([tone, np.zeros_like(tone)], axis=1).astype(np.float32)
+        self.assertAlmostEqual(loudness_lufs(one_channel, 48000), -3.01, delta=0.1)
+
+    def test_same_kind_assets_end_up_equally_loud(self):
+        quiet = qc_of(impact(gain=0.05))
+        loud = qc_of(impact(gain=0.9, seed=4))
+        for qc in (quiet, loud):
+            self.assertEqual(qc.decision, "PASS")
+            self.assertEqual(qc.metrics["loudness_target_lufs"], -14.0)
+            self.assertAlmostEqual(qc.metrics["loudness_lufs"], -14.0, delta=1.0)
+            self.assertLessEqual(qc.metrics["peak_dbfs"], -1.0)
+
+    def test_fast_decaying_hit_reaches_target_through_make_up_gain(self):
+        qc = qc_of(impact(gain=0.7) * np.exp(-np.arange(int(0.7 * RATE)) / RATE * 62)[:, None])
+        self.assertEqual(qc.decision, "PASS")
+        self.assertGreater(qc.metrics["limiter_reduction_db"], 0)
+        self.assertAlmostEqual(qc.metrics["loudness_lufs"], -14.0, delta=1.0)
+
+    def test_hit_that_needs_too_much_limiting_is_regenerated(self):
+        t = np.arange(int(0.7 * RATE)) / RATE
+        click = 0.7 * np.random.default_rng(1).uniform(-1, 1, t.size) * np.exp(-t * 300)
+        qc = qc_of(click.astype(np.float32)[:, None])
+        self.assertEqual(qc.decision, "REGENERATE")
+        self.assertIn("sound-loudness-match", qc.failed)
+        self.assertEqual(qc.metrics["limiter_reduction_db"], 12.0)
+
+    def test_keyword_ui_sound_uses_ui_target(self):
+        qc = qc_of(impact(seconds=0.5), plan("click", "ui", 0.5))  # kind "sfx", category "ui"
+        self.assertEqual(qc.metrics["loudness_target_lufs"], -16.0)
+
+    def test_initial_normalization_gain_respects_limiter_cap(self):
+        t = np.arange(int(0.7 * RATE)) / RATE
+        samples = (0.025 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        fade = int(0.02 * RATE)
+        samples[-fade:] *= np.linspace(1, 0, fade) ** 3
+        samples[int(0.1 * RATE)] = 0.8
+        qc = qc_of(samples[:, None])
+        self.assertLessEqual(qc.metrics["limiter_reduction_db"], 12.0)
+        self.assertEqual(qc.decision, "REGENERATE")
+        self.assertIn("sound-loudness-match", qc.failed)
+
+    def test_final_checks_reject_excess_limiting_even_at_target_loudness(self):
+        metrics = qc_of(impact()).metrics
+        metrics["loudness_lufs"] = metrics["loudness_target_lufs"]
+        metrics["limiter_reduction_db"] = 12.01
+        self.assertIn("sound-loudness-match", failed_checks(metrics, plan()))
+        metrics["limiter_reduction_db"] = 12.0
+        self.assertNotIn("sound-loudness-match", failed_checks(metrics, plan()))
+
+    def test_explicit_bgm_kind_overrides_menu_keywords_for_loudness(self):
+        asset = item("menu_track", "Menu", "Calm looping backdrop")
+        asset["generation_spec"] = {
+            "kind": "bgm",
+            "loop": True,
+            "target_duration_seconds": 4.0,
+            "mixer_group": "Music",
+        }
+        sound_plan = plan_sound_assets(request(asset), PARSED)[0]
+        t = np.arange(4 * RATE) / RATE
+        samples = (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)[:, None]
+        qc = qc_of(samples, sound_plan)
+        self.assertEqual(qc.metrics["loudness_target_lufs"], -18.0)
+        self.assertAlmostEqual(qc.metrics["loudness_lufs"], -18.0, delta=0.5)
+
+    def test_music_target_is_quieter_than_sfx(self):
+        t = np.arange(4 * RATE) / RATE
+        tone = (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)[:, None]
+        qc = qc_of(tone, plan("bgm", "bgm", 4.0, loop=True, kind="bgm"))
+        self.assertAlmostEqual(qc.metrics["loudness_lufs"], -18.0, delta=0.5)
 
     def test_padding_peak_and_dc_are_fixed_by_dsp(self):
         qc = qc_of(impact(seconds=0.6, gain=0.99, pad=0.1, dc=0.02))
@@ -72,7 +168,8 @@ class AssetCheckTest(unittest.TestCase):
         self.assertEqual(
             qc.applied_fixes,
             # DC on the padding hides it until the first pass removes the DC.
-            ["remove_dc", "fade_out_20ms", "normalize_peak_-1dbfs", "trim_leading_silence"],
+            # Peak limiting is deferred to the final loudness normalization.
+            ["remove_dc", "fade_out_20ms", "trim_leading_silence"],
         )
         fixed, _ = decode(qc.processed_wav, "wav")
         self.assertLessEqual(np.abs(fixed).max(), 10 ** (-1 / 20))
@@ -93,6 +190,12 @@ class AssetCheckTest(unittest.TestCase):
         samples[-200:, 0] = np.random.default_rng(3).uniform(-0.5, 0.5, 200)  # cut mid-sound
         qc = qc_of(samples)
         self.assertEqual(qc.decision, "FIX")
+        self.assertIn("fade_out_20ms", qc.applied_fixes)
+
+    def test_ui_kind_from_generation_spec_gets_onset_and_tail_checks(self):
+        samples = impact(seconds=0.5, pad=0.2)[: int(0.5 * RATE)]  # 200 ms silence, cut tail
+        qc = qc_of(samples, plan("click", "ui", 0.5, kind="ui"))
+        self.assertIn("trim_leading_silence", qc.applied_fixes)
         self.assertIn("fade_out_20ms", qc.applied_fixes)
 
     def test_loop_seam_click_is_crossfaded(self):
@@ -200,7 +303,10 @@ class ValidateSoundNodeTest(unittest.TestCase):
             profile["assets"][1]["processed_path"], "generated/sounds/processed/shot.wav"
         )
         selected = {asset["asset_id"]: asset for asset in result["validated_assets"]["assets"]}
-        self.assertEqual(selected["hit"]["artifact"]["relative_path"], "generated/sounds/hit.wav")
+        # Even a clean PASS is applied as its loudness-normalized copy.
+        self.assertEqual(
+            selected["hit"]["artifact"]["relative_path"], "generated/sounds/processed/hit.wav"
+        )
         self.assertEqual(
             selected["shot"]["artifact"]["relative_path"], profile["assets"][1]["processed_path"]
         )

@@ -73,6 +73,7 @@ SFX_DURATIONS: dict[SfxCategory, float] = {
     "ambience": 10.0,
     "action": 0.9,
 }
+SOUND_EFFECTS_MAX_SECONDS = 30.0  # ElevenLabs Sound Effects cap; every non-BGM asset uses it
 
 
 @dataclass(frozen=True)
@@ -101,14 +102,18 @@ def _text(item: AssetGenerationItem) -> str:
     return f"{item['purpose']} {item['description']}".lower()
 
 
+def _sfx_category(text: str) -> SfxCategory:
+    for category, keywords in SFX_CATEGORY_KEYWORDS:
+        if has_keyword(text, keywords):
+            return category
+    return "action"
+
+
 def classify(item: AssetGenerationItem) -> tuple[SoundKind, str]:
     text = _text(item)
     if has_keyword(text, BGM_KEYWORDS):
         return "bgm", "bgm"
-    for category, keywords in SFX_CATEGORY_KEYWORDS:
-        if has_keyword(text, keywords):
-            return "sfx", category
-    return "sfx", "action"
+    return "sfx", _sfx_category(text)
 
 
 def _file_stem(item: AssetGenerationItem) -> str:
@@ -134,6 +139,9 @@ def plan_sound_assets(request: AssetGenerationRequest, parsed: ParsedRequest) ->
             category = kind
         elif kind == "voice":
             category = "action"
+        elif kind == "sfx" and category == "bgm":
+            # The spec says one-shot even though the text mentions music ("테마", "ost").
+            category = _sfx_category(text)
         if kind == "bgm":
             loop = (
                 generation_spec["loop"]
@@ -161,10 +169,13 @@ def plan_sound_assets(request: AssetGenerationRequest, parsed: ParsedRequest) ->
                 if generation_spec
                 else category == "ambience" or has_keyword(text, LOOP_KEYWORDS)
             )
-            duration = (
+            # Clamp so the plan (and validation) equals what the endpoint is actually asked for;
+            # a loop (60 s ambience spec) just repeats sooner.
+            duration = min(
                 generation_spec["target_duration_seconds"]
                 if generation_spec
-                else SFX_DURATIONS[category]  # type: ignore[index]
+                else SFX_DURATIONS[category],  # type: ignore[index]
+                SOUND_EFFECTS_MAX_SECONDS,
             )
             parts = [
                 (

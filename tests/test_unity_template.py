@@ -12,6 +12,23 @@ TEMPLATE_ROOT = REPOSITORY_ROOT / "unity_template"
 
 
 class UnityTemplateTest(unittest.TestCase):
+    def test_sound_mixer_groups_match_runtime_mixer_constants(self) -> None:
+        from game_pipeline.asset_specs import build_sound_generation_spec
+
+        planned = {
+            build_sound_generation_spec("x", "x", kind_override=kind)["mixer_group"]
+            for kind in ("bgm", "sfx", "ui", "voice", "ambience")
+        }
+        source = (TEMPLATE_ROOT / "Assets/GameTemplate/Runtime/Core/GameAudioMixer.cs").read_text(
+            encoding="utf-8"
+        )
+        runtime = set(re.findall(r'public const string \w+ = "([^"]+)";', source))
+        self.assertEqual(planned, runtime)
+        binder = (TEMPLATE_ROOT / "Assets/GameTemplate/Editor/GeneratedAssetBinder.cs").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("entry.mixer_group", binder)
+
     def test_game_audio_cues_include_tower_defense_events(self) -> None:
         source = (TEMPLATE_ROOT / "Assets/GameTemplate/Runtime/Core/GameAudioCues.cs").read_text(
             encoding="utf-8"

@@ -33,6 +33,11 @@ SOUND_CRITERIA: tuple[tuple[str, str, bool], ...] = (
     ("sound-channel-layout", "stereo의 좌우 상관계수 > 0 (mono 합산 시 상쇄 없음)", False),
     ("sound-set-duplicate", "서로 다른 에셋이 같은 파일이 아님", True),
     ("sound-not-placeholder", "절차적 합성 대체물이 아님 (대체물은 사람 리뷰)", False),
+    (
+        "sound-loudness-match",
+        "정규화 후 라우드니스가 kind별 목표의 ±1 LU 이내 (리미터 감쇠 최대 12 dB)",
+        True,
+    ),
 )
 
 ONSET_LIMIT_MS = {"ui": 5.0, "explosion": 20.0}  # other sfx: 10 ms, BGM/ambience: not checked
@@ -40,6 +45,15 @@ PEAK_LIMIT_DBFS = -1.0
 SILENCE_DBFS = -50.0
 TAIL_DBFS = -60.0
 FADE_MS = 20.0
+
+# Every asset is normalized to its kind's loudness so assets of a kind match and the default
+# Unity mix (all group sliders at 50) has feedback sounds above music.
+LOUDNESS_TARGET_LUFS = {"sfx": -14.0, "ui": -16.0, "voice": -16.0, "bgm": -18.0, "ambience": -22.0}
+LIMIT_CEILING_DBFS = PEAK_LIMIT_DBFS - 0.1
+LIMITER_WINDOW_MS = 5.0
+LOUDNESS_TOLERANCE_LU = 1.0
+# More limiting than this flattens a hit into a click-less blob; such a take is regenerated.
+MAX_LIMITER_REDUCTION_DB = 12.0
 
 
 class SoundDecodeError(ValueError):
@@ -65,6 +79,141 @@ class AssetQC:
 
 def _db(value: float) -> float:
     return round(20 * float(np.log10(max(value, 1e-9))), 2)
+
+
+def _biquad_power(freqs: np.ndarray, rate: int, b: tuple, a: tuple) -> np.ndarray:
+    z = np.exp(-1j * 2 * np.pi * freqs / rate)
+    return np.abs((b[0] + b[1] * z + b[2] * z**2) / (a[0] + a[1] * z + a[2] * z**2)) ** 2
+
+
+def _k_weighting_power(freqs: np.ndarray, rate: int) -> np.ndarray:
+    """|H|^2 of the BS.1770 K-weighting (high shelf +4 dB @ 1.5 kHz, high-pass @ 38 Hz)."""
+    w0, gain = 2 * np.pi * 1500 / rate, 10 ** (4.0 / 40)
+    cos, alpha = np.cos(w0), np.sin(w0) / np.sqrt(2)  # Q = 1/sqrt(2)
+    root = 2 * np.sqrt(gain) * alpha
+    shelf = _biquad_power(
+        freqs,
+        rate,
+        (
+            gain * ((gain + 1) + (gain - 1) * cos + root),
+            -2 * gain * ((gain - 1) + (gain + 1) * cos),
+            gain * ((gain + 1) + (gain - 1) * cos - root),
+        ),
+        (
+            (gain + 1) - (gain - 1) * cos + root,
+            2 * ((gain - 1) - (gain + 1) * cos),
+            (gain + 1) - (gain - 1) * cos - root,
+        ),
+    )
+    w0 = 2 * np.pi * 38 / rate
+    cos, alpha = np.cos(w0), np.sin(w0) / (2 * 0.5)  # Q = 0.5
+    high_pass = _biquad_power(
+        freqs,
+        rate,
+        ((1 + cos) / 2, -(1 + cos), (1 + cos) / 2),
+        (1 + alpha, -2 * cos, 1 - alpha),
+    )
+    return shelf * high_pass
+
+
+def loudness_lufs(samples: np.ndarray, rate: int) -> float:
+    """Integrated loudness (BS.1770 gating). Mono counts twice: Unity plays it on both speakers."""
+    frames = len(samples)
+    if not frames:
+        return float("-inf")
+    # K-weighting applied in the frequency domain: only energy matters, not phase.
+    spectrum = np.fft.rfft(samples.astype(np.float64), axis=0)
+    weights = _k_weighting_power(np.fft.rfftfreq(frames, 1 / rate), rate)
+    power = (np.fft.irfft(spectrum * np.sqrt(weights)[:, None], n=frames, axis=0) ** 2).sum(axis=1)
+    if samples.shape[1] == 1:
+        power = power * 2
+    block, step = int(0.4 * rate), int(0.1 * rate)
+    if frames < block:  # short one-shots: the whole clip is one gating block
+        energy = np.array([power.mean()])
+    else:
+        total = np.concatenate([[0.0], np.cumsum(power)])
+        starts = np.arange(0, frames - block + 1, step)
+        energy = (total[starts + block] - total[starts]) / block
+    with np.errstate(divide="ignore"):
+        level = -0.691 + 10 * np.log10(energy)
+    energy = energy[level > -70.0]
+    if not energy.size:
+        return float("-inf")
+    relative_gate = -0.691 + 10 * np.log10(energy.mean()) - 10.0
+    energy = energy[-0.691 + 10 * np.log10(energy) > relative_gate]
+    return float(-0.691 + 10 * np.log10(energy.mean()))
+
+
+def _limit(samples: np.ndarray, rate: int) -> tuple[np.ndarray, float]:
+    """Look-ahead peak limiter to LIMIT_CEILING_DBFS; returns the max gain reduction in dB."""
+    ceiling = 10 ** (LIMIT_CEILING_DBFS / 20)
+    needed = np.minimum(1.0, ceiling / np.maximum(np.abs(samples).max(axis=1), 1e-9))
+    if needed.min() >= 1.0:
+        return samples, 0.0
+    width = max(2, int(rate * LIMITER_WINDOW_MS / 1000))
+    # Each sample takes the lowest gain within ±width, then a width-long average makes the gain
+    # change click-free; every sample in the average window still covers the peak, so the
+    # smoothed gain never exceeds what the peak needs.
+    # shortcut: O(n * width) window minimum; fine for clips, slow only on long heavily-limited BGM.
+    lowest = np.lib.stride_tricks.sliding_window_view(
+        np.pad(needed, width, mode="edge"), 2 * width + 1
+    ).min(axis=1)
+    padded = np.pad(lowest, (width // 2, width - 1 - width // 2), mode="edge")
+    gain = np.convolve(padded, np.full(width, 1 / width), mode="valid")
+    limited = np.clip(samples * gain[:, None], -ceiling, ceiling)
+    return limited.astype(np.float32), -_db(float(gain.min()))
+
+
+def normalize_loudness(
+    samples: np.ndarray, rate: int, target_lufs: float
+) -> tuple[np.ndarray, dict[str, float]]:
+    """Gain to the target loudness, then limit peaks to the ceiling.
+
+    Limiting removes loudness again, most on fast-decaying hits whose energy sits in the
+    transient. When that leaves the take short of the target, the make-up gain is searched
+    (loudness rises monotonically with gain) up to MAX_LIMITER_REDUCTION_DB of limiting.
+    """
+    measured = loudness_lufs(samples, rate)
+    if not np.isfinite(measured):  # silence: nothing to normalize, file-valid fails later
+        return samples, {}
+
+    def render(gain_db: float) -> tuple[np.ndarray, float, float]:
+        limited, reduction = _limit(samples * np.float32(10 ** (gain_db / 20)), rate)
+        return limited, reduction, loudness_lufs(limited, rate)
+
+    peak_db = 20 * float(np.log10(max(float(np.abs(samples).max()), 1e-9)))
+    high = LIMIT_CEILING_DBFS - peak_db + MAX_LIMITER_REDUCTION_DB
+    # The initial normalization must obey the same limiting cap as the make-up search.
+    gain = min(target_lufs - measured, high)
+    best = (gain, *render(gain))
+    floor = target_lufs - LOUDNESS_TOLERANCE_LU / 2
+    if best[3] < floor and high > gain:
+        best = (high, *render(high))
+        if best[3] >= floor:  # reachable within the cap: find the least limiting that does it
+            low = gain
+            for _ in range(12):
+                middle = (low + high) / 2
+                candidate = (middle, *render(middle))
+                if candidate[3] >= floor:
+                    high, best = middle, candidate
+                else:
+                    low = middle
+    gain, limited, reduction, reached = best
+    return limited, {
+        "source_loudness_lufs": round(measured, 2),
+        "loudness_target_lufs": target_lufs,
+        "normalize_gain_db": round(gain, 2),
+        "limiter_reduction_db": round(reduction, 2),
+        "loudness_lufs": round(reached, 2),
+    }
+
+
+def loudness_target(plan: SoundPlan) -> float:
+    # Keyword-classified items keep kind "sfx"; their category still says UI or ambience.
+    kind = (
+        plan.category if plan.kind == "sfx" and plan.category in ("ui", "ambience") else plan.kind
+    )
+    return LOUDNESS_TARGET_LUFS.get(kind, LOUDNESS_TARGET_LUFS["sfx"])
 
 
 def decode(audio: bytes, file_format: str) -> tuple[np.ndarray, int]:
@@ -158,12 +307,18 @@ def failed_checks(metrics: dict[str, float], plan: SoundPlan) -> list[str]:
     failed: list[str] = []
     if metrics["peak_dbfs"] <= SILENCE_DBFS:
         return ["sound-file-valid"]
+    if (
+        "loudness_target_lufs" in metrics
+        and abs(metrics["loudness_lufs"] - metrics["loudness_target_lufs"]) > LOUDNESS_TOLERANCE_LU
+    ) or metrics.get("limiter_reduction_db", 0.0) > MAX_LIMITER_REDUCTION_DB:
+        failed.append("sound-loudness-match")
     requested = plan.duration_seconds
     if abs(metrics["duration_s"] - requested) > max(0.2 * requested, 0.1):
         failed.append("sound-duration-match")
     if metrics["peak_dbfs"] > PEAK_LIMIT_DBFS or metrics["clipped_runs"] > 0:
         failed.append("sound-true-peak")
-    if plan.kind == "sfx" and not plan.loop:
+    # Every one-shot (sfx, ui, voice): generation_spec keeps kind "ui"/"voice", not "sfx".
+    if plan.kind != "bgm" and not plan.loop:
         if metrics["onset_ms"] > ONSET_LIMIT_MS.get(plan.category, 10.0):
             failed.append("sound-onset-latency")
         if metrics["tail_dbfs"] > TAIL_DBFS or metrics["last_sample"] > 0.01:
@@ -241,19 +396,34 @@ def check_asset(
         _decide(qc, criteria, placeholder)
         return qc
 
+    # Clipping is judged on the raw take: the limiter's smooth gain would hide flat peaks.
+    source_clipped = measure(samples, rate)["clipped_runs"] > 0
+
     # Two G2 passes: one repair can expose another (DC removal reveals padded silence).
     for _ in range(2):
-        failed = [c for c in failed_checks(measure(samples, rate), plan) if c in criteria]
+        # Peak control belongs to the final normalization, after all waveform repairs.
+        failed = [
+            c
+            for c in failed_checks(measure(samples, rate), plan)
+            if c in criteria and c != "sound-true-peak"
+        ]
         if not failed or failed == ["sound-file-valid"]:
             break
         samples, fixes = apply_fixes(samples, rate, failed, plan.loop)
         if not fixes:
             break
         qc.applied_fixes += fixes
-    if qc.applied_fixes:
+    # Normalize only the repaired waveform; never feed a limited result into another limiter.
+    samples, loudness = normalize_loudness(samples, rate, loudness_target(plan))
+    # Loudness normalization is not a repair (PASS stays PASS) but always yields the copy to apply.
+    if qc.applied_fixes or loudness:
         qc.processed_wav = encode_wav(samples, rate)
-    qc.metrics = measure(samples, rate)
+    qc.metrics = measure(samples, rate) | loudness
+    if loudness:
+        qc.metrics["loudness_lufs"] = round(loudness_lufs(samples, rate), 2)
     qc.failed = failed_checks(qc.metrics, plan) + (["sound-not-placeholder"] if placeholder else [])
+    if source_clipped and "sound-true-peak" not in qc.failed:
+        qc.failed.insert(0, "sound-true-peak")
     _decide(qc, criteria, placeholder)
     return qc
 
