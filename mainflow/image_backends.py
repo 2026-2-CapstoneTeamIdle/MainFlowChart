@@ -25,6 +25,7 @@ import math
 import os
 import re
 import urllib.request
+from collections.abc import Callable
 from typing import Any
 
 from PIL import Image, ImageChops, ImageDraw
@@ -114,6 +115,7 @@ class OpenAIImageGenerator:
             # The SDK retries 429/5xx responses with exponential backoff.
             client = OpenAI(max_retries=max_retries, timeout=timeout_seconds)
         self.client = client
+        self.usage_recorder: Callable[[dict[str, Any]], None] | None = None
         # Full-resolution output per asset_id, used as the reference image for
         # animation strips (the post-processed sprite is only 64x64).
         self.raw_outputs: dict[str, bytes] = {}
@@ -121,6 +123,67 @@ class OpenAIImageGenerator:
         # reject background="transparent".  After the first rejection every
         # request asks for a flat background instead.
         self.transparent_supported = True
+
+    def _call_image_api(
+        self,
+        asset_id: str,
+        endpoint: str,
+        options: dict[str, Any],
+        call: Callable[[], Any],
+        *,
+        animation: str | None = None,
+    ) -> Any:
+        event: dict[str, Any] = {
+            "provider": "openai_image",
+            "asset_id": asset_id,
+            "endpoint": endpoint,
+            "model": self.model,
+            "size": options["size"],
+            "quality": self.quality,
+        }
+        if animation is not None:
+            event["animation"] = animation
+        try:
+            response = call()
+        except Exception as error:
+            event.update(
+                status="error",
+                usage_status="unknown",
+                http_status=getattr(error, "status_code", None),
+                request_id=getattr(error, "request_id", None),
+            )
+            if self.usage_recorder is not None:
+                self.usage_recorder(event)
+            raise
+        usage = getattr(response, "usage", None)
+        if hasattr(usage, "model_dump"):
+            usage = usage.model_dump()
+        usage = usage if isinstance(usage, dict) else {}
+        input_details = usage.get("input_tokens_details") or {}
+        output_details = usage.get("output_tokens_details") or {}
+        if hasattr(input_details, "model_dump"):
+            input_details = input_details.model_dump()
+        if hasattr(output_details, "model_dump"):
+            output_details = output_details.model_dump()
+        input_details = input_details if isinstance(input_details, dict) else {}
+        output_details = output_details if isinstance(output_details, dict) else {}
+        event.update(
+            status="success",
+            usage_status="reported" if isinstance(usage.get("total_tokens"), int) else "missing",
+            request_id=getattr(response, "_request_id", None),
+            usage={
+                "input_tokens": usage.get("input_tokens"),
+                "input_text_tokens": input_details.get("text_tokens"),
+                "input_image_tokens": input_details.get("image_tokens"),
+                "output_tokens": usage.get("output_tokens"),
+                "output_text_tokens": output_details.get("text_tokens"),
+                "output_image_tokens": output_details.get("image_tokens"),
+                "total_tokens": usage.get("total_tokens"),
+            },
+        )
+        if self.usage_recorder is not None:
+            self.usage_recorder(event)
+        return response
 
     def generate(self, request: ImageRequest) -> bytes:
         return self._explain_model_errors(
@@ -208,7 +271,13 @@ class OpenAIImageGenerator:
             }
             if self.model.startswith(INPUT_FIDELITY_MODEL_PREFIXES):
                 options["input_fidelity"] = "high"
-            response = self.client.images.edit(**options)
+            response = self._call_image_api(
+                request.plan.asset_id,
+                "images.edit",
+                options,
+                lambda: self.client.images.edit(**options),
+                animation=animation,
+            )
             if not response.data or not response.data[0].b64_json:
                 raise RuntimeError("OpenAI image response did not contain image data")
             return base64.b64decode(response.data[0].b64_json)
@@ -226,16 +295,26 @@ class OpenAIImageGenerator:
             "n": 1,
         }
         if request.reference is None:
-            response = self.client.images.generate(**options)
+            response = self._call_image_api(
+                request.plan.asset_id,
+                "images.generate",
+                options,
+                lambda: self.client.images.generate(**options),
+            )
         else:
             extension = "jpg" if request.reference.media_type == "image/jpeg" else "png"
-            response = self.client.images.edit(
-                image=(
-                    f"reference.{extension}",
-                    request.reference.content,
-                    request.reference.media_type,
+            response = self._call_image_api(
+                request.plan.asset_id,
+                "images.edit",
+                options,
+                lambda: self.client.images.edit(
+                    image=(
+                        f"reference.{extension}",
+                        request.reference.content,
+                        request.reference.media_type,
+                    ),
+                    **options,
                 ),
-                **options,
             )
         if not response.data or not response.data[0].b64_json:
             raise RuntimeError("OpenAI image response did not contain image data")
@@ -417,7 +496,9 @@ def postprocess(content: bytes, request: ImageRequest) -> bytes:
     with Image.open(io.BytesIO(content)) as source:
         image = source.convert("RGBA")
 
-    if request.plan.transparent:
+    if request.plan.asset_id == "hud_panel_frame":
+        image = _fit_ui_panel_frame(image, request.width, request.height, request.style)
+    elif request.plan.transparent:
         if not _has_transparency(image):
             image = remove_flat_background(image)
         anchor = "bottom" if is_grounded_object(request.plan.asset_id) else "center"
@@ -552,6 +633,31 @@ def _fit_sprite(
     top = height - resized.height if anchor == "bottom" else (height - resized.height) // 2
     canvas.alpha_composite(resized, ((width - resized.width) // 2, top))
     return canvas
+
+
+def _fit_ui_panel_frame(image: Image.Image, width: int, height: int, style: str) -> Image.Image:
+    """Keep the ornament's exterior transparent and back only its content area."""
+    if not _has_transparency(image):
+        # Some image providers return a flat matte despite a transparent request.
+        # Remove only the corner-connected matte, leaving the enclosed panel intact.
+        image = remove_flat_background(image, threshold=12)
+    else:
+        # A faint full-canvas halo is not part of the frame silhouette.
+        image.putalpha(image.getchannel("A").point(lambda value: 0 if value < 32 else value))
+    visible = image.getchannel("A").point(lambda value: 255 if value >= 32 else 0)
+    bounds = visible.getbbox() or image.getchannel("A").getbbox()
+    if bounds is not None:
+        image = image.crop(bounds)
+    image = image.resize((width, height), _resample(style))
+    backing = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    inner = (
+        round(width * 0.08),
+        round(height * 0.08),
+        round(width * 0.92),
+        round(height * 0.92),
+    )
+    ImageDraw.Draw(backing).rectangle(inner, fill=(15, 22, 31, 255))
+    return Image.alpha_composite(backing, image)
 
 
 def _cover(image: Image.Image, width: int, height: int, style: str) -> Image.Image:

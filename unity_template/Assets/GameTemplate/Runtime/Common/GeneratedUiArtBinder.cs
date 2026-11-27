@@ -77,17 +77,49 @@ namespace TeamIdle.GameTemplate.Common
                         if (image.sprite != binding.sprite)
                         {
                             image.sprite = binding.sprite;
-                            image.type = UnityEngine.UI.Image.Type.Simple;
+                            image.type =
+                                binding.assetId == "hud_panel_frame"
+                                    ? UnityEngine.UI.Image.Type.Sliced
+                                    : UnityEngine.UI.Image.Type.Simple;
                             image.preserveAspect = binding.assetId != "hud_panel_frame";
                             image.raycastTarget = false;
-                            if (binding.assetId == "hud_panel_frame")
-                            {
-                                image.color = new Color(1f, 1f, 1f, 0.3f);
-                            }
+                        }
+                        if (binding.assetId == "hud_panel_frame")
+                        {
+                            image.color = Color.white;
+                            HideFallbackBacking(image);
                         }
                     }
                 }
             }
+        }
+
+        private static void HideFallbackBacking(UnityEngine.UI.Image decoration)
+        {
+            if (!decoration.name.StartsWith("HudArt_", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            var parent = decoration.transform.parent;
+            if (
+                parent == null
+                || !parent.name.Contains("Panel", StringComparison.OrdinalIgnoreCase)
+            )
+            {
+                return;
+            }
+
+            var backing = parent.GetComponent<UnityEngine.UI.Image>();
+            if (backing == null || parent.GetComponent<UnityEngine.UI.Button>() != null)
+            {
+                return;
+            }
+
+            var color = backing.color;
+            color.a = 0f;
+            backing.color = color;
+            backing.raycastTarget = false;
         }
     }
 }

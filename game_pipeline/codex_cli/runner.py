@@ -21,6 +21,19 @@ SECRET_ENVIRONMENT_NAMES = {
     "ELEVENLABS_API_KEY",
     "CODEX_ACCESS_TOKEN",
 }
+DESKTOP_SESSION_ENVIRONMENT_NAMES = {
+    "CODEX_APP_RUNTIME_CLI_PATH",
+    "CODEX_APP_TOOLS_PIPE_PATH",
+    "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
+    "CODEX_PERMISSION_PROFILE",
+    "CODEX_SANDBOX_NETWORK_DISABLED",
+    "CODEX_SESSION_ID",
+    "CODEX_TASK_WORKSPACE_VERIFYING_IDENTITY",
+    "CODEX_THREAD_ID",
+    "CODEX_TOOL_CALL_ID",
+    "CODEX_WINDOWS_REGISTERED_CORE",
+    "CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY",
+}
 
 
 @dataclass(frozen=True)
@@ -44,6 +57,7 @@ class CodexCliRunner:
         schema: dict[str, Any],
         audit_directory: Path,
         sandbox: str = "workspace-write",
+        timeout_seconds: float | None = None,
     ) -> CodexCliResult:
         root = project_root.resolve()
         if not root.is_dir():
@@ -94,7 +108,11 @@ class CodexCliRunner:
             prompt=prompt,
             cwd=root,
             environment=_codex_environment(),
-            timeout_seconds=self.settings.invocation_timeout_seconds,
+            timeout_seconds=(
+                min(self.settings.invocation_timeout_seconds, timeout_seconds)
+                if timeout_seconds is not None
+                else self.settings.invocation_timeout_seconds
+            ),
             events_path=events_path,
             stderr_path=stderr_path,
         )
@@ -219,7 +237,7 @@ def _stream_codex_process(
     prompt: str,
     cwd: Path,
     environment: dict[str, str],
-    timeout_seconds: int,
+    timeout_seconds: float,
     events_path: Path,
     stderr_path: Path,
 ) -> _ProcessOutput:
@@ -315,7 +333,7 @@ def _stream_codex_process(
 
 def _codex_environment() -> dict[str, str]:
     environment = os.environ.copy()
-    for name in SECRET_ENVIRONMENT_NAMES:
+    for name in SECRET_ENVIRONMENT_NAMES | DESKTOP_SESSION_ENVIRONMENT_NAMES:
         environment.pop(name, None)
     return environment
 

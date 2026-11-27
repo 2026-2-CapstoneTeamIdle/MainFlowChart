@@ -7,7 +7,10 @@ import re
 
 from mainflow.contracts import GameLogicDesign, GameQualityReport, PlaytestMetrics, QualityMetric
 from game_pipeline.runtime_invariants import REQUIRED_CAUSAL_TRANSITIONS
-from game_pipeline.gameplay_contracts import checkpoint_respawn_requested
+from game_pipeline.gameplay_contracts import (
+    checkpoint_respawn_requested,
+    compact_platformer_requested,
+)
 
 _METRICS_MARKER = re.compile(r"UNITY_PLAYTEST_METRICS:(\{.*\})")
 _SCENARIO_MARKER = re.compile(r"UNITY_VALIDATION_SCENARIO_OK:([^\r\n]+)")
@@ -85,7 +88,15 @@ def evaluate_game_quality(
         if expected_scenarios
         else 1.0
     )
+    compact = level["genre"] == "Platformer" and compact_platformer_requested(
+        bundle["game_design"]["player_experience"]
+    )
     expected_transitions = set(REQUIRED_CAUSAL_TRANSITIONS[level["genre"]])
+    if compact:
+        expected_transitions = {
+            "platformer.fall_to_checkpoint",
+            "platformer.requirements_to_clear",
+        }
     if level["genre"] == "Platformer" and checkpoint_respawn_requested(
         bundle["game_design"]["player_experience"]
     ):
@@ -99,7 +110,7 @@ def evaluate_game_quality(
     )
     playtest_ratio = min(scenario_ratio, transition_ratio)
     zones = level["zones"]
-    zone_ratio = min(1.0, len(zones) / 3) if level["genre"] == "Platformer" else 1.0
+    zone_ratio = 1.0 if compact or level["genre"] != "Platformer" else min(1.0, len(zones) / 3)
     placements = sum(
         len(zone[collection])
         for zone in zones
@@ -119,17 +130,21 @@ def evaluate_game_quality(
     )
     density_ratio = min(1.0, density_basis / 12)
     diversity_ratio = min(1.0, archetype_count / 6)
-    content_ratio = (density_ratio + diversity_ratio) / 2
+    content_ratio = 1.0 if compact else (density_ratio + diversity_ratio) / 2
     presentation = bundle["presentation_plan"]
-    presentation_ratio = min(
-        1.0,
-        (len(presentation["ui_screens"]) + len(presentation["feedback_cues"])) / 7,
+    presentation_ratio = (
+        1.0
+        if compact
+        else min(
+            1.0,
+            (len(presentation["ui_screens"]) + len(presentation["feedback_cues"])) / 7,
+        )
     )
     difficulties = [zone["difficulty"] for zone in zones]
     progression_ok = (
         bool(difficulties) and difficulties == sorted(difficulties) and len(set(difficulties)) > 1
     )
-    if not progression_ok and len(bundle["balance_plan"]["difficulty_curve"]) >= 2:
+    if compact or (not progression_ok and len(bundle["balance_plan"]["difficulty_curve"]) >= 2):
         progression_ok = True
 
     raw = [
@@ -161,7 +176,7 @@ def evaluate_game_quality(
             "content_density",
             15.0 * content_ratio,
             15.0,
-            density_ratio >= 1.0 and diversity_ratio >= 1.0,
+            content_ratio >= 1.0,
             f"{density_basis} placed or runtime-planned actors across "
             f"{archetype_count} content archetypes",
         ),

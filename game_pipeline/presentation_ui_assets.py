@@ -13,8 +13,11 @@ HUD_ART: tuple[tuple[str, str, str, str], ...] = (
         "hud_panel_frame",
         "HudArt_",
         "Reusable HUD panel decoration",
-        "A restrained dark game UI panel frame with a dark translucent center and subtle border; "
-        "no words, letters, digits, symbols, or controls. Keep the central text area quiet.",
+        "A reusable nine-slice game UI panel frame with transparent space outside its "
+        "ornamental silhouette. Keep the decorative border narrow and the central "
+        "84 percent of the panel as a quiet opaque dark area for live Unity text. "
+        "No words, letters, digits, symbols, buttons, or controls. This is decoration "
+        "behind separately laid-out text, not a complete HUD screenshot.",
     ),
     (
         "hud_icon_health",
@@ -81,6 +84,13 @@ def with_presentation_ui_assets(
             and not any(term in visible_data for term in _ICON_TERMS[asset_id])
         ):
             continue
+        generation_spec = build_image_generation_spec(
+            purpose, description, asset_id, kind_override="ui"
+        )
+        if asset_id == "hud_panel_frame":
+            # Preserve transparent pixels outside the ornament; postprocessing makes
+            # only the content area opaque for legible live text.
+            generation_spec["transparent"] = True
         assets.append(
             cast(
                 AssetGenerationItem,
@@ -92,9 +102,7 @@ def with_presentation_ui_assets(
                     "required": False,
                     "suggested_filename": f"{asset_id}.png",
                     "unity_binding_key": f"ui_object_prefix:{prefix}",
-                    "generation_spec": build_image_generation_spec(
-                        purpose, description, asset_id, kind_override="ui"
-                    ),
+                    "generation_spec": generation_spec,
                 },
             )
         )

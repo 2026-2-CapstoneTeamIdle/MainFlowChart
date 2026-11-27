@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from game_pipeline.game_quality_validator_ai import GameQualityValidatorAI
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.nodes.game_quality_validator import (
+    _enforce_ui_readability,
     _normalize_duration_limitation,
     _normalize_placeholder_visual_limitation,
     _repair_and_review_quality,
@@ -99,6 +100,20 @@ class QualityProvider:
 
 
 class GameQualityValidatorAITest(unittest.TestCase):
+    def test_hud_capture_issue_cannot_be_overruled_by_passing_ai_review(self) -> None:
+        report = {"status": "passed", "findings": []}
+        visual = {
+            "ui_readability": {
+                "status": "needs_revision",
+                "issues": ["1920x1080:off_screen:HealthText"],
+                "screenshot": {"relative_path": "validation/ui_readability_capture.png"},
+            }
+        }
+        result = _enforce_ui_readability(report, visual)
+        self.assertEqual(result["status"], "needs_revision")
+        self.assertEqual(result["findings"][0]["category"], "presentation")
+        self.assertIn("HealthText", result["findings"][0]["message"])
+
     def test_disabled_visual_validation_is_not_a_hard_failure(self) -> None:
         GameQualityValidatorAI._enforce_hard_evidence(  # type: ignore[arg-type]
             {"status": "passed"},

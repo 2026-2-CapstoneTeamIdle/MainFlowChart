@@ -3,6 +3,8 @@ import threading
 import time
 from pathlib import Path
 from unittest.mock import Mock, patch
+import pytest
+from game_pipeline.codex_cli.structured_json_client import CodexStructuredJsonClient
 
 from game_pipeline.claude_code.structured_json_client import ClaudeStructuredJsonClient
 from game_pipeline.dynamic_feature_checklist import (
@@ -56,6 +58,40 @@ def test_approved_web_features_publish_checklists_before_implementation(tmp_path
         logic_analysis_node({"project_id": "20261118_01", "parsed_request": {}, "analysis": {}})
     persist.assert_called_once_with(generated, workspace_root=tmp_path)
     assert generator.generate.call_args.kwargs["logic_analysis"]["features"] == logic["features"]
+
+
+def test_approved_web_checklist_failure_stops_before_expensive_game_setup(tmp_path, monkeypatch):
+    logic = _logic_analysis()
+    manager = Mock()
+    manager.ensure_project.return_value = tmp_path
+    manager.read_json.side_effect = [
+        {
+            "condition": "플레이어가 점프한다",
+            "genre": logic["genre"],
+            "viewpoint": logic["viewpoint"],
+            "mood_style": "Fantasy",
+            "image_style": "Pixel Art",
+        },
+        {"features": logic["features"]},
+    ]
+    manager.write_json.return_value = {"relative_path": "data/logic_analysis.json"}
+    monkeypatch.setenv("MAINFLOW_EARLY_FEATURE_CHECKLISTS", "1")
+    generator = Mock()
+    generator.provider = "codex_cli"
+    generator.generate.side_effect = ValueError("duplicate criterion")
+
+    with (
+        patch("mainflow.nodes.logic_analysis.ArtifactManager", return_value=manager),
+        patch("mainflow.nodes.logic_analysis._load_approved_logic_analysis", return_value=logic),
+        patch(
+            "game_pipeline.dynamic_feature_checklist.create_checklist_generator_from_environment",
+            return_value=generator,
+        ),
+    ):
+        with pytest.raises(
+            RuntimeError, match="FEATURE_CHECKLIST_PREPARATION_FAILED.*duplicate criterion"
+        ):
+            logic_analysis_node({"project_id": "20261120_03", "parsed_request": {}, "analysis": {}})
 
 
 def test_checklists_publish_progress_without_creating_unity_project(tmp_path):
@@ -153,6 +189,74 @@ def test_claude_checklist_client_uses_read_only_cli_and_unique_audit_paths(tmp_p
     assert all(call.kwargs["sandbox"] == "read-only" for call in calls)
     assert calls[0].kwargs["audit_directory"].name == "request_001"
     assert calls[1].kwargs["audit_directory"].name == "request_002"
+    assert calls[0].kwargs["timeout_seconds"] == 90
+
+
+def test_codex_checklist_timeout_is_separate_from_implementation_timeout(tmp_path, monkeypatch):
+    monkeypatch.delenv("MAINFLOW_CHECKLIST_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.setenv("MAINFLOW_CODEX_MODEL", "builder")
+    client = CodexStructuredJsonClient(
+        tmp_path, "feature_checklist_generation", "MAINFLOW_CODEX_MODEL"
+    )
+    with (
+        patch(
+            "game_pipeline.codex_cli.structured_json_client.CodexHarnessSettings.from_environment"
+        ),
+        patch("game_pipeline.codex_cli.structured_json_client.CodexCliRunner") as runner,
+    ):
+        runner.return_value.run.return_value.final_response = {"criteria": []}
+        client.generate_json("prompt", {})
+        assert runner.return_value.run.call_args.kwargs["timeout_seconds"] == 90
+
+
+def test_parallel_checklist_failure_still_publishes_other_features(tmp_path):
+    generator = DynamicFeatureChecklistGenerator(Mock(), "codex_cli")
+    completed = Mock(feature_id="requirement-dependency-01")
+
+    def generate(*args):
+        if args[4] == 1:
+            raise TimeoutError("bounded timeout")
+        return completed
+
+    published = []
+    with patch.object(generator, "_generate_feature", side_effect=generate):
+        with pytest.raises(RuntimeError, match="feature-01.*bounded timeout"):
+            generator.generate(
+                project_id="project",
+                logic_analysis=_logic_analysis(),
+                source_root=tmp_path,
+                max_workers=2,
+                on_feature_ready=published.append,
+            )
+    assert published[-1].feature_checklists == (completed,)
+
+
+def test_checklist_transport_failure_retries_once_then_completes(tmp_path):
+    logic = _logic_analysis()
+    logic["features"] = logic["features"][:1]
+    client = Mock()
+    client.generate_json.side_effect = [
+        TimeoutError("first request stalled"),
+        {
+            "criteria": [
+                {
+                    "feature_ids": ["feature-01"],
+                    "title": f"rule {i}",
+                    "category": "runtime",
+                    "setup": f"setup {i}",
+                    "action": f"action {i}",
+                    "expected": f"expected {i}",
+                    "evidence": f"evidence {i}",
+                }
+                for i in range(10)
+            ]
+        },
+    ]
+    result = DynamicFeatureChecklistGenerator(client, "codex_cli").generate(
+        project_id="project", logic_analysis=logic, source_root=tmp_path
+    )
+    assert len(result.criteria) == 10
+    assert client.generate_json.call_count == 2
 
 
 def test_checklists_generate_features_concurrently_and_preserve_final_order():

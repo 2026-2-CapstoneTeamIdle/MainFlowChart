@@ -10,6 +10,7 @@ from typing import Literal, NotRequired, TypedDict
 
 ContractVersion = Literal["3.4.0"]
 CONTRACT_VERSION: ContractVersion = "3.4.0"
+MAX_APPROVED_FEATURES = 256
 
 ImageStyle = Literal["Pixel Art", "Anime", "Cartoon", "Realistic", "Low Poly", "Custom"]
 MoodStyle = Literal["Cyberpunk", "Medieval", "Modern", "Fantasy", "Horror", "Cozy"]
@@ -210,6 +211,8 @@ class BlueprintProgressionOption(TypedDict):
     display_name: str
     description: str
     rarity: Literal["common", "rare", "epic", "legendary"]
+    observable_stat_id: NotRequired[str]
+    expected_stat_change: NotRequired[Literal["change", "increase", "decrease"]]
 
 
 class GameBlueprint(TypedDict):
@@ -514,6 +517,7 @@ class FeatureRequirement(TypedDict):
     name: str
     description: str
     source_text: str
+    acceptance_items: NotRequired[list[str]]
     origin: NotRequired[Literal["user", "genre_inferred", "requirement_dependency"]]
     rationale: NotRequired[str]
     acceptance_criteria: NotRequired[str]
@@ -637,6 +641,7 @@ class GameLogicDraft(TypedDict):
     status: DraftStatus
     engine: str
     entry_scene: str | None
+    diagnostic_compile_passed: NotRequired[bool]
     source_artifacts: list[ArtifactReference]
     required_image_asset_ids: list[str]
     required_sound_asset_ids: list[str]
@@ -927,6 +932,7 @@ class GenerateImageAgentInput(TypedDict):
     analysis: ArtifactReference
     logic_analysis: ArtifactReference
     image_asset_request: ArtifactReference
+    game_logic_draft: NotRequired[ArtifactReference]
 
 
 class GenerateImageAgentOutput(TypedDict):
@@ -952,6 +958,7 @@ class GenerateSoundAgentInput(TypedDict):
     analysis: ArtifactReference
     logic_analysis: ArtifactReference
     sound_asset_request: ArtifactReference
+    game_logic_draft: NotRequired[ArtifactReference]
 
 
 class GenerateSoundAgentOutput(TypedDict):
@@ -984,7 +991,7 @@ class ValidateImageAgentInput(TypedDict):
     parsed_request: ArtifactReference
     image_asset_request: ArtifactReference
     image_draft: ArtifactReference
-    asset_validation_spec: ArtifactReference
+    asset_validation_spec: NotRequired[ArtifactReference]
 
 
 class ValidateImageAgentOutput(TypedDict):
@@ -996,7 +1003,7 @@ class ValidateSoundAgentInput(TypedDict):
     parsed_request: ArtifactReference
     sound_asset_request: ArtifactReference
     sound_draft: ArtifactReference
-    asset_validation_spec: ArtifactReference
+    asset_validation_spec: NotRequired[ArtifactReference]
 
 
 class ValidateSoundAgentOutput(TypedDict):

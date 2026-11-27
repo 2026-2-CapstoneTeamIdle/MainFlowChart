@@ -404,6 +404,20 @@ namespace TeamIdle.GameTemplate.Editor
                     ? SpriteImportMode.Multiple
                     : SpriteImportMode.Single;
             importer.spritePixelsPerUnit = Mathf.Max(1, entry.pixels_per_unit);
+            if (entry.asset_id == "hud_panel_frame")
+            {
+                var sourceTexture = AssetDatabase.LoadAssetAtPath<Texture2D>(entry.unity_path);
+                var border = Mathf.Max(
+                    4,
+                    Mathf.RoundToInt(
+                        Mathf.Min(
+                            sourceTexture != null ? sourceTexture.width : 128,
+                            sourceTexture != null ? sourceTexture.height : 128
+                        ) * 0.125f
+                    )
+                );
+                importer.spriteBorder = new Vector4(border, border, border, border);
+            }
             importer.alphaIsTransparency = entry.transparent;
             importer.mipmapEnabled = false;
             // Sliced and tiled draw modes (used to fit generated art to the planned object
@@ -595,12 +609,15 @@ namespace TeamIdle.GameTemplate.Editor
                         continue;
                     }
                     image.sprite = sprite;
-                    image.type = UnityEngine.UI.Image.Type.Simple;
+                    image.type =
+                        entry.asset_id == "hud_panel_frame"
+                            ? UnityEngine.UI.Image.Type.Sliced
+                            : UnityEngine.UI.Image.Type.Simple;
                     image.preserveAspect = entry.asset_id != "hud_panel_frame";
                     image.raycastTarget = false;
                     if (entry.asset_id == "hud_panel_frame")
                     {
-                        image.color = new Color(1f, 1f, 1f, 0.3f);
+                        image.color = Color.white;
                     }
                 }
                 return true;
@@ -622,7 +639,13 @@ namespace TeamIdle.GameTemplate.Editor
                     runtimeBinder =
                         generatedRoot.gameObject.AddComponent<GeneratedRuntimeSpriteBinder>();
                 }
-                runtimeBinder.Register(entry.asset_id, dynamicPrefix, sprite, animationController);
+                runtimeBinder.Register(
+                    entry.asset_id,
+                    dynamicPrefix,
+                    sprite,
+                    animationController,
+                    entry.kind == "background"
+                );
                 registeredForRuntime = true;
             }
             else if (
@@ -994,10 +1017,21 @@ namespace TeamIdle.GameTemplate.Editor
                 kind == "background" ? Mathf.Max(box.x / natural.x, box.y / natural.y)
                 : GroundedAssetIds.Contains(entry.asset_id) ? box.y / natural.y
                 : Mathf.Min(box.x / natural.x, box.y / natural.y);
+            var visualSize = natural * fit;
+            // The gameplay collider stays at its authored size. Give tiny pickups and
+            // traps a readable visual footprint without resizing that collider.
+            var minimumVisual = entry.asset_id switch
+            {
+                "platformer_collectible" => new Vector2(0.75f, 0.75f),
+                "platformer_hazard" => new Vector2(1.25f, 0.55f),
+                _ => Vector2.zero,
+            };
+            visualSize.x = Mathf.Max(visualSize.x, minimumVisual.x);
+            visualSize.y = Mathf.Max(visualSize.y, minimumVisual.y);
             renderer.drawMode = SpriteDrawMode.Sliced;
             renderer.size = new Vector2(
-                natural.x * fit / Mathf.Abs(scale.x),
-                natural.y * fit / Mathf.Abs(scale.y)
+                visualSize.x / Mathf.Abs(scale.x),
+                visualSize.y / Mathf.Abs(scale.y)
             );
         }
 

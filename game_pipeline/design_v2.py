@@ -32,8 +32,10 @@ from mainflow.contracts import (
 
 from game_pipeline.gameplay_contracts import (
     checkpoint_respawn_requested,
+    compact_platformer_requested,
     requested_collectible_count,
     requested_play_minutes,
+    requested_platform_count,
     requested_zone_count,
 )
 from game_pipeline.presentation_sound_assets import feedback_sound_asset_id
@@ -69,7 +71,7 @@ def build_design_v2(
         if item["asset_type"] == "sound"
     ]
     game_design = _game_design(game_spec, intent)
-    system_design = _system_design(game_spec)
+    system_design = _system_design(game_spec, intent)
     if game_spec["genre"] == "Platformer":
         level_plan = _platformer_level_plan(game_spec, intent, variation_seed=variation_seed)
     elif game_spec["genre"] == "TowerDefense":
@@ -79,7 +81,7 @@ def build_design_v2(
     else:
         level_plan = _generic_level_plan(game_spec)
     content_plan = _content_plan(game_spec, level_plan, intent)
-    balance_plan = _balance_plan(game_spec)
+    balance_plan = _balance_plan(game_spec, intent)
     presentation_plan = _presentation_plan(game_spec, image_ids, sound_ids, intent)
     validation_plan = _validation_plan(game_spec, level_plan, intent)
     return {
@@ -96,6 +98,53 @@ def build_design_v2(
 def _presentation_plan(
     game_spec: GameSpec, image_ids: list[str], sound_ids: list[str], intent: str
 ) -> PresentationPlan:
+    if game_spec["genre"] == "Platformer" and compact_platformer_requested(intent):
+        return {
+            "plan_version": "2.0.0",
+            "ui_screens": ["hud", "stage_result"],
+            "state_transitions": ["ready -> playing", "playing -> cleared", "cleared -> playing"],
+            "feedback_cues": [
+                {
+                    "cue_id": "jump",
+                    "trigger": "player jump accepted",
+                    "visual_feedback": "player jump animation",
+                    "audio_asset_id": _feedback_sound_id(sound_ids, "jump"),
+                }
+            ],
+            "camera_effects": ["player follow"],
+            "particle_requests": [],
+            "animation_requests": ["idle", "run", "jump"],
+            "required_image_asset_ids": image_ids,
+            "required_sound_asset_ids": sound_ids,
+            "ui_theme": {
+                "visual_direction": "simple readable platformer",
+                "palette": ["#111827", "#3B82F6", "#22C55E", "#FBBF24"],
+                "typography": "readable sans serif",
+                "panel_style": "compact controls and clear result",
+            },
+            "hud_layout": [
+                {
+                    "region_id": "controls",
+                    "anchor": "top-left",
+                    "purpose": "show movement and jump controls",
+                    "visible_data": ["movement controls", "jump controls"],
+                }
+            ],
+            "screen_requirements": [
+                {
+                    "screen_id": "hud",
+                    "purpose": "show controls without obscuring the route",
+                    "required_elements": ["movement controls", "jump controls"],
+                    "activation_condition": "playing",
+                },
+                {
+                    "screen_id": "stage_result",
+                    "purpose": "confirm clear and offer replay",
+                    "required_elements": ["clear title", "restart action"],
+                    "activation_condition": "goal touched",
+                },
+            ],
+        }
     if game_spec["genre"] == "TowerDefense":
         return {
             "plan_version": "2.0.0",
@@ -236,14 +285,14 @@ def _presentation_plan(
                 "visual_direction": "compact survival HUD with strong danger and reward contrast",
                 "palette": ["#101827", "#E94F64", "#55D6BE", "#F6C453", "#F4F7FB"],
                 "typography": "high-contrast sans serif with large numeric counters",
-                "panel_style": "dark translucent cards with colored progress fills",
+                "panel_style": "dark cards with colored progress fills",
             },
             "hud_layout": [
                 {
                     "region_id": "survival_status",
                     "anchor": "top-left",
                     "purpose": "keep survival state readable during dense combat",
-                    "visible_data": ["health bar", "level", "experience bar"],
+                    "visible_data": ["health bar", "level", "experience bar", "kill count"],
                 },
                 {
                     "region_id": "encounter_status",
@@ -262,7 +311,13 @@ def _presentation_plan(
                 {
                     "screen_id": "hud",
                     "purpose": "continuous combat and progression readability",
-                    "required_elements": ["health bar", "experience bar", "level", "timer"],
+                    "required_elements": [
+                        "health bar",
+                        "experience bar",
+                        "level",
+                        "timer",
+                        "kill count",
+                    ],
                     "activation_condition": "playing",
                 },
                 {
@@ -323,7 +378,7 @@ def _presentation_plan(
             "visual_direction": "adventure HUD with clear objective and traversal feedback",
             "palette": ["#111827", "#3B82F6", "#22C55E", "#FBBF24", "#F8FAFC"],
             "typography": "bold readable sans serif with compact supporting labels",
-            "panel_style": "layered translucent cards, rounded visual rhythm, bright progress fills",
+            "panel_style": "layered opaque cards, rounded visual rhythm, bright progress fills",
         },
         "hud_layout": [
             {
@@ -388,18 +443,22 @@ def _presentation_plan(
 def validate_design_v2(bundle: DesignV2Bundle) -> None:
     """Reject plans that cannot produce the promised vertical slice."""
 
-    if bundle["game_design"]["target_play_minutes"] < 3:
-        raise ValueError("target_play_minutes must be at least 3")
+    compact = bundle["level_plan"]["genre"] == "Platformer" and compact_platformer_requested(
+        bundle["game_design"]["player_experience"]
+    )
+    minimum_minutes = 0 if compact else 3
+    if bundle["game_design"]["target_play_minutes"] < minimum_minutes:
+        raise ValueError(f"target_play_minutes must be at least {minimum_minutes}")
     stats = {item["stat_id"]: item for item in bundle["balance_plan"]["stats"]}
     genre = bundle["level_plan"]["genre"]
     player_health = stats.get("base_health" if genre == "TowerDefense" else "player_health")
-    if player_health is None:
+    if player_health is None and not compact:
         raise ValueError(
             "balance_plan requires base_health"
             if genre == "TowerDefense"
             else "balance_plan requires player_health"
         )
-    if (
+    if player_health is not None and (
         player_health["minimum"] <= 0
         or player_health["initial"] <= 0
         or player_health["maximum"] < player_health["initial"]
@@ -439,15 +498,40 @@ def validate_design_v2(bundle: DesignV2Bundle) -> None:
             raise ValueError(f"level_plan zone {index} has an empty or duplicate zone_id")
         zone_ids.add(zone_id)
     if level["genre"] == "Platformer":
-        if len(level["zones"]) < 3:
-            raise ValueError("Platformer level_plan requires at least three zones")
-        if {zone["purpose"] for zone in level["zones"]} != {
-            "tutorial",
-            "challenge",
-            "mastery",
-        }:
-            raise ValueError("Platformer zones must cover tutorial, challenge, and mastery")
-        _validate_platformer_route(level, bundle["game_design"]["target_play_minutes"])
+        if compact:
+            if len(level["zones"]) != 1 or level["zones"][0]["purpose"] != "mastery":
+                raise ValueError("Compact Platformer requires one playable stage")
+        else:
+            if len(level["zones"]) < 3:
+                raise ValueError("Platformer level_plan requires at least three zones")
+            if {zone["purpose"] for zone in level["zones"]} != {
+                "tutorial",
+                "challenge",
+                "mastery",
+            }:
+                raise ValueError("Platformer zones must cover tutorial, challenge, and mastery")
+        _validate_platformer_route(
+            level, bundle["game_design"]["target_play_minutes"], compact=compact
+        )
+        if compact:
+            zone = level["zones"][0]
+            requested_rewards = requested_collectible_count(
+                bundle["game_design"]["player_experience"]
+            )
+            if (
+                zone["hazards"]
+                or zone["enemies"]
+                or zone["checkpoint"] is not None
+                or any(bundle["content_plan"][category] for category in ("enemies", "obstacles"))
+                or (
+                    requested_rewards is None
+                    and (zone["collectibles"] or bundle["content_plan"]["rewards"])
+                )
+            ):
+                raise ValueError("Compact Platformer must not add excluded world content")
+            platform_count = requested_platform_count(bundle["game_design"]["player_experience"])
+            if platform_count is not None and len(zone["platforms"]) != platform_count:
+                raise ValueError("Compact Platformer changed the requested platform count")
         requested_rewards = requested_collectible_count(bundle["game_design"]["player_experience"])
         if requested_rewards is not None:
             actual_rewards = sum(len(zone["collectibles"]) for zone in level["zones"])
@@ -539,12 +623,12 @@ def validate_design_v2(bundle: DesignV2Bundle) -> None:
         raise ValueError("presentation_plan requires a HUD")
     if len(presentation["ui_theme"]["palette"]) < 4:
         raise ValueError("presentation_plan UI theme requires at least four palette colors")
-    if len(presentation["hud_layout"]) < 3:
-        raise ValueError("presentation_plan requires at least three intentional HUD regions")
+    if len(presentation["hud_layout"]) < (1 if compact else 3):
+        raise ValueError("presentation_plan requires intentional HUD regions")
     screen_ids = {item["screen_id"] for item in presentation["screen_requirements"]}
     checkpoint_respawn = checkpoint_respawn_requested(bundle["game_design"]["player_experience"])
     required_screen_ids = {"hud", "stage_result"}
-    if not checkpoint_respawn:
+    if not checkpoint_respawn and not compact:
         required_screen_ids.add("failure")
     if not screen_ids.issuperset(required_screen_ids):
         raise ValueError("presentation_plan is missing required state screen specifications")
@@ -569,14 +653,29 @@ def validate_design_v2(bundle: DesignV2Bundle) -> None:
         }
     else:
         required_cues = {"player_hit", "collectible_pickup", "checkpoint_reached"}
-    if not cue_ids.issuperset(required_cues):
+    if not compact and not cue_ids.issuperset(required_cues):
         raise ValueError("presentation_plan is missing required gameplay feedback cues")
-    if "hit shake" not in presentation["camera_effects"]:
+    if not compact and "hit shake" not in presentation["camera_effects"]:
         raise ValueError("presentation_plan requires hit shake feedback")
 
 
 def _game_design(game_spec: GameSpec, intent: str) -> GameDirectorDesign:
     target_minutes = requested_play_minutes(intent)
+    if game_spec["genre"] == "Platformer" and compact_platformer_requested(intent):
+        return {
+            "design_version": "2.0.0",
+            "title": game_spec["title"],
+            "player_experience": intent,
+            "target_play_minutes": 0,
+            "differentiators": ["one short traversable route", "generated player and stage art"],
+            "experience_curve": {
+                "opening": "move and jump from the safe start",
+                "midgame": "cross two short gaps on fixed platforms",
+                "endgame": "touch the exit and restart from the result screen",
+            },
+            "win_conditions": list(game_spec["win_conditions"]),
+            "lose_conditions": [],
+        }
     if game_spec["genre"] == "TowerDefense":
         return {
             "design_version": "2.0.0",
@@ -618,8 +717,59 @@ def _game_design(game_spec: GameSpec, intent: str) -> GameDirectorDesign:
     }
 
 
-def _system_design(game_spec: GameSpec) -> SystemDesign:
+def _system_design(game_spec: GameSpec, intent: str) -> SystemDesign:
     abilities = [feature["description"] for feature in game_spec["features"]]
+    if game_spec["genre"] == "Platformer" and compact_platformer_requested(intent):
+        return {
+            "design_version": "2.0.0",
+            "player_states": ["ready", "moving", "airborne", "falling", "cleared"],
+            "player_abilities": abilities,
+            "enemy_states": [],
+            "combat_formulas": [],
+            "resources": ["collectibles"] if requested_collectible_count(intent) else [],
+            "progression": (
+                ["cross fixed platforms", "collect requested rewards", "unlock exit", "restart"]
+                if requested_collectible_count(intent)
+                else ["cross fixed platforms", "touch exit", "restart"]
+            ),
+            "save_data": [],
+            "event_connections": [
+                {
+                    "event_id": event_id,
+                    "producer": producer,
+                    "consumers": consumers,
+                    "payload": payload,
+                }
+                for event_id, producer, consumers, payload in (
+                    ("player_jumped", "movement", ["jump animation", "jump sound"], []),
+                    ("player_fell", "fall boundary", ["spawn recovery"], []),
+                    ("goal_reached", "exit trigger", ["clear UI"], []),
+                )
+            ],
+            "stats": [
+                {
+                    "stat_id": "player_health",
+                    "initial": 3,
+                    "minimum": 1,
+                    "maximum": 8,
+                    "unit": "hit",
+                },
+                {
+                    "stat_id": "move_speed",
+                    "initial": 7,
+                    "minimum": 4,
+                    "maximum": 12,
+                    "unit": "units/s",
+                },
+                {
+                    "stat_id": "jump_height",
+                    "initial": 2.4,
+                    "minimum": 1.8,
+                    "maximum": 3.5,
+                    "unit": "units",
+                },
+            ],
+        }
     if game_spec["genre"] == "TowerDefense":
         return {
             "design_version": "2.0.0",
@@ -1071,12 +1221,18 @@ def _platformer_level_plan(
     )
     rng = random.Random(seed)
     target_minutes = requested_play_minutes(intent)
+    compact = compact_platformer_requested(intent)
+    explicit_platforms = requested_platform_count(intent) if compact else None
     requested_rewards = requested_collectible_count(intent)
     mechanics = list(dict.fromkeys(game_spec["mechanics"]))
     if not mechanics:
         mechanics = ["move", "jump"]
-    zone_count = requested_zone_count(intent, default=3 + rng.randrange(3))
-    purposes = ["tutorial", *("challenge" for _ in range(zone_count - 2)), "mastery"]
+    zone_count = requested_zone_count(intent, default=1 if compact else 3 + rng.randrange(3))
+    purposes = (
+        ["mastery"]
+        if compact
+        else ["tutorial", *("challenge" for _ in range(zone_count - 2)), "mastery"]
+    )
     theme_words = [word for word in intent.replace(",", " ").split() if len(word) > 1]
     platform_groups: list[list[LevelPlatform]] = []
     cursor_x = -18.0
@@ -1086,7 +1242,11 @@ def _platformer_level_plan(
     for zone_index in range(zone_count):
         group: list[LevelPlatform] = []
         minimum_platforms = max(target_minutes * 8, (requested_rewards or 0) + 1)
-        count = max(4 + rng.randrange(3), (minimum_platforms + zone_count - 1) // zone_count)
+        count = (
+            explicit_platforms or 6
+            if compact
+            else max(4 + rng.randrange(3), (minimum_platforms + zone_count - 1) // zone_count)
+        )
         for local_index in range(count):
             width = round(rng.uniform(2.5, 3.6), 2)
             if platform_index == 0:
@@ -1127,7 +1287,7 @@ def _platformer_level_plan(
         hazards: list[LevelPlacement] = []
         enemies: list[LevelPlacement] = []
         collectibles: list[LevelPlacement] = []
-        danger_count = 0 if purpose == "tutorial" else 1 + min(2, zone_index)
+        danger_count = 0 if compact or purpose == "tutorial" else 1 + min(2, zone_index)
         for danger_offset in range(danger_count):
             target = platforms[min(len(platforms) - 1, danger_offset + 1)]
             hazard_index += 1
@@ -1138,7 +1298,7 @@ def _platformer_level_plan(
             hazards.append(
                 _placement(f"hazard_{hazard_index}", hazard_kind, target["x"] + 0.45, hazard_y)
             )
-        enemy_count = 0 if purpose == "tutorial" else 1 + (zone_index % 2)
+        enemy_count = 0 if compact or purpose == "tutorial" else 1 + (zone_index % 2)
         for enemy_offset in range(enemy_count):
             target = platforms[-(enemy_offset + 2)]
             enemy_index += 1
@@ -1151,7 +1311,7 @@ def _platformer_level_plan(
         reward_targets = (
             [platform for platform in platforms if platform["platform_id"] in selected_reward_ids]
             if selected_reward_ids is not None
-            else platforms[::2]
+            else ([] if compact else platforms[::2])
         )
         if purpose == "mastery" and reward_targets and reward_targets[-1] is platforms[-1]:
             reward_targets = reward_targets[:-1]
@@ -1346,7 +1506,30 @@ def _survivor_level_plan(game_spec: GameSpec) -> LevelPlan:
     }
 
 
-def _balance_plan(game_spec: GameSpec) -> BalancePlan:
+def _balance_plan(game_spec: GameSpec, intent: str) -> BalancePlan:
+    if game_spec["genre"] == "Platformer" and compact_platformer_requested(intent):
+        return {
+            "plan_version": "2.0.0",
+            "stats": [
+                {
+                    "stat_id": "move_speed",
+                    "initial": 7,
+                    "minimum": 4,
+                    "maximum": 12,
+                    "unit": "units/s",
+                },
+                {
+                    "stat_id": "jump_height",
+                    "initial": 2.4,
+                    "minimum": 1.8,
+                    "maximum": 3.5,
+                    "unit": "units",
+                },
+            ],
+            "formulas": ["jump range follows move speed and jump height"],
+            "difficulty_curve": ["one short route with two reachable gaps"],
+            "reward_costs": ["goal: reach the final platform"],
+        }
     if game_spec["genre"] == "TowerDefense":
         return {
             "plan_version": "2.0.0",
@@ -1589,6 +1772,7 @@ def _validation_plan(game_spec: GameSpec, level_plan: LevelPlan, intent: str) ->
             "required_scene_objects": ["Base", "GameHud", "BuildPoint", "WaveSpawner"],
             "required_feature_bindings": list(game_spec["mechanics"]),
         }
+    compact = level_plan["genre"] == "Platformer" and compact_platformer_requested(intent)
     scenarios = [
         {
             "scenario_id": "start_to_goal",
@@ -1598,15 +1782,23 @@ def _validation_plan(game_spec: GameSpec, level_plan: LevelPlan, intent: str) ->
         },
         {
             "scenario_id": "checkpoint_recovery",
-            "title": "체크포인트 복구",
-            "steps": [
-                "activate checkpoint",
-                "take lethal damage"
-                if checkpoint_respawn_requested(intent)
-                else "fall below stage",
-                "respawn",
-            ],
-            "assertions": ["respawn at latest checkpoint", "player control restored"],
+            "title": "낙사 후 시작점 복귀" if compact else "체크포인트 복구",
+            "steps": (
+                ["fall below stage", "respawn at stage start"]
+                if compact
+                else [
+                    "activate checkpoint",
+                    "take lethal damage"
+                    if checkpoint_respawn_requested(intent)
+                    else "fall below stage",
+                    "respawn",
+                ]
+            ),
+            "assertions": (
+                ["respawn at stage start", "player control restored"]
+                if compact
+                else ["respawn at latest checkpoint", "player control restored"]
+            ),
         },
         {
             "scenario_id": "feature_binding",
@@ -1639,7 +1831,11 @@ def _validation_plan(game_spec: GameSpec, level_plan: LevelPlan, intent: str) ->
             },
             {
                 "rule_id": "scene-content-bound",
-                "description": "설계된 적·함정·보상·체크포인트가 씬에 배치됨",
+                "description": (
+                    "요청한 고정 발판과 출구가 씬에 배치됨"
+                    if compact
+                    else "설계된 적·함정·보상·체크포인트가 씬에 배치됨"
+                ),
                 "required": True,
             },
             {
@@ -1653,7 +1849,9 @@ def _validation_plan(game_spec: GameSpec, level_plan: LevelPlan, intent: str) ->
     }
 
 
-def _validate_platformer_route(level: LevelPlan, target_minutes: int) -> None:
+def _validate_platformer_route(
+    level: LevelPlan, target_minutes: int, *, compact: bool = False
+) -> None:
     mechanics = {mechanic for zone in level["zones"] for mechanic in zone["required_mechanics"]}
     if not mechanics:
         raise ValueError("Platformer zones must require progression mechanics")
@@ -1661,7 +1859,7 @@ def _validate_platformer_route(level: LevelPlan, target_minutes: int) -> None:
         raise ValueError("Mastery zone must combine all introduced mechanics")
 
     platforms = [platform for zone in level["zones"] for platform in zone["platforms"]]
-    if len(platforms) < max(10, target_minutes * 6):
+    if len(platforms) < (2 if compact else max(10, target_minutes * 6)):
         raise ValueError("Platformer route is too short for the planned playtime")
     ordered_zones = sorted(level["zones"], key=lambda item: item["start_x"])
     if ordered_zones != level["zones"]:

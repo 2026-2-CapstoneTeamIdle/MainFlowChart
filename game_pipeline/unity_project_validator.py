@@ -9,11 +9,14 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Literal, cast
 
 from game_pipeline.design_v2 import validate_design_v2
+from game_pipeline.module_init_order import module_dependency_issues
+from game_pipeline.requirement_constraints import forbids_player_projectiles
 from mainflow.contracts import (
     CONTRACT_VERSION,
     DesignV2Bundle,
@@ -69,6 +72,7 @@ class UnityProjectValidator:
     REQUIRED_FILE_PATHS: ClassVar[dict[str, Path]] = {
         "project_version": Path("ProjectSettings/ProjectVersion.txt"),
         "config": Path("Assets/GameTemplate/Generated/GameTemplateConfig.asset"),
+        "config_script_meta": Path("Assets/GameTemplate/Runtime/Core/GameTemplateConfig.cs.meta"),
         "builder": Path("Assets/GameTemplate/Editor/TemplateProjectBuilder.cs"),
         "module_catalog": Path("Assets/GameTemplate/Editor/ModuleComponentCatalog.cs"),
         "scene_assembler": Path("Assets/GameTemplate/Editor/PrefabSceneAssembler.cs"),
@@ -116,7 +120,227 @@ class UnityProjectValidator:
         request: ParsedRequest,
         *,
         allow_failed_diagnostic: bool = False,
+        time_budget_seconds: float | None = None,
     ) -> UnityValidationOutcome:
+        deadline = (
+            time.monotonic() + time_budget_seconds if time_budget_seconds is not None else None
+        )
+        root = Path(project_root).resolve()
+        outcome = self.validate_preflight(
+            project_root, draft, request, allow_failed_diagnostic=allow_failed_diagnostic
+        )
+        if outcome.status == "failed":
+            return outcome
+        try:
+            cache_key = self._validation_cache_key(root, draft, request, allow_failed_diagnostic)
+        except OSError:
+            cache_key = None
+        cached = self._read_validation_cache(root, cache_key)
+        if cached is not None:
+            return cached
+        self._run_unity_validation(outcome, root, deadline=deadline)
+        if outcome.status == "passed" and any(
+            check["criterion_id"] == "unity.batchmode" and check["passed"]
+            for check in outcome.checks
+        ):
+            # Batch assembly can write scene assets, so fingerprint the resulting tree.
+            try:
+                cache_key = self._validation_cache_key(
+                    root, draft, request, allow_failed_diagnostic
+                )
+                self._write_validation_cache(root, cache_key, outcome)
+            except OSError:
+                pass
+        return outcome
+
+    def _validation_cache_key(
+        self,
+        root: Path,
+        draft: GameLogicDraft,
+        request: ParsedRequest,
+        allow_failed_diagnostic: bool,
+    ) -> str | None:
+        if self.mode == "static" or os.environ.get("MAINFLOW_UNITY_VALIDATION_CACHE", "1") == "0":
+            return None
+        digest = hashlib.sha256()
+        editor = self.unity_editor or self.find_unity_editor(self._read_project_version(root))
+        settings = {
+            "mode": self.mode,
+            "editor": str(editor),
+            "editor_modified_ns": editor.stat().st_mtime_ns
+            if editor and editor.is_file()
+            else None,
+            "runtime_tests": os.environ.get("MAINFLOW_UNITY_RUNTIME_TESTS", "1"),
+            "allow_failed_diagnostic": allow_failed_diagnostic,
+            "draft_status": draft.get("status"),
+            "entry_scene": draft.get("entry_scene"),
+            "required_image_asset_ids": draft.get("required_image_asset_ids"),
+            "required_sound_asset_ids": draft.get("required_sound_asset_ids"),
+            "request": request,
+            "validator_version": Path(__file__).stat().st_mtime_ns,
+        }
+        digest.update(json.dumps(settings, sort_keys=True, ensure_ascii=False).encode("utf-8"))
+        manifest = root / "GenerationManifest.json"
+        if manifest.is_file():
+            digest.update(manifest.read_bytes())
+        for directory in ("Assets", "Packages", "ProjectSettings"):
+            source = root / directory
+            if not source.is_dir():
+                continue
+            for path in sorted(source.rglob("*")):
+                if not path.is_file():
+                    continue
+                digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+                with path.open("rb") as source_file:
+                    for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+                        digest.update(chunk)
+        return digest.hexdigest()
+
+    def validate_revision(self, project_root: str | Path) -> UnityValidationOutcome:
+        """Verify edited scenes as saved, without rebuilding them from the original design."""
+        root = Path(project_root).resolve()
+        outcome = self.compile_sources(root)
+        if outcome.status == "failed":
+            return outcome
+        editor = self.unity_editor or self.find_unity_editor(self._read_project_version(root))
+        # compile_sources already fails when no Editor is available.
+        assert editor is not None
+        self._run_runtime_tests(outcome, root, editor)
+        return outcome
+
+    def compile_sources(
+        self, project_root: str | Path, *, timeout_seconds: float | None = None
+    ) -> UnityValidationOutcome:
+        """Compile a partially implemented Unity project without running scene or Play Mode gates."""
+        root = Path(project_root).resolve()
+        outcome = UnityValidationOutcome()
+        editor = self.unity_editor or self.find_unity_editor(self._read_project_version(root))
+        if editor is None or not editor.is_file():
+            self._add_check(
+                outcome,
+                "unity.source_compile",
+                False,
+                "Unity Editor is unavailable for the intermediate source checkpoint",
+                error_code="UNITY_EDITOR_NOT_FOUND",
+            )
+            return outcome
+        temporary = Path(tempfile.mkdtemp(prefix="mainflow-source-compile-"))
+        try:
+            log_path = temporary / "source-compile.log"
+            completed = subprocess.run(
+                [
+                    str(editor),
+                    "-batchmode",
+                    "-nographics",
+                    "-quit",
+                    "-projectPath",
+                    str(root),
+                    "-logFile",
+                    str(log_path),
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_seconds or self.timeout_seconds,
+                check=False,
+            )
+            parts = [completed.stdout or "", completed.stderr or ""]
+            if log_path.is_file():
+                parts.append(log_path.read_text(encoding="utf-8", errors="replace"))
+            outcome.unity_log = "\n".join(part for part in parts if part)
+            compiler_errors = re.findall(
+                r"(?m)^.*(?:error CS\d+|Scripts have compiler errors|Compilation failed).*$",
+                outcome.unity_log,
+            )
+            passed = completed.returncode == 0 and not compiler_errors
+            detail = (
+                "Unity source compilation passed"
+                if passed
+                else f"exit={completed.returncode}; "
+                + " | ".join(
+                    compiler_errors[:8] or self._summarize_unity_failure(outcome.unity_log)
+                )
+            )
+            self._add_check(
+                outcome,
+                "unity.source_compile",
+                passed,
+                detail,
+                error_code=(
+                    "UNITY_SOURCE_COMPILATION_FAILED"
+                    if compiler_errors
+                    else "UNITY_SOURCE_COMPILATION_UNAVAILABLE"
+                ),
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            self._add_check(
+                outcome,
+                "unity.source_compile",
+                False,
+                f"Intermediate Unity compilation could not finish: {error}",
+                error_code="UNITY_SOURCE_COMPILATION_UNAVAILABLE",
+            )
+        finally:
+            shutil.rmtree(temporary, ignore_errors=True)
+        return outcome
+
+    @staticmethod
+    def _read_validation_cache(root: Path, key: str | None) -> UnityValidationOutcome | None:
+        if key is None:
+            return None
+        try:
+            cached = json.loads(
+                (root / "Library/MainFlowValidationCache.json").read_text(encoding="utf-8")
+            )
+            if cached.get("schema") != 1 or cached.get("key") != key:
+                return None
+            result = cached["outcome"]
+            return UnityValidationOutcome(
+                checks=result["checks"], issues=result["issues"], unity_log=result["unity_log"]
+            )
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    @staticmethod
+    def _write_validation_cache(
+        root: Path, key: str | None, outcome: UnityValidationOutcome
+    ) -> None:
+        if key is None:
+            return
+        path = root / "Library/MainFlowValidationCache.json"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "key": key,
+                        "outcome": {
+                            "checks": outcome.checks,
+                            "issues": outcome.issues,
+                            "unity_log": outcome.unity_log,
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            temporary.replace(path)
+        except OSError:
+            # A cache failure must never change the authoritative validation result.
+            pass
+
+    def validate_preflight(
+        self,
+        project_root: str | Path,
+        draft: GameLogicDraft,
+        request: ParsedRequest,
+        *,
+        allow_failed_diagnostic: bool = False,
+    ) -> UnityValidationOutcome:
+        """Run inexpensive structure and binding checks before either Unity process."""
         outcome = UnityValidationOutcome()
         root = Path(project_root).resolve()
 
@@ -127,15 +351,105 @@ class UnityProjectValidator:
         )
         payloads = self._check_project_structure(outcome, root, draft)
         self._check_contract_consistency(outcome, root, payloads, draft, request)
+        self._check_batch_inputs(outcome, root, payloads)
+        self._check_attack_delivery(outcome, root, request)
         self._check_generated_module_source_layout(outcome, root)
         self._check_generated_genre_runtime_safety(outcome, root)
         self._check_generated_unity_null_patterns(outcome, root)
 
-        if outcome.status == "failed":
-            return outcome
-
-        self._run_unity_validation(outcome, root)
         return outcome
+
+    def _check_attack_delivery(
+        self, outcome: UnityValidationOutcome, root: Path, request: ParsedRequest
+    ) -> None:
+        """Reject a player projectile module before a conflicting game reaches Unity."""
+        if not forbids_player_projectiles(request.get("condition", "")):
+            return
+        config = root / self.REQUIRED_FILE_PATHS["config"]
+        if not config.is_file():
+            return
+        text = config.read_text(encoding="utf-8", errors="replace")
+        selected = re.search(r"(?m)^  selectedModules:\s*\n((?:  - [^\n]*\n?)*)", text)
+        modules = re.findall(r"(?m)^  - ([^\n]+)$", selected.group(1)) if selected else []
+        self._add_check(
+            outcome,
+            "unity.player_attack_delivery",
+            "auto_target_system" not in {item.strip().strip("\"'") for item in modules},
+            "Orbiting melee attack must not select the player projectile auto-target module",
+            error_code="UNITY_PLAYER_ATTACK_DELIVERY_CONFLICT",
+        )
+
+    def _check_batch_inputs(
+        self, outcome: UnityValidationOutcome, root: Path, payloads: dict[str, dict[str, Any]]
+    ) -> None:
+        """Catch broken serialized config and module wiring before launching Unity."""
+        config_path = root / self.REQUIRED_FILE_PATHS["config"]
+        meta_path = root / "Assets/GameTemplate/Runtime/Core/GameTemplateConfig.cs.meta"
+        catalog_path = root / self.REQUIRED_FILE_PATHS["module_catalog"]
+        if not config_path.is_file() or not meta_path.is_file() or not catalog_path.is_file():
+            return  # The required-file check already reports missing inputs.
+        errors: list[str] = []
+        config_text = config_path.read_text(encoding="utf-8", errors="replace")
+        meta_text = meta_path.read_text(encoding="utf-8", errors="replace")
+        script_guid = re.search(r"m_Script:.*\bguid: ([0-9a-f]{32})", config_text)
+        expected_guid = re.search(r"(?m)^guid: ([0-9a-f]{32})\s*$", meta_text)
+        if not script_guid or not expected_guid or script_guid.group(1) != expected_guid.group(1):
+            errors.append("GameTemplateConfig.asset has a missing or mismatched script GUID")
+        modules_section = re.search(
+            r"(?m)^  selectedModules:\s*\n((?:  - [^\n]*\n?)*)", config_text
+        )
+        selected_modules = (
+            [
+                item.strip().strip("\"'")
+                for item in re.findall(r"(?m)^  - ([^\n]+)$", modules_section.group(1))
+            ]
+            if modules_section
+            else []
+        )
+        if not selected_modules or len(selected_modules) != len(set(selected_modules)):
+            errors.append("GameTemplateConfig.asset has empty or duplicate selectedModules")
+        required_modules = payloads.get("design", {}).get("selected_modules")
+        if isinstance(required_modules, list):
+            missing = set(required_modules) - set(selected_modules)
+            if missing:
+                errors.append("Config omits design modules: " + ", ".join(sorted(missing)[:10]))
+        catalog = catalog_path.read_text(encoding="utf-8", errors="replace")
+        available = set(re.findall(r'\["([^"]+)"\]\s*=\s*typeof\(', catalog))
+        runtime_root = root / "Assets/GameTemplate/Runtime"
+        if runtime_root.is_dir():
+            for source in runtime_root.rglob("*.cs"):
+                available.update(
+                    re.findall(
+                        r'\[GeneratedGameModule\s*\(\s*"([^"]+)"',
+                        source.read_text(encoding="utf-8", errors="replace"),
+                    )
+                )
+        unknown = set(selected_modules) - available - {"game_bootstrap", "validation_probe"}
+        if unknown:
+            errors.append("Config references unknown modules: " + ", ".join(sorted(unknown)[:10]))
+        dependency_errors = module_dependency_issues(selected_modules)
+        self._add_check(
+            outcome,
+            "unity.module_dependencies",
+            not dependency_errors,
+            "Selected Unity modules initialize after their required services"
+            if not dependency_errors
+            else "; ".join(dependency_errors[:10]),
+            error_code="UNITY_MODULE_DEPENDENCY_INVALID",
+        )
+        scene = re.search(r"(?m)^  entryScene: (.+)$", config_text)
+        scene_path = scene.group(1).strip().strip('"') if scene else ""
+        if not scene_path.startswith("Assets/") or not (root / scene_path).is_file():
+            errors.append(f"Config entryScene is missing: {scene_path or '<empty>'}")
+        self._add_check(
+            outcome,
+            "unity.batch_inputs",
+            not errors,
+            "Serialized config, module catalog and scene are ready for Unity Batch Mode"
+            if not errors
+            else "; ".join(errors),
+            error_code="UNITY_BATCH_INPUTS_INVALID",
+        )
 
     def _check_generated_module_source_layout(
         self, outcome: UnityValidationOutcome, root: Path
@@ -571,28 +885,15 @@ class UnityProjectValidator:
             key: f"Assets/GameTemplate/Generated/Design/{key}.json" for key in documents
         }
         design_v2 = design.get("design_v2")
-        level = documents["level_plan"]
-        zones = level.get("zones")
-        route_valid = True
-        if level.get("genre") == "Platformer":
-            route_valid = (
-                isinstance(zones, list)
-                and len(zones) >= 3
-                and {zone.get("purpose") for zone in zones if isinstance(zone, dict)}
-                == {"tutorial", "challenge", "mastery"}
-                and all(
-                    isinstance(platform, dict)
-                    and platform.get("width", 0) >= level.get("minimum_landing_width", 999)
-                    for zone in zones
-                    if isinstance(zone, dict)
-                    for platform in zone.get("platforms", [])
-                )
-            )
+        # The canonical validator handles compact stages and ordinary multi-zone routes.
+        # Duplicating its policy here previously rejected every valid single-stage design.
         contract_valid = True
+        contract_error = ""
         try:
             validate_design_v2(cast(DesignV2Bundle, documents))
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError) as error:
             contract_valid = False
+            contract_error = f"{type(error).__name__}: {error}"
         valid = (
             isinstance(design_v2, dict)
             and all(design_v2.get(key) == value for key, value in documents.items())
@@ -609,14 +910,26 @@ class UnityProjectValidator:
                     "validation_plan",
                 )
             )
-            and route_valid
             and contract_valid
         )
+        problems = []
+        if not isinstance(design_v2, dict):
+            problems.append("GameLogicDesign.design_v2 is missing")
+        elif any(design_v2.get(key) != value for key, value in documents.items()):
+            problems.append(
+                "design_v2 differs from serialized documents: "
+                + ", ".join(key for key, value in documents.items() if design_v2.get(key) != value)
+            )
+        if manifest.get("design_documents") != expected_paths:
+            problems.append("manifest.design_documents does not match the seven document paths")
+        if contract_error:
+            problems.append(contract_error)
         return (
             valid,
             "Seven design v2 documents are consistent and the level route is structurally safe"
             if valid
-            else "Design v2 documents are missing, inconsistent, or contain an unsafe level route",
+            else "Design v2 validation failed: "
+            + ("; ".join(problems) or "invalid design/plan version"),
         )
 
     @staticmethod
@@ -690,7 +1003,9 @@ class UnityProjectValidator:
             else (False, "Implementation task DAG contains invalid state or dependencies")
         )
 
-    def _run_unity_validation(self, outcome: UnityValidationOutcome, root: Path) -> None:
+    def _run_unity_validation(
+        self, outcome: UnityValidationOutcome, root: Path, *, deadline: float | None = None
+    ) -> None:
         if self.mode == "static":
             self._add_check(
                 outcome,
@@ -743,6 +1058,16 @@ class UnityProjectValidator:
             )
             return
 
+        remaining = self._remaining_timeout(deadline)
+        if remaining <= 0:
+            self._add_check(
+                outcome,
+                "unity.batchmode",
+                False,
+                "Unity validation time budget was exhausted before compilation",
+                error_code="UNITY_VALIDATION_BUDGET_EXHAUSTED",
+            )
+            return
         temp_dir = Path(tempfile.mkdtemp(prefix="mainflow-unity-validation-"))
         try:
             log_path = temp_dir / "unity-validation.log"
@@ -764,7 +1089,7 @@ class UnityProjectValidator:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=self.timeout_seconds,
+                timeout=remaining,
                 check=False,
             )
             log_parts = [completed.stdout or "", completed.stderr or ""]
@@ -776,7 +1101,7 @@ class UnityProjectValidator:
                 outcome,
                 "unity.batchmode",
                 False,
-                f"Unity validation timed out after {self.timeout_seconds} seconds",
+                f"Unity validation timed out after {remaining:.1f} seconds",
                 error_code="UNITY_VALIDATION_TIMEOUT",
             )
             return
@@ -805,6 +1130,9 @@ class UnityProjectValidator:
             diagnostics = self._summarize_unity_failure(outcome.unity_log)
             if diagnostics:
                 detail += "; diagnostics=" + " | ".join(diagnostics)
+            stages = re.findall(r"UNITY_BATCH_BUILD_STAGE:([\w_]+)", outcome.unity_log)
+            if stages:
+                detail += f"; last_stage={stages[-1]}"
         self._add_check(
             outcome,
             "unity.batchmode",
@@ -813,7 +1141,14 @@ class UnityProjectValidator:
             error_code="UNITY_BATCH_VALIDATION_FAILED",
         )
         if passed and os.environ.get("MAINFLOW_UNITY_RUNTIME_TESTS", "1") == "1":
-            self._run_runtime_tests(outcome, root, editor)
+            self._run_runtime_tests(outcome, root, editor, deadline=deadline)
+
+    def _remaining_timeout(self, deadline: float | None) -> float:
+        return (
+            min(self.timeout_seconds, deadline - time.monotonic())
+            if deadline
+            else self.timeout_seconds
+        )
 
     @staticmethod
     def _summarize_unity_failure(log: str) -> list[str]:
@@ -826,6 +1161,7 @@ class UnityProjectValidator:
             "HandleProjectAlreadyOpenInAnotherInstance",
             "No valid Unity Editor license found",
             "ArgumentException:",
+            "ArgumentNullException:",
             "InvalidOperationException:",
             "NullReferenceException:",
             "MissingReferenceException:",
@@ -848,8 +1184,25 @@ class UnityProjectValidator:
                 break
         return diagnostics
 
-    def _run_runtime_tests(self, outcome: UnityValidationOutcome, root: Path, editor: Path) -> None:
+    def _run_runtime_tests(
+        self,
+        outcome: UnityValidationOutcome,
+        root: Path,
+        editor: Path,
+        *,
+        deadline: float | None = None,
+    ) -> None:
         """A separate Play Mode process; no -quit until the host-owned test exits."""
+        remaining = self._remaining_timeout(deadline)
+        if remaining <= 0:
+            self._add_check(
+                outcome,
+                "unity.runtime_smoke",
+                False,
+                "Unity validation time budget was exhausted before Play Mode",
+                error_code="UNITY_VALIDATION_BUDGET_EXHAUSTED",
+            )
+            return
         temporary = Path(tempfile.mkdtemp(prefix="mainflow-playtest-"))
         log_path = temporary / "playtest.log"
         try:
@@ -870,7 +1223,7 @@ class UnityProjectValidator:
                     text=True,
                     encoding="utf-8",
                     errors="replace",
-                    timeout=self.timeout_seconds,
+                    timeout=remaining,
                     check=False,
                 )
                 log = (

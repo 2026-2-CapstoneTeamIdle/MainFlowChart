@@ -11,10 +11,12 @@ from fastapi.staticfiles import StaticFiles
 from service import (
     FeatureRejectRequest,
     GenerationRequest,
+    ProjectRevisionRequest,
     LocalWebSettingsStore,
     ModelSettingsUpdate,
     WorkflowJobManager,
     resolve_webgl_preview_file,
+    browse_project_directories,
 )
 
 LOCAL_WEB_ROOT = Path(__file__).resolve().parent
@@ -60,6 +62,16 @@ def health() -> dict[str, str]:
         "workflow": "connected",
         "contract_version": "3.4.0",
     }
+
+
+@app.get("/api/directories")
+def list_project_directories(path: str | None = None) -> dict[str, object]:
+    try:
+        return browse_project_directories(path)
+    except (OSError, ValueError) as error:
+        raise HTTPException(
+            status_code=400, detail="폴더를 열 수 없습니다. 접근 가능한 다른 폴더를 선택하세요."
+        ) from error
 
 
 @app.get("/api/codex/auth")
@@ -132,6 +144,46 @@ def read_job(job_id: str, detail_features: str | None = None) -> dict[str, objec
         return job_manager.get(job_id).snapshot(detail_feature_ids=detailed)
     except KeyError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.post("/api/jobs/{job_id}/messages", status_code=202)
+def revise_project(job_id: str, request: ProjectRevisionRequest) -> dict[str, object]:
+    try:
+        return job_manager.revise(job_id, request.message).snapshot()
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except (ValueError, FileNotFoundError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.get("/api/jobs/{job_id}/project-files")
+def project_export_files(job_id: str) -> dict[str, object]:
+    try:
+        return job_manager.project_export_manifest(job_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except (ValueError, OSError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.get("/api/jobs/{job_id}/project-file")
+def project_export_file(job_id: str, path: str, snapshot: str | None = None) -> FileResponse:
+    try:
+        return FileResponse(job_manager.project_export_file(job_id, path, snapshot))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except (ValueError, OSError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.delete("/api/jobs/{job_id}/project-files/{snapshot}", status_code=204)
+def release_project_export(job_id: str, snapshot: str) -> None:
+    try:
+        job_manager.release_project_export(job_id, snapshot)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except (ValueError, OSError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @app.post("/api/jobs/{job_id}/confirm", status_code=202)

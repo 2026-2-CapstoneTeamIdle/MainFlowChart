@@ -95,6 +95,7 @@ namespace TeamIdle.GameTemplate.Prototype
             statusText = nextStatusText;
             damageFlash = nextDamageFlash;
             feedbackParticles = nextFeedbackParticles;
+            SetStatusVisible(false);
         }
 
         public void Configure(
@@ -113,6 +114,7 @@ namespace TeamIdle.GameTemplate.Prototype
         private void Start()
         {
             bindingStartedAt = Time.unscaledTime;
+            SetStatusVisible(false);
             TryInitialize();
         }
 
@@ -184,7 +186,7 @@ namespace TeamIdle.GameTemplate.Prototype
             damageFlash.color = color;
             if (statusText.enabled && Time.unscaledTime >= statusVisibleUntil)
             {
-                statusText.enabled = false;
+                SetStatusVisible(false);
             }
         }
 
@@ -267,8 +269,23 @@ namespace TeamIdle.GameTemplate.Prototype
         private void ShowStatus(string message, float duration)
         {
             statusText.text = message;
-            statusText.enabled = true;
+            SetStatusVisible(true);
             statusVisibleUntil = Time.unscaledTime + duration;
+        }
+
+        private void SetStatusVisible(bool visible)
+        {
+            if (statusText == null)
+            {
+                return;
+            }
+
+            statusText.enabled = visible;
+            var backing = statusText.transform.parent?.GetComponent<UnityEngine.UI.Image>();
+            if (backing != null)
+            {
+                backing.enabled = visible;
+            }
         }
 
         private void EmitFeedback(Color color, int count = 14)

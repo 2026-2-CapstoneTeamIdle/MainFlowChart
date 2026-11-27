@@ -138,10 +138,23 @@ namespace TeamIdle.GameTemplate.FeatureTests
             var movement = Object.FindFirstObjectByType<TopDownMovementModule>();
             Assert.That(player, Is.Not.Null, "Player must exist.");
             Assert.That(movement, Is.Not.Null, "TopDownMovementModule must exist.");
-            var start = player.transform.position;
+            Assert.That(movement.IsInitialized, Is.True, "Movement module must be initialized.");
+            var playerBody = player.GetComponent<Rigidbody2D>();
+            Assert.That(playerBody, Is.Not.Null, "Player must have a Rigidbody2D.");
+            // The live scene can move or collide with Player while the test is waiting.
+            // Exercise the initialized movement module with a collider-free body instead.
+            var probe = new GameObject("MovementChecklistProbe");
+            var probeBody = probe.AddComponent<Rigidbody2D>();
+            probeBody.gravityScale = 0f;
+            var start = probeBody.position;
+            movement.Bind(probeBody);
             InputAdapterModule.TestMovement = new Vector2(1f, 1f).normalized;
-            yield return new WaitForSeconds(0.35f);
-            var delta = player.transform.position - start;
+            yield return new WaitForFixedUpdate();
+            yield return new WaitForSeconds(0.15f);
+            var delta = probeBody.position - start;
+            InputAdapterModule.TestMovement = Vector2.zero;
+            movement.Bind(playerBody);
+            Object.Destroy(probe);
             Assert.That(delta.x, Is.GreaterThan(0.05f), "Diagonal input must move on X.");
             Assert.That(delta.y, Is.GreaterThan(0.05f), "Diagonal input must move on Y.");
         }

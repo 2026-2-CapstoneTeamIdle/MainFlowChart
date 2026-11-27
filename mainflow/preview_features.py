@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import cast
 
 from mainflow.ArtifactManager import ArtifactManager
-from mainflow.contracts import LogicAnalysis, WorkflowState
+from mainflow.contracts import LogicAnalysis, MAX_APPROVED_FEATURES, WorkflowState
 from mainflow.nodes import analysis_node, logic_analysis_node, parse_input_node, user_input_node
 from mainflow.run_flow import configure_console_encoding, load_repository_environment, load_request
 
@@ -42,8 +42,21 @@ def main() -> int:
 
     manager = ArtifactManager()
     logic = cast(LogicAnalysis, manager.read_json(state["logic_analysis"]))
+    if len(logic["features"]) > MAX_APPROVED_FEATURES:
+        raise ValueError(
+            f"Feature preview contains {len(logic['features'])} Features; "
+            f"the approval limit is {MAX_APPROVED_FEATURES}"
+        )
     project_root = manager.ensure_project(state["project_id"])
+    title_report_path = project_root / "data" / "condition_feature_analysis.json"
+    try:
+        suggested_name = json.loads(title_report_path.read_text(encoding="utf-8")).get(
+            "project_name", ""
+        )
+    except (OSError, ValueError, TypeError):
+        suggested_name = ""
     payload = {
+        "suggested_project_name": suggested_name,
         "project_id": state["project_id"],
         "logic_analysis_path": str(project_root / "data" / "logic_analysis.json"),
         "features": [
@@ -55,9 +68,14 @@ def main() -> int:
                 "rationale": feature.get("rationale", ""),
                 "acceptance_criteria": feature.get("acceptance_criteria", ""),
                 "checklist": feature.get("checklist", {}),
+                "acceptance_items": feature.get("acceptance_items", []),
             }
             for feature in logic["features"]
         ],
+        "acceptance_item_count": sum(
+            len(feature.get("acceptance_items") or [feature["description"]])
+            for feature in logic["features"]
+        ),
     }
     arguments.output_file.parent.mkdir(parents=True, exist_ok=True)
     arguments.output_file.write_text(

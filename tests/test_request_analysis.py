@@ -39,7 +39,7 @@ class RequestAnalysisTest(unittest.TestCase):
                 )
                 self.assertEqual(logic["genre"], "플랫포머")
                 self.assertEqual(logic["viewpoint"], "사이드뷰")
-                self.assertEqual(len(logic["criteria"]), 4)
+                self.assertEqual(len(logic["criteria"]), len(logic["features"]) + 2)
 
     def test_custom_image_is_imported_as_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

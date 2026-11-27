@@ -62,7 +62,9 @@ STAGE_CUSTOMIZATION_GUIDANCE = {
         "Design a complete request-specific Unity uGUI presentation: choose a coherent palette "
         "and typography direction, divide the HUD into intentional anchored regions, specify the "
         "visible data hierarchy, and define concrete pause/result/failure or choice-screen "
-        "elements. Keep gameplay readable at 16:9 and preserve required asset identifiers."
+        "elements. Every metric the user requests on screen must appear in the live playing HUD "
+        "and update from gameplay state; result-screen statistics alone do not satisfy a HUD "
+        "request. Keep gameplay readable at 16:9 and preserve required asset identifiers."
     ),
     "validation_plan": (
         "Turn the requested mechanics and generated content into concrete automated steps and "
@@ -292,6 +294,23 @@ class StagedDesignV2Planner:
             raise ValueError("level_plan removed required progression zones")
         if stage == "level_plan":
             StagedDesignV2Planner._validate_requested_collectibles(response, fallback)
+        if stage == "presentation_plan":
+            required_hud = next(
+                screen["required_elements"]
+                for screen in baseline["screen_requirements"]
+                if screen["screen_id"] == "hud"
+            )
+            actual_hud = next(
+                screen["required_elements"]
+                for screen in response["screen_requirements"]
+                if screen["screen_id"] == "hud"
+            )
+            missing_hud = set(required_hud) - set(actual_hud)
+            if missing_hud:
+                raise ValueError(
+                    "presentation_plan removed required live HUD elements: "
+                    + ", ".join(sorted(missing_hud))
+                )
         if stage in {"level_plan", "balance_plan", "presentation_plan", "validation_plan"}:
             candidate = cast(DesignV2Bundle, {**fallback, **result, stage: response})
             validate_design_v2(candidate)

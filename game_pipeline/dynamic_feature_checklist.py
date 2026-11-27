@@ -1,7 +1,8 @@
-"""Generate one 30-item checklist and one Unity test fixture for every feature."""
+"""Generate bounded acceptance checklists and Unity test fixtures per feature."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -63,7 +64,7 @@ CHECKLIST_SCHEMA: dict[str, Any] = {
                         "maxItems": 6,
                         "items": {"type": "string"},
                     },
-                    "title": {"type": "string"},
+                    "title": {"type": "string", "maxLength": 100},
                     "category": {
                         "type": "string",
                         "enum": [
@@ -79,10 +80,10 @@ CHECKLIST_SCHEMA: dict[str, Any] = {
                             "regression",
                         ],
                     },
-                    "setup": {"type": "string"},
-                    "action": {"type": "string"},
-                    "expected": {"type": "string"},
-                    "evidence": {"type": "string"},
+                    "setup": {"type": "string", "maxLength": 240},
+                    "action": {"type": "string", "maxLength": 240},
+                    "expected": {"type": "string", "maxLength": 320},
+                    "evidence": {"type": "string", "maxLength": 320},
                 },
             },
         }
@@ -135,6 +136,7 @@ class FeatureChecklist:
     feature_origin: str
     model_role: str
     criteria: tuple[ChecklistCriterion, ...]
+    source_fingerprint: str = ""
 
     @property
     def criterion_prefix(self) -> str:
@@ -158,6 +160,7 @@ class FeatureChecklist:
             "feature_description": self.feature_description,
             "feature_origin": self.feature_origin,
             "model_role": self.model_role,
+            "source_fingerprint": self.source_fingerprint,
             "item_count": len(self.criteria),
             "criteria": [
                 {**asdict(item), "feature_ids": list(item.feature_ids)} for item in self.criteria
@@ -184,7 +187,11 @@ class ProjectFeatureChecklist:
             "project_id": self.project_id,
             "model_role": self.model_role,
             "checklist_count": len(self.feature_checklists),
-            "item_count_per_checklist": CHECKLIST_ITEM_COUNT,
+            "item_count_per_checklist": (
+                len(self.feature_checklists[0].criteria)
+                if len({len(item.criteria) for item in self.feature_checklists}) == 1
+                else None
+            ),
             "total_item_count": len(self.criteria),
             "feature_checklists": [checklist.to_dict() for checklist in self.feature_checklists],
         }
@@ -205,6 +212,7 @@ class DynamicFeatureChecklistGenerator:
         source_root: Path,
         on_feature_ready: Callable[[ProjectFeatureChecklist], None] | None = None,
         max_workers: int = 1,
+        existing: ProjectFeatureChecklist | None = None,
     ) -> ProjectFeatureChecklist:
         features = logic_analysis["features"]
         if not features:
@@ -213,6 +221,15 @@ class DynamicFeatureChecklistGenerator:
             raise ValueError("Checklist worker count must be between 1 and 4")
         known_feature_ids = {feature["feature_id"] for feature in features}
         completed: dict[int, FeatureChecklist] = {}
+        failures: list[str] = []
+        if existing is not None:
+            stored = {item.feature_id: item for item in existing.feature_checklists}
+            for feature_index, feature in enumerate(features, start=1):
+                candidate = stored.get(feature["feature_id"])
+                if candidate is not None and _checklist_matches_feature(
+                    candidate, feature, feature_index, project_id
+                ):
+                    completed[feature_index] = candidate
 
         def publish(feature_index: int, checklist: FeatureChecklist) -> None:
             completed[feature_index] = checklist
@@ -228,17 +245,23 @@ class DynamicFeatureChecklistGenerator:
 
         if max_workers == 1:
             for feature_index, feature in enumerate(features, start=1):
-                publish(
-                    feature_index,
-                    self._generate_feature(
+                if feature_index in completed:
+                    continue
+                try:
+                    checklist = self._generate_feature(
                         project_id,
                         logic_analysis,
                         source_root,
                         known_feature_ids,
                         feature_index,
                         feature,
-                    ),
-                )
+                    )
+                except (RuntimeError, TimeoutError, TypeError, ValueError) as error:
+                    failures.append(
+                        f"{feature['feature_id']}: {type(error).__name__}: {str(error)[:1500]}"
+                    )
+                    continue
+                publish(feature_index, checklist)
         else:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
@@ -252,14 +275,23 @@ class DynamicFeatureChecklistGenerator:
                         feature,
                     ): feature_index
                     for feature_index, feature in enumerate(features, start=1)
+                    if feature_index not in completed
                 }
-                try:
-                    for future in as_completed(futures):
-                        publish(futures[future], future.result())
-                except Exception:
-                    for future in futures:
-                        future.cancel()
-                    raise
+                for future in as_completed(futures):
+                    feature_index = futures[future]
+                    try:
+                        checklist = future.result()
+                    except (RuntimeError, TimeoutError, TypeError, ValueError) as error:
+                        failures.append(
+                            f"{features[feature_index - 1]['feature_id']}: {type(error).__name__}: {str(error)[:1500]}"
+                        )
+                        continue
+                    publish(feature_index, checklist)
+        if failures:
+            raise RuntimeError(
+                "CHECKLIST_GENERATION_FAILED; completed checklists preserved; "
+                + " | ".join(failures)
+            )
         return ProjectFeatureChecklist(
             checklist_version="1.2.0",
             project_id=project_id,
@@ -276,48 +308,81 @@ class DynamicFeatureChecklistGenerator:
         feature_index: int,
         feature: FeatureRequirement,
     ) -> FeatureChecklist:
+        item_count = _feature_checklist_item_count(feature)
+        batch_count = item_count // CHECKLIST_BATCH_SIZE
         criteria: list[ChecklistCriterion] = []
         criterion_fingerprints: set[str] = set()
-        for batch_index in range(CHECKLIST_BATCH_COUNT):
-            response = self.client.generate_json(
-                self._prompt(
+        for batch_index in range(batch_count):
+            retry_feedback = ""
+            attempts = 2 if self.provider in {"codex_cli", "claude_code"} else 3
+            for attempt in range(attempts):
+                prompt = self._prompt(
                     logic_analysis,
                     feature,
                     source_root,
                     batch_index=batch_index,
+                    batch_count=batch_count,
+                    item_count=item_count,
                     previous_criteria=criteria,
-                ),
-                CHECKLIST_SCHEMA,
-            )
-            raw_criteria = response.get("criteria")
-            if not isinstance(raw_criteria, list) or len(raw_criteria) != CHECKLIST_BATCH_SIZE:
-                raise ValueError(
-                    f"Feature {feature['feature_id']} checklist batch {batch_index + 1} "
-                    f"must contain exactly {CHECKLIST_BATCH_SIZE} items"
                 )
-            for local_index, item in enumerate(raw_criteria, start=1):
-                if not isinstance(item, Mapping):
-                    raise TypeError("Generated checklist items must be objects")
-                criterion_index = batch_index * CHECKLIST_BATCH_SIZE + local_index
-                criterion = _validate_criterion(
-                    feature_index,
-                    criterion_index,
-                    item,
-                    known_feature_ids,
-                    feature["feature_id"],
-                )
-                fingerprint = _criterion_fingerprint(criterion)
-                if fingerprint in criterion_fingerprints:
-                    raise ValueError(
-                        f"Feature {feature['feature_id']} checklist contains a duplicate "
-                        f"criterion in batch {batch_index + 1}"
+                if retry_feedback:
+                    prompt = (
+                        "The previous batch was rejected: "
+                        + retry_feedback
+                        + ". Regenerate all ten checks with distinct title, action, and expected result.\n"
+                        + prompt
                     )
-                criterion_fingerprints.add(fingerprint)
-                criteria.append(criterion)
-        if len(criteria) != CHECKLIST_ITEM_COUNT:
+                try:
+                    response = self.client.generate_json(
+                        "Keep every field concise. Return complete valid JSON; do not include full test scripts.\n"
+                        + prompt,
+                        CHECKLIST_SCHEMA,
+                    )
+                    raw_criteria = response.get("criteria")
+                    if (
+                        not isinstance(raw_criteria, list)
+                        or len(raw_criteria) != CHECKLIST_BATCH_SIZE
+                    ):
+                        raise ValueError(
+                            f"Feature {feature['feature_id']} checklist batch {batch_index + 1} "
+                            f"must contain exactly {CHECKLIST_BATCH_SIZE} items"
+                        )
+                    batch_criteria: list[ChecklistCriterion] = []
+                    batch_fingerprints: set[str] = set()
+                    for local_index, item in enumerate(raw_criteria, start=1):
+                        if not isinstance(item, Mapping):
+                            raise TypeError("Generated checklist items must be objects")
+                        criterion_index = batch_index * CHECKLIST_BATCH_SIZE + local_index
+                        criterion = _validate_criterion(
+                            feature_index,
+                            criterion_index,
+                            item,
+                            known_feature_ids,
+                            feature["feature_id"],
+                        )
+                        fingerprint = _criterion_fingerprint(criterion)
+                        if (
+                            fingerprint in criterion_fingerprints
+                            or fingerprint in batch_fingerprints
+                        ):
+                            raise ValueError(
+                                f"Feature {feature['feature_id']} checklist contains a duplicate "
+                                f"criterion in batch {batch_index + 1}"
+                            )
+                        batch_fingerprints.add(fingerprint)
+                        batch_criteria.append(criterion)
+                except (RuntimeError, TimeoutError, TypeError, ValueError) as error:
+                    if attempt == attempts - 1:
+                        raise
+                    retry_feedback = str(error)[:1500]
+                    continue
+                criteria.extend(batch_criteria)
+                criterion_fingerprints.update(batch_fingerprints)
+                break
+        if len(criteria) != item_count:
             raise ValueError(
                 f"Feature {feature['feature_id']} checklist must contain exactly "
-                f"{CHECKLIST_ITEM_COUNT} items after batching"
+                f"{item_count} items after batching"
             )
         return FeatureChecklist(
             checklist_version="1.2.0",
@@ -329,6 +394,7 @@ class DynamicFeatureChecklistGenerator:
             feature_origin=feature.get("origin", "user"),
             model_role=f"feature_checklist_generation:{self.provider}",
             criteria=tuple(criteria),
+            source_fingerprint=_feature_source_fingerprint(feature),
         )
 
     @staticmethod
@@ -338,6 +404,8 @@ class DynamicFeatureChecklistGenerator:
         source_root: Path,
         *,
         batch_index: int,
+        batch_count: int,
+        item_count: int,
         previous_criteria: list[ChecklistCriterion],
     ) -> str:
         features = [
@@ -352,20 +420,35 @@ class DynamicFeatureChecklistGenerator:
             }
             for feature in logic_analysis["features"]
         ]
+        target_id = target_feature["feature_id"]
+        related_ids = {target_id, *target_feature.get("supports_feature_ids", [])}
+        related_ids.update(
+            feature["feature_id"]
+            for feature in logic_analysis["features"]
+            if target_id in feature.get("supports_feature_ids", [])
+        )
         payload = {
             "genre": logic_analysis["genre"],
             "viewpoint": logic_analysis["viewpoint"],
             "core_loop": logic_analysis["core_loop"],
-            "target_feature": next(
-                item for item in features if item["feature_id"] == target_feature["feature_id"]
-            ),
-            "related_features": features,
+            "target_feature": {
+                **next(
+                    item for item in features if item["feature_id"] == target_feature["feature_id"]
+                ),
+                "acceptance_items": target_feature.get("acceptance_items", []),
+            },
+            "related_features": [
+                feature for feature in features if feature["feature_id"] in related_ids
+            ],
             "existing_checklist_catalog": _existing_checklist_catalog(source_root),
             "batch": {
                 "index": batch_index + 1,
-                "count": CHECKLIST_BATCH_COUNT,
+                "count": batch_count,
                 "item_count": CHECKLIST_BATCH_SIZE,
                 "focus": _checklist_batch_focus(batch_index),
+                "assigned_acceptance_items": target_feature.get("acceptance_items", [])[
+                    batch_index * CHECKLIST_BATCH_SIZE : (batch_index + 1) * CHECKLIST_BATCH_SIZE
+                ],
             },
             "previous_criteria": [
                 {
@@ -378,14 +461,20 @@ class DynamicFeatureChecklistGenerator:
         }
         return (
             f"You are a Unity QA lead. Create batch {batch_index + 1} of "
-            f"{CHECKLIST_BATCH_COUNT} containing EXACTLY {CHECKLIST_BATCH_SIZE} concise, "
+            f"{batch_count} containing EXACTLY {CHECKLIST_BATCH_SIZE} concise, "
             "non-overlapping automated PlayMode acceptance checks for target_feature only. The "
-            f"host will combine all batches into one {CHECKLIST_ITEM_COUNT}-item checklist. Every "
+            f"host will combine all batches into one {item_count}-item checklist. Cover every "
+            "target_feature.acceptance_items rule, including numbers and explicit exclusions. "
+            "For each batch.assigned_acceptance_items, create one check in the same order before "
+            "adding integration or regression checks. Every "
             "criterion must include target_feature.feature_id in feature_ids. Related feature ids "
             "may additionally appear only when checking a real dependency or integration. Cover "
             "the target feature's initialization, required objects/data, runtime binding, trigger, "
             "state transitions, observable consequence, player feedback, boundary values, repeated "
             "execution, pause/restart/recovery, dependency integration, and regression behavior. "
+            "For an upgrade feature, check both the declared live stat change and an observable "
+            "gameplay consequence of that change (such as a shot, hit, range, or movement), "
+            "using the requested weapon rather than assuming a sword or projectile. "
             "Adapt relevant patterns from existing_checklist_catalog. Every check must be "
             "executable by Unity Test Framework without a human, screenshot judgment, network "
             "request, external service, or arbitrary delay. State exact setup, action, expected "
@@ -403,6 +492,8 @@ class UnityChecklistTestGenerator:
     def __init__(self, client: StructuredJsonClient, provider: str) -> None:
         self.client = client
         self.provider = provider
+        self.last_response: Mapping[str, Any] | None = None
+        self.last_expected_ids: list[str] = []
 
     def generate(
         self,
@@ -413,9 +504,12 @@ class UnityChecklistTestGenerator:
     ) -> str:
         api_contract = _runtime_api_context(project_root, checklist)
         generated_methods: list[str] = []
-        for batch_index in range(TEST_METHOD_BATCH_COUNT):
+        for batch_index in range(len(checklist.criteria) // TEST_METHOD_BATCH_SIZE):
             start = batch_index * TEST_METHOD_BATCH_SIZE
             batch_criteria = checklist.criteria[start : start + TEST_METHOD_BATCH_SIZE]
+            expected_ids = [criterion.criterion_id for criterion in batch_criteria]
+            self.last_response = None
+            self.last_expected_ids = expected_ids
             response = self.client.generate_json(
                 self._prompt(
                     checklist,
@@ -426,13 +520,13 @@ class UnityChecklistTestGenerator:
                 ),
                 TEST_METHOD_BATCH_SCHEMA,
             )
+            self.last_response = response
             raw_methods = response.get("methods")
             if not isinstance(raw_methods, list) or len(raw_methods) != TEST_METHOD_BATCH_SIZE:
                 raise ValueError(
                     f"Unity checklist test batch {batch_index + 1} must contain exactly "
                     f"{TEST_METHOD_BATCH_SIZE} methods"
                 )
-            expected_ids = [criterion.criterion_id for criterion in batch_criteria]
             for expected_id, item in zip(expected_ids, raw_methods, strict=True):
                 if not isinstance(item, Mapping):
                     raise TypeError("Unity checklist test methods must be objects")
@@ -475,22 +569,28 @@ class UnityChecklistTestGenerator:
             "previous_generation_error": feedback[-3000:],
             "batch": {
                 "index": batch_index + 1,
-                "count": TEST_METHOD_BATCH_COUNT,
+                "count": len(checklist.criteria) // TEST_METHOD_BATCH_SIZE,
                 "item_count": TEST_METHOD_BATCH_SIZE,
             },
         }
         expected_ids = [criterion.criterion_id for criterion in batch_criteria]
         return (
             f"You are a senior Unity Test Framework engineer. Create batch {batch_index + 1} of "
-            f"{TEST_METHOD_BATCH_COUNT} with EXACTLY {TEST_METHOD_BATCH_SIZE} self-contained "
-            "PlayMode [UnityTest] methods. Return a methods array in the required structured "
-            "format. Each source_code value must contain one complete method only: no using "
-            "directives, namespace, class, fields, properties, or helper methods. The host will "
-            f"assemble all batches into class {checklist.test_class_name}. Each method name must "
-            "start with its exact criterion_id, and every expected id must appear exactly once. "
+            f"{len(checklist.criteria) // TEST_METHOD_BATCH_SIZE} with EXACTLY "
+            f"{TEST_METHOD_BATCH_SIZE} self-contained "
+            "PlayMode test bodies. Return a methods array in the required structured "
+            "format. Each source_code value contains only the executable statements inside "
+            "one IEnumerator test method, including a real assertion. Do not emit method "
+            "signatures, attributes, using directives, namespace, class, fields, properties, "
+            "or helper methods. The host owns [UnityTest], the IEnumerator signature, method "
+            f"names, and fixture class {checklist.test_class_name}. Return every expected id "
+            "exactly once in criterion_id. "
             "Use only public APIs listed in runtime_api_contract; a missing member is nonexistent. "
             "Create the minimum deterministic objects inside each method and clean them up. Tests must "
-            "assert runtime behavior, not source text. Do not use UnityEditor, file/network/process "
+            "assert runtime behavior, not source text. "
+            "For upgrade checks, exercise the actual action after selection; a changed UI label "
+            "or acquired-upgrade count alone is insufficient. Do not assume a weapon type. "
+            "Do not use UnityEditor, file/network/process "
             "APIs, reflection to private fields, ignored tests, Assert.Pass-only tests, or waits "
             "longer than one frame. Keep setup and assertions concise to remain within the output "
             "budget. Return only the structured JSON object and no markdown.\n\n"
@@ -604,8 +704,8 @@ def _feature_checklist_from_dict(payload: object, default_project_id: str) -> Fe
     if not isinstance(payload, Mapping):
         raise TypeError("Stored feature checklist must be an object")
     raw_criteria = payload.get("criteria")
-    if not isinstance(raw_criteria, list) or len(raw_criteria) != CHECKLIST_ITEM_COUNT:
-        raise ValueError(f"Stored feature checklist must contain {CHECKLIST_ITEM_COUNT} criteria")
+    if not isinstance(raw_criteria, list) or len(raw_criteria) not in {10, 20, 30}:
+        raise ValueError("Stored feature checklist must contain 10, 20, or 30 criteria")
     criteria = tuple(
         ChecklistCriterion(
             criterion_id=str(item["criterion_id"]),
@@ -620,7 +720,7 @@ def _feature_checklist_from_dict(payload: object, default_project_id: str) -> Fe
         for item in raw_criteria
         if isinstance(item, Mapping)
     )
-    if len(criteria) != CHECKLIST_ITEM_COUNT:
+    if len(criteria) != len(raw_criteria):
         raise ValueError("Stored feature checklist contains invalid criteria")
     return FeatureChecklist(
         checklist_version=str(payload.get("checklist_version", "1.2.0")),
@@ -632,6 +732,7 @@ def _feature_checklist_from_dict(payload: object, default_project_id: str) -> Fe
         feature_origin=str(payload.get("feature_origin", "user")),
         model_role=str(payload.get("model_role", "stored")),
         criteria=criteria,
+        source_fingerprint=str(payload.get("source_fingerprint", "")),
     )
 
 
@@ -678,6 +779,69 @@ def _checklist_batch_focus(batch_index: int) -> list[str]:
     if not 0 <= batch_index < len(focuses):
         raise ValueError("Checklist batch index is out of range")
     return focuses[batch_index]
+
+
+def _feature_source_fingerprint(feature: FeatureRequirement) -> str:
+    fields = (
+        "feature_id",
+        "name",
+        "description",
+        "source_text",
+        "origin",
+        "acceptance_criteria",
+        "acceptance_items",
+        "supports_feature_ids",
+        "dependency_role",
+        "checklist",
+    )
+    payload = {field: feature.get(field) for field in fields}
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _checklist_matches_feature(
+    checklist: FeatureChecklist,
+    feature: FeatureRequirement,
+    feature_index: int,
+    project_id: str,
+) -> bool:
+    expected_count = _feature_checklist_item_count(feature)
+    return (
+        checklist.project_id == project_id
+        and checklist.feature_id == feature["feature_id"]
+        and checklist.source_fingerprint == _feature_source_fingerprint(feature)
+        and len(checklist.criteria) == expected_count
+        and all(
+            criterion.criterion_id == f"DFC{feature_index:03d}_{index:02d}"
+            and feature["feature_id"] in criterion.feature_ids
+            for index, criterion in enumerate(checklist.criteria, start=1)
+        )
+    )
+
+
+def checklist_matches_approved_features(
+    checklist: ProjectFeatureChecklist | None,
+    logic_analysis: LogicAnalysis,
+    project_id: str,
+) -> bool:
+    features = logic_analysis["features"]
+    return (
+        checklist is not None
+        and len(checklist.feature_checklists) == len(features)
+        and all(
+            _checklist_matches_feature(candidate, feature, index, project_id)
+            for index, (candidate, feature) in enumerate(
+                zip(checklist.feature_checklists, features, strict=True), start=1
+            )
+        )
+    )
+
+
+def _feature_checklist_item_count(feature: FeatureRequirement) -> int:
+    items = feature.get("acceptance_items")
+    if not items:
+        return CHECKLIST_BATCH_SIZE
+    return min(CHECKLIST_ITEM_COUNT, max(CHECKLIST_BATCH_SIZE, ((len(items) + 9) // 10) * 10))
 
 
 def _criterion_fingerprint(criterion: ChecklistCriterion) -> str:
@@ -767,8 +931,8 @@ def _validate_test_source(source: str, checklist: FeatureChecklist) -> str:
 
 def _validate_test_method_source(source: str, criterion_id: str) -> str:
     normalized = source.strip()
-    if normalized.startswith("```"):
-        raise ValueError("Generated Unity test method must not contain markdown fences")
+    if not normalized or chr(96) * 3 in normalized:
+        raise ValueError("Generated Unity test body must be nonempty plain C#")
     forbidden = (
         "UnityEditor",
         "System.IO",
@@ -781,24 +945,62 @@ def _validate_test_method_source(source: str, criterion_id: str) -> str:
         " class ",
         "using ",
     )
-    padded = f" {normalized} "
-    if any(token in padded for token in forbidden):
-        raise ValueError("Generated Unity test method uses a forbidden API or declaration")
-    method_ids = re.findall(
-        r"\[UnityTest\]\s*public\s+IEnumerator\s+(DFC\d{3}_\d{2})[_A-Za-z0-9]*\s*\(",
+    if any(token in f" {normalized} " for token in forbidden):
+        raise ValueError("Generated Unity test body uses a forbidden API or declaration")
+    if re.search(r"\[(?:Test|TestCase)(?:\s*\(|\s*\])", normalized):
+        raise ValueError("Generated Unity test method must use [UnityTest], not [Test]")
+
+    # Older providers may still return a complete method. Extract its body, but
+    # never trust AI-authored fixture names or method declarations.
+    method = re.search(
+        r"\bpublic\s+(?:(?:global::)?System\.Collections\.)?IEnumerator\s+"
+        r"(?P<name>[A-Za-z_]\w*)\s*\(\s*\)\s*\{",
         normalized,
     )
-    if method_ids != [criterion_id]:
-        raise ValueError(
-            f"Generated Unity test method must implement only {criterion_id}; got {method_ids}"
-        )
-    return normalized
+    timeout = ""
+    if method:
+        if method.group("name") != criterion_id and not method.group("name").startswith(
+            criterion_id + "_"
+        ):
+            raise ValueError(f"Generated Unity test method must implement only {criterion_id}")
+        if (
+            len(
+                re.findall(
+                    r"\bpublic\s+(?:(?:global::)?System\.Collections\.)?IEnumerator\s+"
+                    r"\w+\s*\(",
+                    normalized,
+                )
+            )
+            != 1
+        ):
+            raise ValueError("Generated Unity test source must contain one method")
+        prefix = normalized[: method.start()]
+        if re.sub(r"\[UnityTest\]|\[Timeout\(\d+\)\]|\s", "", prefix):
+            raise ValueError("Generated Unity test source contains extra declarations")
+        timeout_match = re.search(r"\[Timeout\(\d+\)\]", prefix)
+        timeout = timeout_match.group() + "\n" if timeout_match else ""
+        if not normalized.endswith("}"):
+            raise ValueError("Generated Unity test method has trailing source")
+        body = normalized[method.end() : -1].strip()
+    else:
+        if re.search(r"\b(?:public|private|protected|internal)\s+\w+\s+\w+\s*\(", normalized):
+            raise ValueError(f"Generated Unity test method must implement only {criterion_id}")
+        body = normalized
+
+    if not body or not re.search(r"\bAssert\.|\bCollectionAssert\.", body):
+        raise ValueError("Generated Unity test body requires an executable assertion")
+    if not re.search(r"\byield\s+(?:return|break)\b", body):
+        body += "\nyield return null;"
+    return (
+        f"{timeout}[UnityTest]\npublic IEnumerator {criterion_id}_Check()\n"
+        "{\n" + textwrap.indent(body, "    ") + "\n}"
+    )
 
 
 def _assemble_test_source(checklist: FeatureChecklist, methods: list[str]) -> str:
-    if len(methods) != CHECKLIST_ITEM_COUNT:
+    if len(methods) != len(checklist.criteria):
         raise ValueError(
-            f"Unity checklist fixture requires {CHECKLIST_ITEM_COUNT} generated methods"
+            f"Unity checklist fixture requires {len(checklist.criteria)} generated methods"
         )
     members = "\n\n".join(textwrap.indent(method, "        ") for method in methods)
     return (
@@ -901,7 +1103,10 @@ def _project_checklist_markdown(checklist: ProjectFeatureChecklist) -> str:
         "",
         f"- 프로젝트 ID: `{checklist.project_id}`",
         f"- Feature Checklist 수: {len(checklist.feature_checklists)}",
-        f"- Checklist당 항목 수: {CHECKLIST_ITEM_COUNT}",
+        "- Checklist당 항목 수: "
+        + ", ".join(
+            f"{item.feature_id}={len(item.criteria)}" for item in checklist.feature_checklists
+        ),
         f"- 전체 검증 항목 수: {len(checklist.criteria)}",
         "",
     ]

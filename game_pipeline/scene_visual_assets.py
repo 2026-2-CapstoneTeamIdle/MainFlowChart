@@ -21,7 +21,6 @@ from __future__ import annotations
 
 from typing import cast
 
-from game_pipeline.asset_specs import classify_image_kind
 from mainflow.contracts import AssetRequirement, GameSpec, LevelPlan
 
 STAGE_BACKGROUND_ASSET_ID = "stage_background"
@@ -45,7 +44,7 @@ _PLATFORMER_OBJECT_VISUALS: tuple[tuple[str, str, str, str], ...] = (
         "platformer_collectible",
         "collectibles",
         "수집물",
-        "획득하면 점수가 오르는 작고 반짝이는 보석 아이템 하나",
+        "획득하면 점수가 오르는 반짝이는 보석 아이템 하나. 게임 화면에서 쉽게 식별될 만큼 크게, 뚜렷한 실루엣으로",
     ),
     (
         "platformer_checkpoint",
@@ -140,8 +139,12 @@ def scene_visual_requirements(
 
     # Every genre gets a full-screen "Background" object. Genres whose preset already
     # requests a background image (visual novel, raising sim) bind that one instead.
+    # Descriptions of other sprites may say "do not draw a background". That
+    # negative instruction must not suppress the actual scene background.
     has_background = any(
-        classify_image_kind(item["purpose"], item["description"]) == "background"
+        "background" in item["asset_id"].lower()
+        or "배경" in item["purpose"]
+        or "background" in item["purpose"].lower()
         for item in existing
     )
     if not has_background and STAGE_BACKGROUND_ASSET_ID not in existing_ids:

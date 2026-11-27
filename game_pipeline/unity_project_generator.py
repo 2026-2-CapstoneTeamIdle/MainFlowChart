@@ -10,6 +10,7 @@ import shutil
 import tempfile
 import time
 import zipfile
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -18,6 +19,7 @@ from game_pipeline.asset_specs import (
     build_image_generation_spec,
     build_sound_generation_spec,
 )
+from game_pipeline.module_init_order import order_selected_modules
 from mainflow.contracts import (
     CONTRACT_VERSION,
     ArtifactReference,
@@ -100,6 +102,8 @@ class UnityProjectGenerator:
         """Generate a project atomically and return its important paths."""
 
         self._validate_design(design)
+        design = deepcopy(design)
+        design["selected_modules"] = order_selected_modules(design["selected_modules"])
         destination_path = Path(destination).resolve()
         if destination_path.exists():
             raise FileExistsError(f"Unity project destination already exists: {destination_path}")

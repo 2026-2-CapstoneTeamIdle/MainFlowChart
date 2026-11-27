@@ -305,6 +305,15 @@ class GenreFeatureEnricher:
                         "origin": ("requirement_dependency" if is_dependency else "genre_inferred"),
                         "rationale": suggestion["rationale"],
                         "acceptance_criteria": suggestion["acceptance_criteria"],
+                        "acceptance_items": list(
+                            dict.fromkeys(
+                                [
+                                    suggestion["acceptance_criteria"],
+                                    *suggestion["checklist"]["expected_results"],
+                                    *suggestion["checklist"]["failure_signals"],
+                                ]
+                            )
+                        ),
                         "checklist": suggestion["checklist"],
                         "supports_feature_ids": suggestion["supports_feature_ids"],
                         "dependency_role": suggestion["dependency_role"],

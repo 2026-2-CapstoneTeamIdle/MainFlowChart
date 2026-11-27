@@ -93,6 +93,7 @@ def game_quality_validator_node(
             report, final_result, evidence.get("visual_validation_result")
         )
         report = _normalize_duration_limitation(report, final_result)
+        report = _enforce_ui_readability(report, evidence.get("visual_validation_result"))
         if (
             final_result.get("status") == "passed"
             and report.get("status") in {"needs_revision", "failed"}
@@ -150,6 +151,36 @@ def game_quality_validator_node(
     if refreshed_final_validation is not None:
         output["final_validation_result"] = refreshed_final_validation
     return output
+
+
+def _enforce_ui_readability(
+    report: GameValidatorAIResult, visual_result: dict[str, Any] | None
+) -> GameValidatorAIResult:
+    """Keep measured HUD defects in the repair loop even when an AI reviewer overlooks them."""
+    ui = (visual_result or {}).get("ui_readability")
+    if not isinstance(ui, dict) or ui.get("status") != "needs_revision":
+        return report
+    issues = ui.get("issues")
+    if not isinstance(issues, list) or not issues:
+        return report
+    existing = list(report.get("findings", []))
+    marker = "HUD capture audit:"
+    if not any(marker in str(finding.get("message", "")) for finding in existing):
+        screenshot = ui.get("screenshot")
+        evidence = (
+            [screenshot["relative_path"]]
+            if isinstance(screenshot, dict) and isinstance(screenshot.get("relative_path"), str)
+            else []
+        )
+        existing.append(
+            {
+                "severity": "warning",
+                "category": "presentation",
+                "message": marker + " " + "; ".join(str(issue) for issue in issues[:4]),
+                "evidence": evidence,
+            }
+        )
+    return cast(GameValidatorAIResult, {**report, "status": "needs_revision", "findings": existing})
 
 
 def _repair_and_review_quality(
@@ -316,6 +347,7 @@ def _repair_and_review_quality(
                 report,
                 evidence.get("final_validation_result", {"status": "passed"}),
             )
+            report = _enforce_ui_readability(report, evidence.get("visual_validation_result"))
             record(f"audit_{attempt:02d}", report)
             if report.get("status") == "passed":
                 return report

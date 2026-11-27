@@ -46,5 +46,10 @@ namespace TeamIdle.GameTemplate.SurvivorLike
 
         [TextArea]
         public string description = string.Empty;
+
+        // The live gameplay component named by this stat ID must expose the
+        // value through IGameplayStatSource. The validator checks this value.
+        public string observableStatId = string.Empty;
+        public string expectedStatChange = "change";
     }
 }

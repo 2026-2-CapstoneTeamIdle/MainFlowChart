@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import cast
@@ -16,8 +17,9 @@ from game_pipeline.gameplay_contracts import (
     requested_zone_count,
 )
 from mainflow.ArtifactManager import ArtifactManager
-from mainflow.contracts import LogicAnalysis, WorkflowState
+from mainflow.contracts import LogicAnalysis, MAX_APPROVED_FEATURES, ParsedRequest, WorkflowState
 from mainflow.nodes import analysis_node, logic_analysis_node, parse_input_node, user_input_node
+from mainflow.nodes.logic_analysis import _load_approved_logic_analysis
 from mainflow.preview_features import main as preview_main
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +47,409 @@ def _request_payload() -> dict[str, str]:
         "viewpoint": "사이드뷰",
         "condition": "플레이어가 좌우로 이동하고 점프한 뒤 목적지에 도달한다.",
     }
+
+
+@pytest.mark.parametrize("status", ["completed", "failed", "cancelled"])
+def test_terminal_processing_time_is_frozen_and_restored(tmp_path, status):
+    service = _load_service_module()
+    root = tmp_path / ("a" * 32)
+    root.mkdir()
+    (root / "request.json").write_text("{}")
+    job = service.WorkflowJob(
+        root.name, "generate", root / "request.json", root, status=status, progress_started_at=100
+    )
+    with patch.object(service.time, "monotonic", return_value=150):
+        job.persist_state()
+    with patch.object(service.time, "monotonic", return_value=900):
+        assert job.processing_seconds() == 50
+        with patch.object(service, "JOB_ROOT", tmp_path):
+            restored = service.WorkflowJobManager(Mock()).get(job.job_id)
+    with patch.object(service.time, "monotonic", return_value=1500):
+        assert restored.processing_seconds() == 50
+
+
+def test_cancelled_worker_cannot_fail_new_revision(tmp_path):
+    service = _load_service_module()
+    manager = service.WorkflowJobManager(Mock())
+    job = service.WorkflowJob(
+        "race",
+        "generate",
+        tmp_path / "request.json",
+        tmp_path,
+        status="completed",
+        game_builder="codex_cli",
+        revision_status="running",
+        active_revision_id="old",
+    )
+    manager.jobs[job.job_id] = job
+
+    def delayed_failure(*args):
+        manager.cancel(job.job_id)
+        with (
+            patch.object(manager, "_unity_project_root", return_value=tmp_path),
+            patch.object(service.threading, "Thread"),
+        ):
+            manager.revise(job.job_id, "new request")
+        raise RuntimeError("old process exited")
+
+    with patch.object(manager, "_run_revision_body", side_effect=delayed_failure):
+        manager._run_revision(job, tmp_path, "old")
+    assert job.revision_status == "running"
+    assert job.active_revision_id != "old"
+    assert job.revision_messages[-1]["content"] == "new request"
+    assert not any("old process exited" in line for line in job.logs)
+
+
+def test_stale_stream_does_not_clear_new_process_or_write_logs(tmp_path):
+    service = _load_service_module()
+    manager = service.WorkflowJobManager(Mock())
+    job = service.WorkflowJob(
+        "stream",
+        "generate",
+        tmp_path / "request.json",
+        tmp_path,
+        revision_status="running",
+        active_revision_id="old",
+    )
+    newer_process = Mock()
+    old_process = Mock()
+
+    def old_output():
+        job.active_revision_id = "new"
+        job.process = newer_process
+        yield "stale output"
+
+    old_process.stdout = old_output()
+    old_process.wait.return_value = 1
+    with patch.object(service.subprocess, "Popen", return_value=old_process):
+        manager._stream_process(job, ["agent"], {"ENV": "test"}, revision_id="old")
+    assert job.process is newer_process
+    assert job.logs == []
+
+
+@pytest.mark.parametrize("validation_status", [None, "failed", "passed"])
+def test_revision_completion_requires_host_validation_result(tmp_path, validation_status):
+    service = _load_service_module()
+    settings = Mock()
+    settings.process_environment.return_value = {}
+    manager = service.WorkflowJobManager(settings)
+    request_file = tmp_path / "request.json"
+    request_file.write_text("{}")
+    job = service.WorkflowJob(
+        "verified",
+        "generate",
+        request_file,
+        tmp_path,
+        game_builder="codex_cli",
+        status="completed",
+        revision_status="running",
+        active_revision_id="current",
+    )
+
+    def run_worker(job, command, environment, **kwargs):
+        audit = Path(command[-1]).parent
+        (audit / "revision_result.json").write_text(
+            json.dumps(
+                {
+                    "status": "completed",
+                    "summary": "agent completed",
+                    "validation_status": validation_status,
+                }
+            )
+        )
+        return 0
+
+    with patch.object(manager, "_stream_process", side_effect=run_worker):
+        manager._run_revision(job, tmp_path, "current")
+    assert job.revision_status == ("completed" if validation_status == "passed" else "failed")
+
+
+def test_revision_rejects_unfinished_or_duplicate_requests(tmp_path):
+    service = _load_service_module()
+    manager = service.WorkflowJobManager(Mock())
+    job = service.WorkflowJob(
+        "chat-test", "generate", tmp_path / "request.json", tmp_path, game_builder="codex_cli"
+    )
+    manager.jobs[job.job_id] = job
+    with pytest.raises(ValueError, match="생성"):
+        manager.revise(job.job_id, "점프 높이를 늘려줘")
+    job.status = "completed"
+    job.revision_status = "running"
+    with pytest.raises(ValueError, match="이전"):
+        manager.revise(job.job_id, "점프 높이를 늘려줘")
+    with pytest.raises(ValueError, match="수정"):
+        manager.build_webgl(job.job_id)
+
+
+def test_output_directory_rejects_nonempty_folder(tmp_path):
+    service = _load_service_module()
+    (tmp_path / "keep.txt").write_text("preserve", encoding="utf-8")
+    request = service.GenerationRequest(
+        mode="generate", output_directory=str(tmp_path), **_request_payload()
+    )
+    manager = service.WorkflowJobManager(Mock())
+    with pytest.raises(ValueError, match="비어"):
+        manager.create(request)
+    assert (tmp_path / "keep.txt").read_text(encoding="utf-8") == "preserve"
+
+
+def test_folder_browser_lists_only_visible_directories(tmp_path):
+    service = _load_service_module()
+    (tmp_path / "나의 게임").mkdir()
+    (tmp_path / ".private").mkdir()
+    (tmp_path / "file.txt").write_text("not a directory", encoding="utf-8")
+    result = service.browse_project_directories(str(tmp_path))
+    assert result["path"] == str(tmp_path.resolve())
+    assert result["directories"] == [
+        {"name": "나의 게임", "path": str((tmp_path / "나의 게임").resolve())}
+    ]
+    with pytest.raises(ValueError):
+        service.browse_project_directories(str(tmp_path / "missing"))
+
+
+def test_project_export_blocks_traversal_and_caches(tmp_path):
+    service = _load_service_module()
+    manager = service.WorkflowJobManager(Mock())
+    job = service.WorkflowJob(
+        "export-test", "generate", tmp_path / "request.json", tmp_path, status="completed"
+    )
+    manager.jobs[job.job_id] = job
+    (tmp_path / "Assets").mkdir()
+    (tmp_path / "Assets/Main.cs").write_text("// source", encoding="utf-8")
+    (tmp_path / "Library").mkdir()
+    (tmp_path / "Library/cache").write_text("cache", encoding="utf-8")
+    with patch.object(manager, "_unity_project_root", return_value=tmp_path):
+        manifest = manager.project_export_manifest(job.job_id)
+        assert manifest["files"] == ["Assets/Main.cs"]
+        assert (
+            manager.project_export_file(
+                job.job_id, "Assets/Main.cs", manifest["snapshot"]
+            ).read_text()
+            == "// source"
+        )
+        manager.release_project_export(job.job_id, manifest["snapshot"])
+        assert manager.project_export_file(job.job_id, "Assets/Main.cs").is_file()
+        for invalid in (
+            "Assets/../Library/cache",
+            "Library/cache",
+            "/etc/passwd",
+            "Assets\\Main.cs",
+        ):
+            with pytest.raises(ValueError):
+                manager.project_export_file(job.job_id, invalid)
+
+
+def test_project_export_snapshot_survives_revision_and_is_released(tmp_path):
+    service = _load_service_module()
+    manager = service.WorkflowJobManager(Mock())
+    job = service.WorkflowJob(
+        "snapshot", "generate", tmp_path / "request.json", tmp_path, status="completed"
+    )
+    manager.jobs[job.job_id] = job
+    source = tmp_path / "Assets" / "Game.cs"
+    source.parent.mkdir()
+    source.write_text("before", encoding="utf-8")
+    with patch.object(manager, "_unity_project_root", return_value=tmp_path):
+        manifest = manager.project_export_manifest(job.job_id)
+        source.write_text("after", encoding="utf-8")
+        job.revision_status = "running"
+        assert (
+            manager.project_export_file(
+                job.job_id, "Assets/Game.cs", manifest["snapshot"]
+            ).read_text()
+            == "before"
+        )
+        with pytest.raises(ValueError, match="수정"):
+            manager.project_export_manifest(job.job_id)
+        manager.release_project_export(job.job_id, manifest["snapshot"])
+        with pytest.raises(ValueError, match="찾을 수"):
+            manager.project_export_file(job.job_id, "Assets/Game.cs", manifest["snapshot"])
+        with pytest.raises(ValueError):
+            manager.project_export_file(job.job_id, "Assets/Game.cs", "../outside")
+
+
+def test_project_export_copy_allows_polling_and_waits_before_revision(tmp_path):
+    service = _load_service_module()
+    manager = service.WorkflowJobManager(Mock())
+    job = service.WorkflowJob(
+        "export-concurrency",
+        "generate",
+        tmp_path / "request.json",
+        tmp_path,
+        status="completed",
+        revision_status="idle",
+    )
+    manager.jobs[job.job_id] = job
+    source = tmp_path / "Assets" / "Game.cs"
+    source.parent.mkdir()
+    source.write_text("before", encoding="utf-8")
+    copy_started = threading.Event()
+    allow_copy = threading.Event()
+    polled = threading.Event()
+    revision_started = threading.Event()
+    errors = []
+    result = {}
+    real_copyfile = service.shutil.copyfile
+
+    def slow_copyfile(src, dst):
+        copy_started.set()
+        if not allow_copy.wait(timeout=5):
+            raise TimeoutError("export copy did not resume")
+        return real_copyfile(src, dst)
+
+    def export():
+        try:
+            result.update(manager.project_export_manifest(job.job_id))
+        except Exception as error:
+            errors.append(error)
+
+    def poll():
+        job.snapshot()
+        polled.set()
+
+    export_thread = threading.Thread(target=export, daemon=True)
+    poll_thread = threading.Thread(target=poll, daemon=True)
+    revision_thread = threading.Thread(
+        target=manager._run_revision, args=(job, tmp_path, "next"), daemon=True
+    )
+    with (
+        patch.object(manager, "_unity_project_root", return_value=tmp_path),
+        patch.object(service.shutil, "copyfile", side_effect=slow_copyfile),
+        patch.object(
+            manager, "_run_revision_guarded", side_effect=lambda *_: revision_started.set()
+        ),
+    ):
+        try:
+            export_thread.start()
+            assert copy_started.wait(timeout=2)
+            poll_thread.start()
+            assert polled.wait(timeout=2), "job status polling waited for project copy"
+            job.revision_status = "running"
+            job.active_revision_id = "next"
+            revision_thread.start()
+            assert not revision_started.wait(timeout=0.1)
+        finally:
+            allow_copy.set()
+            export_thread.join(timeout=5)
+            poll_thread.join(timeout=5)
+            if revision_thread.ident is not None:
+                revision_thread.join(timeout=5)
+    assert not errors
+    assert result["files"] == ["Assets/Game.cs"]
+    assert revision_started.is_set()
+
+
+def test_failed_job_logs_survive_manager_restart(tmp_path):
+    service = _load_service_module()
+    job_id = "a" * 32
+    root = tmp_path / job_id
+    root.mkdir()
+    (root / "request.json").write_text("{}", encoding="utf-8")
+    job = service.WorkflowJob(
+        job_id,
+        "test-generate",
+        root / "request.json",
+        root,
+        status="failed",
+        error="design failed",
+        game_builder="codex_cli",
+    )
+    job.append_log("[WEB][ERROR] design failed")
+    with patch.object(service, "JOB_ROOT", tmp_path):
+        restored = service.WorkflowJobManager(Mock()).get(job_id)
+    assert restored.status == "failed"
+    assert restored.error == "design failed"
+    assert restored.logs == ["[WEB][ERROR] design failed"]
+    assert restored.game_builder == "codex_cli"
+
+
+def test_legacy_job_restores_logs_without_state_file(tmp_path):
+    service = _load_service_module()
+    job_id = "b" * 32
+    root = tmp_path / job_id
+    root.mkdir()
+    (root / "request.json").write_text("{}", encoding="utf-8")
+    (root / "workflow.log").write_text("old failure log\n", encoding="utf-8")
+    with patch.object(service, "JOB_ROOT", tmp_path):
+        restored = service.WorkflowJobManager(Mock()).get(job_id)
+    assert restored.status == "failed"
+    assert restored.logs == ["old failure log"]
+
+
+def test_cancel_revision_keeps_generated_project_available(tmp_path):
+    service = _load_service_module()
+    manager = service.WorkflowJobManager(Mock())
+    job = service.WorkflowJob(
+        "cancel-revision",
+        "generate",
+        tmp_path / "request.json",
+        tmp_path,
+        status="completed",
+        revision_status="running",
+    )
+    manager.jobs[job.job_id] = job
+    result = manager.cancel(job.job_id)
+    assert result.status == "completed"
+    assert result.revision_status == "cancelled"
+    assert result.cancel_requested
+
+
+def test_processing_time_excludes_repeated_approval_waits(tmp_path):
+    service = _load_service_module()
+    job = service.WorkflowJob(
+        "timer", "generate", tmp_path / "request.json", tmp_path, progress_started_at=100
+    )
+    job.approval_wait_started_at = 110
+    with patch.object(service.time, "monotonic", return_value=200):
+        assert job.processing_seconds() == 10
+        job.resume_after_approval()
+    with patch.object(service.time, "monotonic", return_value=205):
+        assert job.processing_seconds() == 15
+    job.approval_wait_started_at = 205
+    with patch.object(service.time, "monotonic", return_value=305):
+        assert job.processing_seconds() == 15
+        job.resume_after_approval()
+    with patch.object(service.time, "monotonic", return_value=310):
+        assert job.processing_seconds() == 20
+
+
+def test_failed_project_can_receive_revision(tmp_path):
+    service = _load_service_module()
+    manager = service.WorkflowJobManager(Mock())
+    job = service.WorkflowJob(
+        "repair-failed",
+        "generate",
+        tmp_path / "request.json",
+        tmp_path,
+        status="failed",
+        game_builder="codex_cli",
+        project_id="20261126_04",
+    )
+    manager.jobs[job.job_id] = job
+    with (
+        patch.object(manager, "_unity_project_root", return_value=tmp_path),
+        patch.object(service.threading, "Thread"),
+    ):
+        result = manager.revise(job.job_id, "컴파일 오류 수정해줘")
+    assert result.revision_status == "running"
+    assert result.revision_messages[-1]["content"] == "컴파일 오류 수정해줘"
+
+
+def test_revision_setup_exception_is_reported(tmp_path):
+    service = _load_service_module()
+    manager = service.WorkflowJobManager(Mock())
+    job = service.WorkflowJob(
+        "chat-test",
+        "generate",
+        tmp_path / "missing.json",
+        tmp_path,
+        game_builder="claude_code",
+        status="completed",
+        revision_status="running",
+    )
+    manager._run_revision(job, tmp_path)
+    assert job.revision_status == "failed"
+    assert job.revision_messages[-1]["role"] == "assistant"
 
 
 def test_web_ui_exposes_completion_notifications() -> None:
@@ -267,6 +672,45 @@ def test_preview_and_confirmed_logic_use_identical_features(
         "data/condition_feature_analysis.json",
     )
     assert json.loads(condition_report)["status"] == "approved_preview"
+
+
+def test_approved_preview_accepts_large_feature_list_shown_to_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    source = workspace / "20261119_11" / "data" / "logic_analysis.json"
+    source.parent.mkdir(parents=True)
+    request = cast(ParsedRequest, _request_payload())
+    features = [
+        {
+            "feature_id": f"user-feature-{index:03d}",
+            "name": f"Feature {index}",
+            "description": f"Implement feature {index}",
+            "source_text": "User condition",
+        }
+        for index in range(1, 109)
+    ]
+    payload = {
+        "genre": request["genre"],
+        "viewpoint": request["viewpoint"],
+        "mood_style": request["mood_style"],
+        "features": features,
+    }
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("MAINFLOW_APPROVED_LOGIC_ANALYSIS", str(source))
+    manager = ArtifactManager(workspace)
+
+    approved = _load_approved_logic_analysis(manager, request)
+    assert approved is not None
+    assert len(approved["features"]) == 108
+
+    payload["features"] = [
+        {**features[0], "feature_id": f"user-feature-{index:03d}"}
+        for index in range(1, MAX_APPROVED_FEATURES + 2)
+    ]
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="approval limit|too many Features"):
+        _load_approved_logic_analysis(manager, request)
 
 
 def test_generation_request_rejects_custom_style_without_file():
@@ -692,6 +1136,33 @@ def test_workflow_progress_tracks_agent_and_validation_milestones(tmp_path: Path
     assert snapshot["progress_label"] == "Unity 컴파일·실행 검증"
     assert snapshot["elapsed_seconds"] >= 0
     assert snapshot["estimated_total_seconds"] >= 1200
+
+
+def test_workflow_elapsed_time_includes_feature_analysis_after_confirmation(tmp_path: Path):
+    service = _load_service_module()
+    job_root = tmp_path / "job-progress-clock"
+    job_root.mkdir()
+    request_file = job_root / "request.json"
+    request_file.write_text("{}", encoding="utf-8")
+    started_at = time.monotonic() - 125
+    job = service.WorkflowJob(
+        job_id="progress-clock-job",
+        mode="generate",
+        request_file=request_file,
+        job_root=job_root,
+        status="awaiting_confirmation",
+        stage="feature_confirmation",
+        progress_started_at=started_at,
+    )
+    manager = object.__new__(service.WorkflowJobManager)
+    manager.jobs = {job.job_id: job}
+    manager.lock = service.threading.RLock()
+
+    with patch.object(service.threading, "Thread"):
+        manager.confirm(job.job_id)
+
+    assert job.progress_started_at == started_at
+    assert job.snapshot()["elapsed_seconds"] >= 125
 
 
 def test_webgl_preview_progress_tracks_compile_link_and_publish(tmp_path: Path):

@@ -73,11 +73,15 @@ namespace TeamIdle.GameTemplate.Editor
                 throw new InvalidOperationException("Level plan is invalid or unsupported.");
             }
 
-            if (plan.genre == "Platformer" && plan.zones.Count < 3)
+            if (plan.genre == "Platformer")
             {
-                throw new InvalidOperationException(
-                    "Platformer level plan requires tutorial, challenge, and mastery zones."
-                );
+                var compact = plan.zones.Count == 1 && plan.zones[0].purpose == "mastery";
+                if (!compact && plan.zones.Count < 3)
+                {
+                    throw new InvalidOperationException(
+                        "Platformer level plan requires either one compact stage or tutorial, challenge, and mastery zones."
+                    );
+                }
             }
 
             // JsonUtility can materialize a JSON null reference as an empty serializable object.

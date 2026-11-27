@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
+from mainflow.api_usage import ApiUsageRecorder
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -26,6 +27,7 @@ from sound_pipeline import (
     plan_sound_assets,
     primary_provider,
 )
+from sound_pipeline.providers import ElevenLabsSoundProvider
 from sound_pipeline.validation import SOUND_CRITERIA, check_asset
 
 _QC_CRITERIA = {criterion_id: required for criterion_id, _, required in SOUND_CRITERIA}
@@ -49,6 +51,28 @@ def generate_sound_node(
 ) -> GenerateSoundAgentOutput:
     """Generate one WAV per requested sound asset and return the draft reference."""
     manager = ArtifactManager()
+    game_draft_reference = state.get("game_logic_draft")
+    if (
+        game_draft_reference is not None
+        and (draft := manager.read_json(game_draft_reference))["status"] == "failed"
+    ):
+        ApiUsageRecorder(manager.ensure_project(state["project_id"]), "elevenlabs").record(
+            {"event": "provider_skipped", "reason": "game_generation_failed"}
+        )
+        log("게임 구현 실패로 사운드 API 호출을 생략합니다.")
+        draft: SoundDraft = {
+            "contract_version": CONTRACT_VERSION,
+            "draft_id": "sound-draft",
+            "status": "failed",
+            "assets": [],
+            "missing_required_asset_ids": [],
+            "notes": ["skipped: game generation failed"],
+        }
+        return {
+            "sound_draft": manager.write_json(
+                state["project_id"], "sound", "sound_draft.json", draft, producer="generate_sound"
+            )
+        }
     parsed = cast(ParsedRequest, manager.read_json(state["parsed_request"]))
     cast(AnalysisResult, manager.read_json(state["analysis"]))
     cast(LogicAnalysis, manager.read_json(state["logic_analysis"]))
@@ -59,6 +83,10 @@ def generate_sound_node(
 
     plans = plan_sound_assets(asset_request, parsed)
     provider = primary_provider()
+    usage_recorder = ApiUsageRecorder(manager.ensure_project(state["project_id"]), "elevenlabs")
+    usage_recorder.record({"event": "provider_selected", "backend": provider.name})
+    if isinstance(provider, ElevenLabsSoundProvider):
+        provider.usage_recorder = usage_recorder.record
     fallback = fallback_provider()
     log(f"사운드 에셋 {len(plans)}개를 생성합니다. (provider={provider.name})")
 

@@ -531,18 +531,9 @@ def mock_validate_image_node(
 ) -> ValidateImageAgentOutput:
     runtime.delay("validate_image")
     draft = cast(ImageDraft, runtime.manager.read_json(state["image_draft"]))
-    spec = cast(
-        AssetValidationSpec,
-        runtime.manager.read_json(state["asset_validation_spec"]),
-    )
     asset = draft["assets"][0]
     root = ElementTree.fromstring(runtime.manager.read_text(asset["artifact"]))
-    passed = (
-        root.tag.endswith("svg")
-        and asset["width"] > 0
-        and asset["height"] > 0
-        and bool(spec["image_criteria"])
-    )
+    passed = root.tag.endswith("svg") and asset["width"] > 0 and asset["height"] > 0
     result: ImageValidationResult = {
         "contract_version": CONTRACT_VERSION,
         "status": "passed" if passed else "failed",
@@ -586,14 +577,10 @@ def mock_validate_sound_node(
 ) -> ValidateSoundAgentOutput:
     runtime.delay("validate_sound")
     draft = cast(SoundDraft, runtime.manager.read_json(state["sound_draft"]))
-    spec = cast(
-        AssetValidationSpec,
-        runtime.manager.read_json(state["asset_validation_spec"]),
-    )
     asset = draft["assets"][0]
     with wave.open(io.BytesIO(runtime.manager.read_bytes(asset["artifact"])), "rb") as wav:
         duration = wav.getnframes() / wav.getframerate()
-    passed = duration > 0 and bool(spec["sound_criteria"])
+    passed = duration > 0
     result: SoundValidationResult = {
         "contract_version": CONTRACT_VERSION,
         "status": "passed" if passed else "failed",

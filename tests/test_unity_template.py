@@ -76,6 +76,27 @@ class UnityTemplateTest(unittest.TestCase):
         self.assertIn("BindingFlags.DeclaredOnly", source)
         self.assertIn("legacyDebugUi.enabled && hasLegacyOnGui", source)
         self.assertIn("UNITY_UI_QUALITY_OK", source)
+        self.assertIn("layoutIssues.Add(", source)
+        self.assertNotIn("must have an opaque backing", source)
+        self.assertNotIn("alpha={image.color.a:0.###}, required=1", source)
+        self.assertIn("HUD content '{graphic.name}' escapes decorated panel", source)
+
+    def test_compact_platformer_does_not_require_unrequested_collectibles(self) -> None:
+        assembler = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Editor/PrefabSceneAssembler.cs"
+        ).read_text(encoding="utf-8")
+        smoke = (TEMPLATE_ROOT / "Assets/GameTemplate/Editor/RuntimeSmokeValidator.cs").read_text(
+            encoding="utf-8"
+        )
+
+        level_plan = (TEMPLATE_ROOT / "Assets/GameTemplate/Editor/LevelPlan.cs").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('plan.zones.Count == 1 && plan.zones[0].purpose == "mastery"', level_plan)
+        self.assertIn("levelPlan.zones.Any(zone => zone.collectibles.Count > 0)", assembler)
+        self.assertIn("compactPlatformer =", smoke)
+        self.assertIn("runtime.fall_respawn:", smoke)
+        self.assertIn('MarkScenarioPassed("checkpoint_recovery")', smoke)
 
     def test_template_metadata_matches_pipeline_contract(self) -> None:
         metadata = json.loads((TEMPLATE_ROOT / "template.json").read_text(encoding="utf-8"))
@@ -422,6 +443,27 @@ class UnityTemplateTest(unittest.TestCase):
         self.assertIn('"platformer.death_to_checkpoint"', smoke)
         self.assertIn('"platformer.fall_to_checkpoint"', smoke)
         self.assertIn('Debug.Log("UNITY_CAUSAL_TRANSITION_OK:" + transitionId)', smoke)
+
+    def test_survivor_upgrade_smoke_uses_declared_live_stat_contract(self) -> None:
+        smoke = (TEMPLATE_ROOT / "Assets/GameTemplate/Editor/RuntimeSmokeValidator.cs").read_text(
+            encoding="utf-8"
+        )
+        contract = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Runtime/Core/IGeneratedFeatureModule.cs"
+        ).read_text(encoding="utf-8")
+        assembler = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Editor/PrefabSceneAssembler.cs"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("interface IGameplayStatSource", contract)
+        self.assertIn("selectedUpgrade?.observableStatId", smoke)
+        self.assertIn("TryFindGameplayStatSource(statId", smoke)
+        self.assertIn("StatChangedInExpectedDirection", smoke)
+        self.assertIn('FindPropertyRelative("observableStatId")', assembler)
+        self.assertIn(
+            "agentHarnessMode && string.IsNullOrWhiteSpace(option.observable_stat_id)", assembler
+        )
+        self.assertNotIn("SurvivorStatProperties", smoke)
 
     def test_template_meta_guids_are_unique(self) -> None:
         owners: dict[str, Path] = {}

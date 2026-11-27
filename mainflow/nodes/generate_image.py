@@ -7,6 +7,7 @@ from typing import cast
 
 from PIL import Image
 
+from mainflow.api_usage import ApiUsageRecorder
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -19,7 +20,7 @@ from mainflow.contracts import (
     LogicAnalysis,
     ParsedRequest,
 )
-from mainflow.image_backends import create_image_generator
+from mainflow.image_backends import OpenAIImageGenerator, create_image_generator
 from mainflow.image_generation import (
     PNG_MEDIA_TYPE,
     SPRITE_SHEET_NOTE_PREFIX,
@@ -60,6 +61,28 @@ def generate_image_node(
     log("이미지 에셋을 생성합니다.")
 
     manager = ArtifactManager()
+    game_draft_reference = state.get("game_logic_draft")
+    if (
+        game_draft_reference is not None
+        and (draft := manager.read_json(game_draft_reference))["status"] == "failed"
+    ):
+        ApiUsageRecorder(manager.ensure_project(state["project_id"]), "openai_image").record(
+            {"event": "provider_skipped", "reason": "game_generation_failed"}
+        )
+        log("게임 구현 실패로 이미지 API 호출을 생략합니다.")
+        draft: ImageDraft = {
+            "contract_version": CONTRACT_VERSION,
+            "draft_id": "image-draft",
+            "status": "failed",
+            "assets": [],
+            "missing_required_asset_ids": [],
+            "notes": ["skipped: game generation failed"],
+        }
+        return {
+            "image_draft": manager.write_json(
+                state["project_id"], "image", "image_draft.json", draft, producer="generate_image"
+            )
+        }
     cast(ParsedRequest, manager.read_json(state["parsed_request"]))
     cast(AnalysisResult, manager.read_json(state["analysis"]))
     cast(LogicAnalysis, manager.read_json(state["logic_analysis"]))
@@ -77,6 +100,10 @@ def generate_image_node(
 
     # MAINFLOW_IMAGE_BACKEND로 생성기 선택 (기본값 placeholder)
     generator = generator or create_image_generator()
+    usage_recorder = ApiUsageRecorder(manager.ensure_project(state["project_id"]), "openai_image")
+    usage_recorder.record({"event": "provider_selected", "backend": generator.name})
+    if isinstance(generator, OpenAIImageGenerator):
+        generator.usage_recorder = usage_recorder.record
     assets: list[ImageAsset] = []
     notes = [f"generator={generator.name}"]
     missing_required_asset_ids: list[str] = []

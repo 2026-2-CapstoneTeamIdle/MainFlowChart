@@ -48,7 +48,34 @@ def explicit_exclusions(condition: str) -> set[str]:
     exclusions: set[str] = set()
     if any(pattern.search(normalized) for pattern in _PLAYER_ATTACK_EXCLUSIONS):
         exclusions.add("player_attack")
+    if forbids_player_projectiles(condition):
+        exclusions.add("player_projectile_attack")
     return exclusions
+
+
+def forbids_player_projectiles(condition: str) -> bool:
+    """A requested orbiting melee weapon must not acquire a player projectile attack.
+
+    Enemy and boss projectiles remain valid; the exclusion applies only to the
+    player's attack delivery.
+    """
+
+    normalized = _normalize(condition)
+    orbiting_weapon = any(
+        word in normalized
+        for word in ("회전하는검", "검이자동으로회전", "회전검", "orbitingsword", "rotatingblade")
+    )
+    explicit_ban = any(
+        word in normalized
+        for word in (
+            "투사체로대체하면안",
+            "투사체로대체하지",
+            "검은투사체가아니",
+            "notaprojectile",
+            "noprojectileattack",
+        )
+    )
+    return orbiting_weapon and explicit_ban
 
 
 def feature_conflict_reason(

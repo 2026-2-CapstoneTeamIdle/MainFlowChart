@@ -10,8 +10,8 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from game_pipeline.unity_project_validator import UnityValidationOutcome
 from game_pipeline.game_quality_validator_ai import GameQualityValidatorAI
+from game_pipeline.unity_project_validator import UnityValidationOutcome
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import CONTRACT_VERSION
 from mainflow.nodes.final_validation import final_validation_node
@@ -230,6 +230,212 @@ class FinalValidationTest(unittest.TestCase):
                 archive.namelist(),
             )
 
+    def test_agent_project_packages_only_after_final_validation(self):
+        integrated = self.manager.read_json(self.state["integrated_game"])
+        integrated["entry_artifact"] = None
+        integrated["game_artifacts"] = [self.manifest_ref]
+        self.put("integrated_game", integrated)
+
+        result = self.run_final()
+
+        self.assertEqual(result["status"], "passed")
+        self.assertIsNotNone(result["entry_artifact"])
+
+    def test_failed_feature_audit_repairs_and_revalidates_before_pass(self):
+        logic = self.manager.read_json(self.state["logic_analysis"])
+        logic["features"] = [
+            {
+                "feature_id": "custom",
+                "name": "Custom action",
+                "description": "Observable action",
+                "source_text": "Observable action",
+            }
+        ]
+        logic["criteria"][0] = {
+            "criterion_id": "logic-custom",
+            "target": "game",
+            "description": "Observable action changes the world",
+            "required": True,
+        }
+        self.put("logic_analysis", logic)
+        failed = {
+            "logic-custom": {
+                "satisfied": False,
+                "evidence": [],
+                "reason": "Action has no effect",
+                "verification_status": "unsatisfied",
+            }
+        }
+        passed = {
+            "logic-custom": {
+                "satisfied": True,
+                "evidence": [{"path": "Assets/Runtime/Game.cs", "quote": "Observable action"}],
+                "reason": "Implemented",
+                "verification_status": "verified",
+            }
+        }
+        with (
+            patch.dict(
+                os.environ,
+                {"MAINFLOW_GAME_BUILDER": "codex_cli", "MAINFLOW_FINAL_FEATURE_AUDIT_REPAIRS": "1"},
+            ),
+            patch(
+                "mainflow.nodes.final_validation.audit_feature_evidence",
+                side_effect=[failed, passed],
+            ) as audit,
+            patch(
+                "mainflow.nodes.final_validation.repair_feature_audit_with_configured_agent",
+                return_value=UnityValidationOutcome(),
+            ) as repair,
+        ):
+            result = self.run_final()
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(audit.call_count, 2)
+        repair.assert_called_once()
+
+    def test_inconclusive_citation_does_not_block_real_feature_repair(self):
+        logic = self.manager.read_json(self.state["logic_analysis"])
+        logic["features"] = [
+            {
+                "feature_id": "first",
+                "name": "First",
+                "description": "First behavior",
+                "source_text": "First behavior",
+            },
+            {
+                "feature_id": "second",
+                "name": "Second",
+                "description": "Second behavior",
+                "source_text": "Second behavior",
+            },
+        ]
+        logic["criteria"] = [
+            {
+                "criterion_id": f"logic-{feature_id}",
+                "target": "game",
+                "description": f"{feature_id} behavior works",
+                "required": True,
+            }
+            for feature_id in ("first", "second")
+        ]
+        self.put("logic_analysis", logic)
+        first_audit = {
+            "logic-first": {
+                "satisfied": False,
+                "evidence": [],
+                "reason": "Source quote did not match",
+                "verification_status": "evidence_invalid",
+            },
+            "logic-second": {
+                "satisfied": False,
+                "evidence": [],
+                "reason": "Behavior is missing",
+                "verification_status": "unsatisfied",
+            },
+        }
+        second_audit = {
+            criterion_id: {
+                "satisfied": True,
+                "evidence": [{"path": "Assets/Runtime/Game.cs", "quote": "Behavior works"}],
+                "reason": "Implemented",
+                "verification_status": "verified",
+            }
+            for criterion_id in first_audit
+        }
+        with (
+            patch.dict(
+                os.environ,
+                {"MAINFLOW_GAME_BUILDER": "codex_cli", "MAINFLOW_FINAL_FEATURE_AUDIT_REPAIRS": "1"},
+            ),
+            patch(
+                "mainflow.nodes.final_validation.audit_feature_evidence",
+                side_effect=[first_audit, second_audit],
+            ) as audit,
+            patch(
+                "mainflow.nodes.final_validation.repair_feature_audit_with_configured_agent",
+                return_value=UnityValidationOutcome(),
+            ) as repair,
+        ):
+            result = self.run_final()
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(audit.call_count, 2)
+        self.assertEqual(
+            [item["criterion_id"] for item in repair.call_args.kwargs["findings"]],
+            ["logic-second"],
+        )
+
+    def test_inconclusive_citation_alone_does_not_trigger_code_repair(self):
+        logic = self.manager.read_json(self.state["logic_analysis"])
+        logic["features"] = [
+            {
+                "feature_id": "custom",
+                "name": "Custom",
+                "description": "Observable behavior",
+                "source_text": "Observable behavior",
+            }
+        ]
+        logic["criteria"] = [
+            {
+                "criterion_id": "logic-custom",
+                "target": "game",
+                "description": "Observable behavior works",
+                "required": True,
+            }
+        ]
+        self.put("logic_analysis", logic)
+        with (
+            patch.dict(os.environ, {"MAINFLOW_GAME_BUILDER": "codex_cli"}),
+            patch("mainflow.nodes.final_validation.audit_feature_evidence") as audit,
+            patch(
+                "mainflow.nodes.final_validation.repair_feature_audit_with_configured_agent"
+            ) as repair,
+        ):
+            audit.return_value = {
+                "logic-custom": {
+                    "satisfied": False,
+                    "evidence": [],
+                    "reason": "Source quote did not match",
+                    "verification_status": "evidence_invalid",
+                }
+            }
+            result = self.run_final()
+        self.assertEqual(result["status"], "failed")
+        repair.assert_not_called()
+
+    def test_execution_stability_uses_unity_results_instead_of_source_audit(self):
+        logic = self.manager.read_json(self.state["logic_analysis"])
+        logic["features"] = [
+            {
+                "feature_id": "stability",
+                "name": "Execution stability",
+                "description": "No compile errors or runtime exceptions",
+                "source_text": "컴파일 오류와 반복적인 런타임 예외가 없어야 한다",
+                "implementation_kind": "design_constraint",
+            }
+        ]
+        logic["criteria"][0] = {
+            "criterion_id": "logic-stability",
+            "target": "game",
+            "description": "No compile errors or repeated runtime exceptions",
+            "required": True,
+        }
+        self.put("logic_analysis", logic)
+        self.outcome.checks.append(
+            {"criterion_id": "unity.batchmode", "passed": True, "message": "Compiled"}
+        )
+        with (
+            patch.dict(os.environ, {"MAINFLOW_GAME_BUILDER": "codex_cli"}),
+            patch("mainflow.nodes.final_validation.audit_feature_evidence") as audit,
+        ):
+            result = self.run_final()
+        self.assertEqual(result["status"], "passed")
+        audit.assert_not_called()
+
+        self.outcome.unity_log += "\n--- PLAY MODE ---\nNullReferenceException: missing player"
+        with patch.dict(os.environ, {"MAINFLOW_GAME_BUILDER": "pipeline"}):
+            failed = self.run_final(artifact_variant="runtime_exception")
+        self.assertEqual(failed["status"], "failed")
+
     def test_post_quality_validation_repackages_repaired_source(self):
         source_path = "Assets/GameTemplate/Runtime/QualityPatch.cs"
         self.write_project(source_path, b"original")
@@ -252,13 +458,13 @@ class FinalValidationTest(unittest.TestCase):
             )
         )
 
-    def test_unproven_semantic_criterion_fails(self):
+    def test_unproven_subjective_sound_mood_is_nonblocking(self):
         payload = self.manager.read_json(self.state["sound_validation_result"])
         payload["checks"] = []
         self.put("sound_validation_result", payload)
         result = self.run_final()
-        self.assertEqual(result["status"], "failed")
-        self.assertIsNone(result["entry_artifact"])
+        self.assertEqual(result["status"], "passed")
+        self.assertIsNotNone(result["entry_artifact"])
         self.assertFalse(
             next(c for c in result["checks"] if c["criterion_id"] == "sound-mood")["passed"]
         )
