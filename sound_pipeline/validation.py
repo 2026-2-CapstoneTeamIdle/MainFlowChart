@@ -439,8 +439,13 @@ def check_asset(
         _decide(qc, criteria, placeholder)
         return qc
 
-    # Clipping is judged on the raw take: the limiter's smooth gain would hide flat peaks.
+    # Repair brief flat peaks before normalization, which can hide source clipping.
     source_clipped = measure(samples, rate)["clipped_runs"] > 0
+    if source_clipped:
+        samples, repaired_peaks = _repair_short_clipped_peaks(samples)
+        if repaired_peaks:
+            qc.applied_fixes.append(f"declip_short_peaks_{repaired_peaks}")
+        source_clipped = measure(samples, rate)["clipped_runs"] > 0
 
     # Two G2 passes: one repair can expose another (DC removal reveals padded silence).
     for _ in range(2):

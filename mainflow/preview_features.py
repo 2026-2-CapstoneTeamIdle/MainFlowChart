@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import cast
 
 from mainflow.ArtifactManager import ArtifactManager
-from mainflow.contracts import LogicAnalysis, WorkflowState
+from mainflow.contracts import LogicAnalysis, MAX_APPROVED_FEATURES, WorkflowState
 from mainflow.nodes import analysis_node, logic_analysis_node, parse_input_node, user_input_node
 from mainflow.run_flow import configure_console_encoding, load_repository_environment, load_request
 
@@ -42,6 +42,11 @@ def main() -> int:
 
     manager = ArtifactManager()
     logic = cast(LogicAnalysis, manager.read_json(state["logic_analysis"]))
+    if len(logic["features"]) > MAX_APPROVED_FEATURES:
+        raise ValueError(
+            f"Feature preview contains {len(logic['features'])} Features; "
+            f"the approval limit is {MAX_APPROVED_FEATURES}"
+        )
     project_root = manager.ensure_project(state["project_id"])
     title_report_path = project_root / "data" / "condition_feature_analysis.json"
     try:
