@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -31,6 +32,28 @@ SECRETS_PATH = LOCAL_WEB_STATE_ROOT / "secrets.env"
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_LOG_LINES = 10_000
+
+
+def browse_project_directories(path: str | None = None) -> dict[str, Any]:
+    """List folders on the local generation server without creating or uploading files."""
+    root = Path(path).expanduser().resolve() if path else WORKSPACE_ROOT
+    if not root.is_dir():
+        raise ValueError("선택한 폴더를 찾을 수 없습니다.")
+    children = []
+    for child in root.iterdir():
+        try:
+            if child.is_dir() and not child.name.startswith("."):
+                children.append({"name": child.name, "path": str(child.resolve())})
+        except OSError:
+            continue
+    return {
+        "path": str(root),
+        "parent": str(root.parent) if root.parent != root else None,
+        "separator": os.sep,
+        "directories": sorted(children, key=lambda item: item["name"].casefold()),
+    }
+
+
 CANCELLED_RETURN_CODE = -2
 MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
 SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
@@ -123,7 +146,7 @@ MODEL_ROLES: dict[str, ModelRole] = {
     ),
     "feature_checklist_generation": ModelRole(
         "Feature Checklist",
-        "각 Feature의 30개 검증 항목을 생성합니다.",
+        "각 Feature의 세부 조건에 따라 10~30개 검증 항목을 생성합니다.",
         "LLM_FEATURE_CHECKLIST_GENERATION_PROVIDER",
         "LLM_FEATURE_CHECKLIST_GENERATION_MODEL",
     ),
@@ -251,6 +274,7 @@ class GenerationRequest(BaseModel):
     viewpoint: str
     condition: str = Field(min_length=1, max_length=4000)
     custom_image: UploadedImage | None = None
+    output_directory: str | None = Field(default=None, max_length=1024)
 
     @model_validator(mode="after")
     def validate_contract_values(self) -> GenerationRequest:
@@ -297,6 +321,10 @@ class FeatureRejectRequest(BaseModel):
         return normalized
 
 
+class ProjectRevisionRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=8000)
+
+
 @dataclass
 class WorkflowJob:
     job_id: str
@@ -307,6 +335,14 @@ class WorkflowJob:
     agent_model: str | None = None
     agent_reasoning_effort: str | None = None
     agent_fast_mode: bool = False
+    output_directory: str | None = None
+    revision_status: str = "idle"
+    active_revision_id: str | None = None
+    revision_lock: threading.Lock = field(default_factory=threading.Lock)
+    project_source_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    revision_messages: list[dict[str, Any]] = field(default_factory=list)
+    log_offset: int = 0
+    suggested_project_name: str = ""
     status: str = "analyzing_features"
     stage: str = "condition_feature_analysis"
     logs: list[str] = field(default_factory=list)
@@ -328,7 +364,27 @@ class WorkflowJob:
     progress_percent: int = 2
     progress_label: str = "Feature 분석 준비"
     progress_started_at: float = field(default_factory=time.monotonic, repr=False)
+    approval_wait_started_at: float | None = field(default=None, repr=False)
+    approval_wait_seconds: float = 0
+    processing_finished_seconds: float | None = None
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+
+    def processing_seconds(self) -> float:
+        if self.processing_finished_seconds is not None:
+            return self.processing_finished_seconds
+        now = time.monotonic()
+        waiting = (
+            now - self.approval_wait_started_at if self.approval_wait_started_at is not None else 0
+        )
+        elapsed = max(0, now - self.progress_started_at - self.approval_wait_seconds - waiting)
+        if self.status in {"completed", "failed", "cancelled"}:
+            self.processing_finished_seconds = elapsed
+        return elapsed
+
+    def resume_after_approval(self) -> None:
+        if self.approval_wait_started_at is not None:
+            self.approval_wait_seconds += time.monotonic() - self.approval_wait_started_at
+            self.approval_wait_started_at = None
 
     def append_log(self, value: str) -> None:
         line = value.rstrip("\r\n")
@@ -339,13 +395,44 @@ class WorkflowJob:
             self._update_progress(line)
             self._update_preview_progress(line)
             if len(self.logs) > MAX_LOG_LINES:
-                del self.logs[: len(self.logs) - MAX_LOG_LINES]
+                dropped = len(self.logs) - MAX_LOG_LINES
+                self.log_offset += dropped
+                del self.logs[:dropped]
             with (self.job_root / "workflow.log").open("a", encoding="utf-8") as file:
                 file.write(line + "\n")
+            self.persist_state()
 
-    def reset_progress_clock(self) -> None:
+    def persist_state(self) -> None:
+        """Keep enough metadata to reopen terminal jobs after a server restart."""
         with self.lock:
-            self.progress_started_at = time.monotonic()
+            payload = {
+                name: getattr(self, name)
+                for name in (
+                    "mode",
+                    "game_builder",
+                    "agent_model",
+                    "agent_reasoning_effort",
+                    "agent_fast_mode",
+                    "output_directory",
+                    "status",
+                    "stage",
+                    "project_id",
+                    "preview_project_id",
+                    "error",
+                    "preview_status",
+                    "preview_url",
+                    "preview_error",
+                    "revision_status",
+                    "revision_messages",
+                    "features",
+                    "feature_revision",
+                    "suggested_project_name",
+                    "progress_percent",
+                    "progress_label",
+                )
+            }
+            payload["elapsed_seconds"] = self.processing_seconds()
+            _atomic_write_json(self.job_root / "job_state.json", payload)
 
     def _update_progress(self, line: str) -> None:
         milestones = (
@@ -423,7 +510,7 @@ class WorkflowJob:
             feature_validation_complete = bool(feature_cards) and all(
                 card["status"] == "passed" for card in feature_cards
             )
-            elapsed = max(0, int(time.monotonic() - self.progress_started_at))
+            elapsed = int(self.processing_seconds())
             if self.status in {"completed", "failed", "cancelled"}:
                 estimated_total = elapsed
             elif self.status == "awaiting_confirmation":
@@ -435,6 +522,16 @@ class WorkflowJob:
                 estimated_total = max(1200, elapsed + 60, projected)
             return {
                 "job_id": self.job_id,
+                "suggested_project_name": self.suggested_project_name,
+                "project_available": bool(self.project_id)
+                and (
+                    WORKSPACE_ROOT
+                    / str(self.project_id)
+                    / "game/unity_project/ProjectSettings/ProjectVersion.txt"
+                ).is_file(),
+                "output_directory": self.output_directory,
+                "revision_status": self.revision_status,
+                "revision_messages": list(self.revision_messages),
                 "mode": self.mode,
                 "game_builder": self.game_builder,
                 "agent_model": self.agent_model,
@@ -473,6 +570,7 @@ class WorkflowJob:
                     else None
                 ),
                 "logs": list(self.logs),
+                "log_offset": self.log_offset,
                 "progress_percent": self.progress_percent,
                 "progress_label": self.progress_label,
                 "elapsed_seconds": elapsed,
@@ -614,6 +712,14 @@ class WorkflowJobManager:
         JOB_ROOT.mkdir(parents=True, exist_ok=True)
 
     def create(self, request: GenerationRequest) -> WorkflowJob:
+        if request.output_directory:
+            destination = Path(request.output_directory).expanduser()
+            if not destination.is_absolute():
+                raise ValueError("생성 경로는 서버에서 접근 가능한 절대 경로여야 합니다.")
+            destination = destination.resolve()
+            if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
+                raise ValueError("생성 경로는 비어 있는 폴더 또는 새 폴더를 지정하세요.")
+            request.output_directory = str(destination)
         job_id = uuid.uuid4().hex
         job_root = JOB_ROOT / job_id
         job_root.mkdir(parents=True, exist_ok=False)
@@ -638,6 +744,7 @@ class WorkflowJobManager:
             agent_model=request.agent_model,
             agent_reasoning_effort=request.agent_reasoning_effort,
             agent_fast_mode=request.agent_fast_mode,
+            output_directory=request.output_directory,
         )
         with self.lock:
             self.jobs[job_id] = job
@@ -654,21 +761,80 @@ class WorkflowJobManager:
 
     def get(self, job_id: str) -> WorkflowJob:
         with self.lock:
-            try:
+            if job_id in self.jobs:
                 return self.jobs[job_id]
-            except KeyError as error:
-                raise KeyError(f"unknown workflow job: {job_id}") from error
+            if not re.fullmatch(r"[a-f0-9]{32}", job_id):
+                raise KeyError(f"unknown workflow job: {job_id}")
+            root = (JOB_ROOT / job_id).resolve()
+            if not root.is_relative_to(JOB_ROOT.resolve()) or not (root / "request.json").is_file():
+                raise KeyError(f"unknown workflow job: {job_id}")
+            state_file = root / "job_state.json"
+            try:
+                saved = (
+                    json.loads(state_file.read_text(encoding="utf-8"))
+                    if state_file.is_file()
+                    else {}
+                )
+            except (OSError, ValueError):
+                saved = {}
+            job = WorkflowJob(job_id, saved.get("mode", "generate"), root / "request.json", root)
+            for name in (
+                "game_builder",
+                "agent_model",
+                "agent_reasoning_effort",
+                "agent_fast_mode",
+                "output_directory",
+                "status",
+                "stage",
+                "project_id",
+                "preview_project_id",
+                "error",
+                "preview_status",
+                "preview_url",
+                "preview_error",
+                "revision_status",
+                "revision_messages",
+                "features",
+                "feature_revision",
+                "suggested_project_name",
+                "progress_percent",
+                "progress_label",
+            ):
+                if name in saved:
+                    setattr(job, name, saved[name])
+            log_file = root / "workflow.log"
+            if log_file.is_file():
+                all_logs = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                job.logs = all_logs[-MAX_LOG_LINES:]
+                job.log_offset = max(0, len(all_logs) - len(job.logs))
+            job.progress_started_at = time.monotonic() - float(saved.get("elapsed_seconds", 0))
+            job.processing_finished_seconds = float(saved.get("elapsed_seconds", 0))
+            if not saved or job.status not in {"completed", "failed", "cancelled"}:
+                job.status = "failed"
+                job.stage = "interrupted"
+                job.error = "서버 재시작으로 이전 작업이 종료되었습니다. 남아 있는 로그를 확인하고 다시 생성할 수 있습니다."
+            if job.preview_status == "building":
+                job.preview_status = "failed"
+                job.preview_error = "서버 재시작으로 Preview 빌드가 중단되었습니다."
+            if job.revision_status == "running":
+                job.revision_status = "failed"
+                job.revision_messages.append(
+                    {"role": "assistant", "content": "서버 재시작으로 수정이 중단되었습니다."}
+                )
+            self.jobs[job_id] = job
+            job.persist_state()
+            return job
 
     def confirm(self, job_id: str) -> WorkflowJob:
         job = self.get(job_id)
         with job.lock:
             if job.status != "awaiting_confirmation":
                 raise ValueError("Feature 확인 대기 상태에서만 Confirm할 수 있습니다.")
+            job.resume_after_approval()
             job.status = "running"
             job.stage = "workflow"
             job.progress_percent = 18
             job.progress_label = "게임 생성 준비"
-            job.progress_started_at = time.monotonic()
         job.append_log("[WEB] Feature 구성을 승인했습니다. 게임 생성 단계를 계속합니다.")
         thread = threading.Thread(target=self._run_generation, args=(job,), daemon=True)
         thread.start()
@@ -679,6 +845,7 @@ class WorkflowJobManager:
         with job.lock:
             if job.status != "awaiting_confirmation":
                 raise ValueError("Feature 확인 대기 상태에서만 Reject할 수 있습니다.")
+            job.resume_after_approval()
             job.status = "analyzing_features"
             job.stage = "condition_feature_analysis"
             job.feature_revision += 1
@@ -687,7 +854,6 @@ class WorkflowJobManager:
             job.cancel_requested = False
             job.progress_percent = 3
             job.progress_label = "Feature 재분석"
-            job.progress_started_at = time.monotonic()
             feedback_history = list(job.feature_revision_feedback)
         _atomic_write_json(
             job.job_root / "feature_revision_feedback.json",
@@ -706,6 +872,20 @@ class WorkflowJobManager:
     def cancel(self, job_id: str) -> WorkflowJob:
         job = self.get(job_id)
         with job.lock:
+            if job.revision_status == "running":
+                job.cancel_requested = True
+                process = job.process
+                if process is not None:
+                    _terminate_process_tree(process)
+                job.revision_status = "cancelled"
+                job.revision_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": "사용자가 수정을 중단했습니다. 일부 변경은 남아 있을 수 있습니다.",
+                    }
+                )
+                job.append_log("[CHAT] 사용자가 추가 요청 수정을 중단했습니다.")
+                return job
             if job.preview_status == "building":
                 job.preview_cancel_requested = True
                 process = job.process
@@ -747,6 +927,8 @@ class WorkflowJobManager:
 
     def _start_webgl_build(self, job: WorkflowJob) -> None:
         with job.lock:
+            if job.revision_status == "running":
+                raise ValueError("추가 요청 수정이 끝난 뒤 Preview를 빌드하세요.")
             if job.status not in {"completed", "failed"}:
                 raise ValueError("게임 생성이 종료된 작업만 WebGL Preview를 빌드할 수 있습니다.")
             if not job.project_id:
@@ -771,7 +953,6 @@ class WorkflowJobManager:
         with job.lock:
             project_id = job.project_id
         assert project_id is not None
-        project_root = (WORKSPACE_ROOT / project_id / "game" / "unity_project").resolve()
         output_root = (WORKSPACE_ROOT / project_id / "game" / "webgl").resolve()
         validation_path = (
             WORKSPACE_ROOT / project_id / "validation" / "webgl_preview_build.json"
@@ -786,7 +967,9 @@ class WorkflowJobManager:
                 return job.preview_cancel_requested
 
         try:
-            _require_within_workspace(project_root)
+            project_root = self._unity_project_root(job.job_id)
+            if not job.output_directory:
+                _require_within_workspace(project_root)
             _require_within_workspace(output_root)
             result = build_webgl_preview(
                 project_root,
@@ -863,6 +1046,11 @@ class WorkflowJobManager:
         if project_id is None:
             raise FileNotFoundError("생성된 Unity 프로젝트 ID를 확인할 수 없습니다.")
         project_root = (WORKSPACE_ROOT / project_id / "game" / "unity_project").resolve()
+        if (
+            job.output_directory
+            and (Path(job.output_directory) / "ProjectSettings/ProjectVersion.txt").is_file()
+        ):
+            return Path(job.output_directory).resolve()
         try:
             project_root.relative_to(WORKSPACE_ROOT.resolve())
         except ValueError as error:
@@ -870,6 +1058,195 @@ class WorkflowJobManager:
         if not (project_root / "ProjectSettings/ProjectVersion.txt").is_file():
             raise FileNotFoundError("생성된 Unity 프로젝트를 찾을 수 없습니다.")
         return project_root
+
+    def revise(self, job_id: str, message: str) -> WorkflowJob:
+        job = self.get(job_id)
+        message = message.strip()
+        if not message:
+            raise ValueError("추가 요청을 입력하세요.")
+        with job.lock:
+            if job.status not in {"completed", "failed"} or job.preview_status == "building":
+                raise ValueError("게임 생성과 Preview 빌드가 끝난 뒤 수정할 수 있습니다.")
+            if job.game_builder not in {"codex_cli", "claude_code"}:
+                raise ValueError(
+                    "추가 요청은 Codex 또는 Claude Code로 생성한 프로젝트에서 지원합니다."
+                )
+            if job.revision_status == "running":
+                raise ValueError("이전 추가 요청을 처리하고 있습니다.")
+            root = self._unity_project_root(job_id)
+            job.revision_status = "running"
+            revision_id = uuid.uuid4().hex
+            job.active_revision_id = revision_id
+            job.cancel_requested = False
+            job.revision_messages.append(
+                {"role": "user", "content": message, "log_start": job.log_offset + len(job.logs)}
+            )
+            job.preview_status = "unavailable"
+            job.preview_url = None
+            job.persist_state()
+        threading.Thread(
+            target=self._run_revision, args=(job, root, revision_id), daemon=True
+        ).start()
+        return job
+
+    def project_export_file(self, job_id: str, path: str, snapshot: str | None = None) -> Path:
+        job = self.get(job_id)
+        if snapshot is None and job.revision_status == "running":
+            raise ValueError("프로젝트 수정이 끝난 뒤 저장할 수 있습니다.")
+        if snapshot is not None:
+            if not re.fullmatch(r"[a-f0-9]{32}", snapshot):
+                raise ValueError("잘못된 내보내기 ID입니다.")
+            root = (job.job_root / "export_snapshots" / snapshot).resolve()
+            if (
+                not root.is_relative_to((job.job_root / "export_snapshots").resolve())
+                or not root.is_dir()
+            ):
+                raise ValueError("내보내기용 프로젝트를 찾을 수 없습니다.")
+        else:
+            root = self._unity_project_root(job_id)
+        relative = PurePosixPath(path)
+        if not relative.parts or relative.parts[0] not in {"Assets", "Packages", "ProjectSettings"}:
+            raise ValueError("내보낼 수 없는 프로젝트 파일입니다.")
+        if relative.is_absolute() or ".." in relative.parts or "\\" in path:
+            raise ValueError("잘못된 파일 경로입니다.")
+        target = (root / path).resolve()
+        if not target.is_relative_to(root) or not target.is_file():
+            raise ValueError("프로젝트 파일을 찾을 수 없습니다.")
+        return target
+
+    def project_export_manifest(self, job_id: str) -> dict[str, Any]:
+        job = self.get(job_id)
+        # Keep the source stable while copying, without blocking status polling.
+        with job.project_source_lock:
+            with job.lock:
+                if job.revision_status == "running":
+                    raise ValueError("프로젝트 수정이 끝난 뒤 저장할 수 있습니다.")
+                root = self._unity_project_root(job_id)
+            snapshot = uuid.uuid4().hex
+            snapshot_base = (job.job_root / "export_snapshots").resolve()
+            snapshot_base.mkdir(parents=True, exist_ok=True)
+            for old in snapshot_base.iterdir():
+                if (
+                    re.fullmatch(r"[a-f0-9]{32}", old.name)
+                    and old.is_dir()
+                    and old.resolve().is_relative_to(snapshot_base)
+                    and time.time() - old.stat().st_mtime > 24 * 3600
+                ):
+                    shutil.rmtree(old)
+            snapshot_root = (snapshot_base / snapshot).resolve()
+            snapshot_root.mkdir(parents=True)
+            files = []
+            try:
+                for directory in ("Assets", "Packages", "ProjectSettings"):
+                    for file in (root / directory).rglob("*"):
+                        if not file.is_file() or not file.resolve().is_relative_to(root):
+                            continue
+                        relative = file.relative_to(root)
+                        target = snapshot_root / relative
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(file, target)
+                        files.append(relative.as_posix())
+            except Exception:
+                shutil.rmtree(snapshot_root)
+                raise
+            return {"files": sorted(files), "snapshot": snapshot}
+
+    def release_project_export(self, job_id: str, snapshot: str) -> None:
+        job = self.get(job_id)
+        if not re.fullmatch(r"[a-f0-9]{32}", snapshot):
+            raise ValueError("잘못된 내보내기 ID입니다.")
+        base = (job.job_root / "export_snapshots").resolve()
+        target = (base / snapshot).resolve()
+        if not target.is_relative_to(base):
+            raise ValueError("잘못된 내보내기 경로입니다.")
+        if target.is_dir():
+            shutil.rmtree(target)
+
+    def _run_revision(self, job: WorkflowJob, root: Path, revision_id: str | None = None) -> None:
+        # A cancelled process must exit before another agent edits the same project.
+        with job.revision_lock:
+            with job.project_source_lock:
+                with job.lock:
+                    if revision_id is not None and not self._revision_is_active(job, revision_id):
+                        return
+                self._run_revision_guarded(job, root, revision_id)
+
+    @staticmethod
+    def _revision_is_active(job: WorkflowJob, revision_id: str | None) -> bool:
+        return not job.cancel_requested and (
+            revision_id is None
+            or (job.active_revision_id == revision_id and job.revision_status == "running")
+        )
+
+    def _run_revision_guarded(self, job: WorkflowJob, root: Path, revision_id: str | None) -> None:
+        try:
+            self._run_revision_body(job, root, revision_id)
+        except Exception as error:
+            with job.lock:
+                if not self._revision_is_active(job, revision_id):
+                    return
+                job.revision_status = "failed"
+                job.revision_messages.append({"role": "assistant", "content": str(error)})
+                job.append_log(f"[CHAT][ERROR] {error}")
+
+    def _run_revision_body(
+        self, job: WorkflowJob, root: Path, revision_id: str | None = None
+    ) -> None:
+        audit = job.job_root / "revisions" / uuid.uuid4().hex
+        audit.mkdir(parents=True)
+        request = audit / "request.json"
+        _atomic_write_json(
+            request,
+            {
+                "project_root": str(root),
+                "builder": job.game_builder,
+                "original_request": json.loads(job.request_file.read_text(encoding="utf-8")),
+                "failure_evidence": {"error": job.error, "recent_logs": job.logs[-60:]},
+                "messages": list(job.revision_messages),
+            },
+        )
+        environment = self.settings.process_environment()
+        _configure_game_builder_environment(
+            environment,
+            job.game_builder,
+            model=job.agent_model,
+            reasoning_effort=job.agent_reasoning_effort,
+            fast_mode=job.agent_fast_mode,
+        )
+        try:
+            with job.lock:
+                if not self._revision_is_active(job, revision_id):
+                    return
+                job.append_log("[CHAT] 기존 Unity 프로젝트 추가 요청을 처리합니다.")
+            code = self._stream_process(
+                job,
+                [sys.executable, "-m", "mainflow.revise_project", str(request)],
+                environment,
+                revision_id=revision_id,
+            )
+            if code != 0:
+                if not self._revision_is_active(job, revision_id):
+                    return
+                raise RuntimeError("에이전트 수정에 실패했습니다. 개발 로그를 확인하세요.")
+            response = json.loads((audit / "revision_result.json").read_text(encoding="utf-8"))
+            if (
+                response.get("status") != "completed"
+                or response.get("validation_status") != "passed"
+            ):
+                raise RuntimeError(str(response.get("summary", "수정이 완료되지 않았습니다.")))
+            with job.lock:
+                if not self._revision_is_active(job, revision_id):
+                    return
+                job.revision_status = "completed"
+                job.revision_messages.append({"role": "assistant", "content": response["summary"]})
+                job.append_log("[CHAT] 추가 요청 수정이 완료되었습니다. Preview는 다시 빌드하세요.")
+        except Exception as error:
+            with job.lock:
+                if not self._revision_is_active(job, revision_id):
+                    return
+                job.revision_status = "failed"
+                job.revision_messages.append({"role": "assistant", "content": str(error)})
+                job.append_log(f"[CHAT][ERROR] {error}")
 
     def _start_preview(self, job: WorkflowJob) -> None:
         thread = threading.Thread(target=self._run_preview, args=(job,), daemon=True)
@@ -915,8 +1292,12 @@ class WorkflowJobManager:
                 raise ValueError("feature preview is empty")
             with job.lock:
                 job.features = features
+                suggested = payload.get("suggested_project_name")
+                if isinstance(suggested, str) and suggested.strip():
+                    job.suggested_project_name = " ".join(suggested.split())[:50]
                 job.preview_project_id = str(payload["project_id"])
                 job.status = "awaiting_confirmation"
+                job.approval_wait_started_at = time.monotonic()
                 job.stage = "feature_confirmation"
             job.append_log(
                 f"[WEB] {len(features)}개 Feature 분석이 끝났습니다. Confirm 또는 Reject를 선택하세요."
@@ -992,6 +1373,18 @@ class WorkflowJobManager:
             command.append("--skip-visual-validation")
         return_code = self._stream_process(job, command, environment)
         summary = _summarize_workflow_result(result_path, return_code)
+        if return_code != 0 and not result_path.is_file():
+            checklist_failure = next(
+                (
+                    line
+                    for line in reversed(job.logs)
+                    if "FEATURE_CHECKLIST_PREPARATION_FAILED" in line
+                ),
+                None,
+            )
+            if checklist_failure:
+                summary["failure_stage"] = "feature_checklist_generation"
+                summary["error_summary"] = checklist_failure[:900]
         if summary["project_id"] is None:
             summary["project_id"] = _project_id_from_unity_report(unity_project_report)
         with job.lock:
@@ -1007,6 +1400,22 @@ class WorkflowJobManager:
             job.stage = "completed"
             job.project_id = summary["project_id"]
         job.append_log("[WEB] 게임 생성 파이프라인이 완료되었습니다.")
+        if job.output_directory:
+            try:
+                source = WORKSPACE_ROOT / str(job.project_id) / "game" / "unity_project"
+                destination = Path(job.output_directory)
+                if destination.exists() and any(destination.iterdir()):
+                    raise ValueError("지정 폴더가 더 이상 비어 있지 않습니다.")
+                shutil.copytree(
+                    source,
+                    destination,
+                    dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("Library", "Temp", "obj", "Logs"),
+                )
+                job.append_log(f"[WEB] Unity 프로젝트 저장: {destination}")
+            except Exception as error:
+                self._fail(job, f"지정 경로에 프로젝트 저장 실패: {error}")
+                return
         try:
             self._start_webgl_build(job)
         except ValueError as error:
@@ -1020,10 +1429,12 @@ class WorkflowJobManager:
         job: WorkflowJob,
         command: list[str],
         environment: dict[str, str] | None = None,
+        *,
+        revision_id: str | None = None,
     ) -> int:
         runtime_environment = environment or self.settings.process_environment()
         with job.lock:
-            if job.cancel_requested:
+            if not self._revision_is_active(job, revision_id):
                 return CANCELLED_RETURN_CODE
         process_options: dict[str, Any] = {}
         if os.name == "nt":
@@ -1043,16 +1454,20 @@ class WorkflowJobManager:
             **process_options,
         )
         with job.lock:
-            job.process = process
-            cancel_immediately = job.cancel_requested
+            cancel_immediately = not self._revision_is_active(job, revision_id)
+            if not cancel_immediately:
+                job.process = process
         if cancel_immediately:
             _terminate_process_tree(process)
         assert process.stdout is not None
         for line in process.stdout:
-            job.append_log(line)
+            with job.lock:
+                if self._revision_is_active(job, revision_id):
+                    job.append_log(line)
         return_code = process.wait()
         with job.lock:
-            job.process = None
+            if job.process is process:
+                job.process = None
         return return_code
 
     @staticmethod

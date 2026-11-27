@@ -27,14 +27,63 @@ _COLLECTIBLE_PATTERNS = (
 )
 
 
+def compact_platformer_requested(condition: str) -> bool:
+    """Recognize an explicitly short single-stage prototype without a duration target."""
+
+    if any(pattern.search(condition) for pattern in _DURATION_PATTERNS):
+        return False
+    normalized = condition.lower()
+    short = any(word in normalized for word in ("짧은", "간단한", "소규모", "short", "compact"))
+    single_stage = bool(
+        re.search(
+            r"(?:하나의|단일|한\s*개(?:의)?|1\s*개(?:의)?|one|single)"
+            r".{0,12}(?:스테이지|레벨|stage|level)"
+            r"|(?:스테이지|레벨|stage|level).{0,8}"
+            r"(?:하나|한\s*개|1\s*개|one|single)",
+            normalized,
+        )
+    )
+    few_platforms = (count := requested_platform_count(condition)) is not None and count <= 10
+    return single_stage and (short or few_platforms)
+
+
+def trim_compact_platformer_spec(game_spec: GameSpec, condition: str) -> GameSpec:
+    """Remove preset systems contradicted by a small single-stage request."""
+
+    if game_spec["genre"] != "Platformer" or not compact_platformer_requested(condition):
+        return game_spec
+    excluded = {"health_damage", "collectible", "item_collect", "player_stats", "score"}
+    if requested_collectible_count(condition) is not None:
+        excluded -= {"collectible", "item_collect"}
+    return {
+        **game_spec,
+        "mechanics": [item for item in game_spec["mechanics"] if item not in excluded],
+        "lose_conditions": [],
+    }
+
+
 def requested_play_minutes(condition: str, *, default: int = 5) -> int:
-    """Keep an explicit playtime request instead of replacing it with a genre preset."""
+    """Use zero for an explicitly compact run with no requested duration."""
 
     for pattern in _DURATION_PATTERNS:
         match = pattern.search(condition)
         if match:
-            return max(3, min(30, int(match.group(1))))
-    return default
+            return max(1, min(30, int(match.group(1))))
+    return 0 if compact_platformer_requested(condition) else default
+
+
+def requested_platform_count(condition: str) -> int | None:
+    """Preserve an explicit fixed-platform count in a compact stage."""
+
+    for pattern in (
+        re.compile(r"(\d{1,2})\s*개(?:의)?\s*(?:고정\s*)?발판"),
+        re.compile(r"(?:고정\s*)?발판\s*(\d{1,2})\s*개"),
+        re.compile(r"(\d{1,2})\s+(?:fixed\s+)?platforms?\b", re.I),
+    ):
+        match = pattern.search(condition)
+        if match:
+            return max(2, min(60, int(match.group(1))))
+    return None
 
 
 def requested_zone_count(condition: str, *, default: int) -> int:
@@ -105,20 +154,30 @@ def build_pacing_contract(
         }
         for index in range(progression_units)
     ]
+    compact = genre == "Platformer" and compact_platformer_requested(condition)
+    acceptance = [
+        "Measure an unaccelerated start-to-result run with real player controls when available; lack of that measurement alone is an evidence limitation.",
+        "Never lock a zone boundary or the goal until a minimum timer elapses just to satisfy playtime.",
+        "Every segment must contain authored traversal, combat, decisions, or challenge content; repeated movement against a gate does not count.",
+        "The final objective and all required collectibles must be reachable from player spawn with the implemented movement abilities.",
+    ]
+    if compact:
+        acceptance.append("This short single-stage prototype has no minimum playtime requirement.")
+    else:
+        acceptance.insert(
+            1,
+            "Normal play should last at least minimum_normal_play_seconds through authored content; a fast automated smoke test is not duration evidence.",
+        )
     return {
         "contract_version": "1.0.0",
         "genre": genre,
         "target_play_minutes": target_minutes,
         "target_duration_seconds": target_minutes * 60,
-        "minimum_normal_play_seconds": max(60, round(target_minutes * 60 * 0.75)),
+        "minimum_normal_play_seconds": (
+            0 if compact else max(60, round(target_minutes * 60 * 0.75))
+        ),
         "segments": segments,
-        "acceptance": [
-            "Measure an unaccelerated start-to-result run with real player controls when available; lack of that measurement alone is an evidence limitation.",
-            "Normal play should last at least minimum_normal_play_seconds through authored content; a fast automated smoke test is not duration evidence.",
-            "Never lock a zone boundary or the goal until a minimum timer elapses just to satisfy playtime.",
-            "Every segment must contain authored traversal, combat, decisions, or challenge content; repeated movement against a gate does not count.",
-            "The final objective and all required collectibles must be reachable from player spawn with the implemented movement abilities.",
-        ],
+        "acceptance": acceptance,
     }
 
 
@@ -153,7 +212,7 @@ def build_ui_contract(game_spec: GameSpec, design: DesignV2Bundle) -> dict[str, 
             "Every visible counter, bar, timer, and objective is bound to the corresponding runtime state and updates after a state transition.",
             "Every required screen appears at its activation condition and exposes functional primary actions.",
             "The HUD must not obstruct world interaction points or hide required progression objects.",
-            "Every HUD value and announcement has an opaque dark backing panel with high-contrast live text, not text painted into a generated image.",
+            "Every HUD value and announcement has a readable backing panel with high-contrast live text, not text painted into a generated image.",
             "Generated HUD frames and icons are decorative uGUI Images behind live text; missing artwork keeps the readable panel fallback.",
             "After asset import, capture the UI and inspect text contrast and screen clipping at the reference resolution.",
         ],

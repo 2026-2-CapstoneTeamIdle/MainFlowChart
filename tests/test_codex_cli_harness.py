@@ -20,6 +20,7 @@ from game_pipeline.codex_cli.harness import (
     CodexGameHarness,
     _failure_severity,
     _failure_signature,
+    _signature_diagnostics,
     _implementation_prompt,
     _permission_diagnostic_failed,
     _prepare_host_owned_source_roots,
@@ -31,7 +32,6 @@ from game_pipeline.codex_cli.harness import (
     _staged_implementation_enabled,
     _ui_layout_overflow,
     _ui_layout_repair_guidance,
-    _ui_opacity_violations,
     _ui_quality_metrics,
     _validation_progress,
     _write_project_instructions,
@@ -72,6 +72,96 @@ def _completion() -> dict[str, object]:
         "host_validation_pending": False,
         "implementation_blockers": [],
     }
+
+
+def test_initial_source_compile_error_stops_before_agent_turn(tmp_path: Path) -> None:
+    project = tmp_path / "unity"
+    project.mkdir()
+    editor = tmp_path / "Unity.exe"
+    editor.write_bytes(b"")
+    runner = MagicMock()
+    harness = CodexGameHarness(
+        _settings(tmp_path / "codex.exe"),
+        audit_root=tmp_path / "audit",
+        runner=runner,
+        preflight_runner=lambda settings: CodexPreflightResult("codex", "test", "logged in"),
+    )
+    failed = UnityValidationOutcome(
+        checks=[{"criterion_id": "unity.source_compile", "passed": False, "message": "CS1061"}],
+        issues=[
+            {
+                "code": "UNITY_SOURCE_COMPILATION_FAILED",
+                "severity": "error",
+                "message": "CS1061 missing System.Linq",
+            }
+        ],
+        unity_log="Assets/GameTemplate/Editor/PrefabSceneAssembler.cs(240,50): error CS1061",
+    )
+    with (
+        patch(
+            "game_pipeline.codex_cli.harness._normalize_windows_project_permissions",
+            return_value={"status": "passed"},
+        ),
+        patch("game_pipeline.codex_cli.harness._require_normalized_permissions"),
+        patch("game_pipeline.codex_cli.harness._write_project_instructions"),
+        patch("game_pipeline.codex_cli.harness.UnityProjectValidator") as validator,
+        pytest.raises(RuntimeError, match="UNITY_INITIAL_SOURCE_INVALID"),
+    ):
+        validator._read_project_version.return_value = "6000.0.71f1"
+        validator.find_unity_editor.return_value = editor
+        validator.return_value.compile_sources.return_value = failed
+        harness.implement_project(project_root=project, design={}, request={})  # type: ignore[arg-type]
+
+    runner.run.assert_not_called()
+
+
+def test_initial_source_compile_success_is_reused_for_identical_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MAINFLOW_WORKSPACE", str(tmp_path / "workspace"))
+    editor = tmp_path / "Unity.exe"
+    editor.write_bytes(b"")
+    projects = [tmp_path / "one", tmp_path / "two"]
+    for project in projects:
+        source = project / "Assets" / "Game.cs"
+        source.parent.mkdir(parents=True)
+        source.write_text("public class Game {}", encoding="utf-8")
+        version = project / "ProjectSettings" / "ProjectVersion.txt"
+        version.parent.mkdir(parents=True)
+        version.write_text("m_EditorVersion: 6000.0.71f1", encoding="utf-8")
+    harness = CodexGameHarness(
+        _settings(tmp_path / "codex.exe"),
+        audit_root=tmp_path / "audit",
+        runner=MagicMock(),
+    )
+    with patch("game_pipeline.codex_cli.harness.UnityProjectValidator") as validator:
+        validator._read_project_version.return_value = "6000.0.71f1"
+        validator.find_unity_editor.return_value = editor
+        validator.return_value.compile_sources.return_value = UnityValidationOutcome()
+        for project in projects:
+            harness._verify_initial_source_compilation(project)
+        assert validator.return_value.compile_sources.call_count == 1
+        projects[1].joinpath("Assets", "Game.cs").write_text("changed", encoding="utf-8")
+        harness._verify_initial_source_compilation(projects[1])
+        assert validator.return_value.compile_sources.call_count == 2
+
+
+@pytest.mark.parametrize(
+    "host_note",
+    ["Host Unity batch validation must be rerun.", "Host Play Mode validation pending."],
+)
+def test_completed_repair_with_host_rerun_note_reaches_unity(
+    tmp_path: Path, host_note: str
+) -> None:
+    response = {
+        **_completion(),
+        "host_validation_pending": True,
+        "unresolved_requirements": [host_note],
+    }
+    result = CodexCliResult(0, 1.0, response, (), tmp_path)
+    _require_agent_completion(
+        result, "design_game_logic repair", allow_host_validation_pending=True
+    )
 
 
 def test_staged_implementation_auto_is_limited_to_large_requests(monkeypatch) -> None:
@@ -403,6 +493,7 @@ def test_initial_host_validation_pending_reaches_compile_repair(tmp_path: Path) 
         ),
         patch("game_pipeline.codex_cli.harness.UnityProjectValidator") as validator,
     ):
+        validator.find_unity_editor.return_value = None
         validator.return_value.validate.side_effect = [failed, passed]
         harness.implement_project(project_root=project, design={}, request={})  # type: ignore[arg-type]
         result = harness.validate_and_repair(project_root=project, design={}, request={})  # type: ignore[arg-type]
@@ -961,37 +1052,10 @@ def test_ui_layout_overflow_tracks_progress_with_same_runtime_failure() -> None:
     assert _ui_layout_overflow(improved.unity_log) == ("HudArt_SurvivalStatus", "HudLiveStats", 1)
 
 
-def test_ui_opacity_reports_all_panels_and_counts_repair_progress() -> None:
-    def failed(details: str) -> UnityValidationOutcome:
-        return UnityValidationOutcome(
-            checks=[],
-            issues=[
-                {
-                    "code": "UNITY_RUNTIME_TEST_FAILED",
-                    "severity": "error",
-                    "message": "Play Mode smoke tests failed",
-                }
-            ],
-            unity_log="UNITY_RUNTIME_SMOKE_FAILED: runtime.ui_quality: " + details,
-        )
-
-    old = failed(
-        "HUD panel 'HudArt_Encounter' must have an opaque backing "
-        "(alpha=0.96, required=1). | HUD panel 'HudArt_BuildSummary' "
-        "must have an opaque backing (alpha=0.96, required=1)."
-    )
-    improved = failed(
-        "HUD panel 'HudArt_BuildSummary' must have an opaque backing (alpha=0.96, required=1)."
-    )
-
-    assert _ui_opacity_violations(old.unity_log) == [
-        {"panel": "HudArt_Encounter", "alpha": 0.96, "required_alpha": 1.0},
-        {"panel": "HudArt_BuildSummary", "alpha": 0.96, "required_alpha": 1.0},
-    ]
-    assert _ui_quality_metrics(old.unity_log).opacity_count == 2
-    assert _ui_quality_metrics(improved.unity_log).opacity_count == 1
-    assert not _repair_is_regression(old, improved)
-    assert _repair_is_regression(improved, old)
+def test_hud_repair_prompt_does_not_require_exact_opacity() -> None:
+    prompt = _repair_prompt({"unity_log": "runtime.ui_quality"}, 1)
+    assert "ui_opacity_corrections" not in prompt
+    assert "color alpha to exactly 1.0" not in prompt
 
 
 def test_ui_layout_repair_reports_all_overflows_with_actionable_offsets() -> None:
@@ -1011,6 +1075,20 @@ def test_ui_layout_repair_reports_all_overflows_with_actionable_offsets() -> Non
     assert guidance[0]["move_screen_px_with_8px_padding"] == {"x": 28.0, "y": 18.0}
     assert guidance[1]["move_screen_px_with_8px_padding"] == {"x": -108.0, "y": 0}
     assert _ui_layout_overflow(log) == ("HudArt_StatusPanel", "TimerReadout", 100)
+
+
+def test_oversized_hud_content_guidance_splits_panel() -> None:
+    log = (
+        "UNITY_RUNTIME_SMOKE_FAILED: runtime.ui_quality: "
+        "HUD content 'Status' escapes decorated panel 'HudArt_StatusPanel' "
+        "safe area (x:40, y:200, width:140, height:120); "
+        "content bounds (x:20, y:190, width:190, height:130)."
+    )
+
+    guidance = _ui_layout_repair_guidance(log)
+
+    assert guidance[0]["move_screen_px_with_8px_padding"] is None
+    assert "second anchored decorated HUD panel" in guidance[0]["required_action"]
 
 
 def test_ui_quality_repair_keeps_improved_layout_and_reports_text_modes() -> None:
@@ -1274,7 +1352,7 @@ def test_same_root_failure_stops_after_two_source_repairs(
     assert source.read_text(encoding="utf-8") == "version-2"
 
 
-def test_batch_exception_signature_ignores_message_and_line_changes() -> None:
+def test_batch_exception_signature_distinguishes_root_messages_but_ignores_stack_lines() -> None:
     def failed(message: str, line: int) -> UnityValidationOutcome:
         return UnityValidationOutcome(
             checks=[],
@@ -1289,7 +1367,87 @@ def test_batch_exception_signature_ignores_message_and_line_changes() -> None:
         )
 
     assert _failure_signature(failed("Value cannot be null", 48)) == _failure_signature(
+        failed("Value cannot be null", 59)
+    )
+    assert _failure_signature(failed("Value cannot be null", 48)) != _failure_signature(
         failed("Scene assembly requires config", 59)
+    )
+
+
+@pytest.mark.parametrize(
+    "errors",
+    [
+        (
+            "Validation feature binding is not selected: generated_user_feature_09",
+            "Content definition is missing: rotating_saw",
+            "Platformer hazard damage mismatch: expected 2.00, found 1.00",
+        ),
+        (
+            "Content definition is missing: rotating_saw",
+            "Validation feature binding is not selected: generated_user_feature_09",
+            "Content definition is missing: rotating_saw",
+            "Content definition is missing: rotating_saw",
+        ),
+    ],
+)
+def test_distinct_batch_exceptions_continue_through_repair_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, errors: tuple[str, ...]
+) -> None:
+    project = tmp_path / "unity"
+    (project / "Assets").mkdir(parents=True)
+    runner = MagicMock()
+    runner.run.return_value = MagicMock(final_response=_completion())
+    harness = CodexGameHarness(
+        _settings(tmp_path / "codex.exe"),
+        audit_root=tmp_path / "audit",
+        runner=runner,
+        record=lambda name, value: None,
+        preflight_runner=lambda current: CodexPreflightResult("codex", "test", "logged in"),
+    )
+
+    def failed(message: str) -> UnityValidationOutcome:
+        return UnityValidationOutcome(
+            checks=[],
+            issues=[
+                {
+                    "code": "UNITY_BATCH_VALIDATION_FAILED",
+                    "severity": "error",
+                    "message": "Unity batch validation failed",
+                }
+            ],
+            unity_log=(
+                f"InvalidOperationException: {message}\n"
+                "executeMethod method TeamIdle.GameTemplate.Editor.TemplateProjectBuilder.BuildForBatch threw exception."
+            ),
+        )
+
+    outcomes = [*(failed(message) for message in errors), UnityValidationOutcome([], [], "OK")]
+    monkeypatch.setenv("MAINFLOW_AGENT_HARD_MAX_REPAIRS", str(len(errors)))
+    with (
+        patch(
+            "game_pipeline.codex_cli.harness._normalize_windows_project_permissions",
+            return_value={"status": "passed"},
+        ),
+        patch("game_pipeline.codex_cli.harness._require_normalized_permissions"),
+        patch("game_pipeline.codex_cli.harness._repair_is_regression", return_value=False),
+        patch("game_pipeline.codex_cli.harness.UnityProjectValidator") as validator,
+    ):
+        validator.return_value.validate.side_effect = outcomes
+        outcome, repairs, attempts = harness._run_validation_repair_loop(
+            project_root=project,
+            draft={"status": "generated"},  # type: ignore[arg-type]
+            request={"condition": "platformer"},  # type: ignore[arg-type]
+            phase="design_game_logic",
+            max_repairs=len(errors),
+        )
+
+    assert outcome.status == "passed"
+    assert len(repairs) == len(errors)
+    assert len(attempts) == len(errors) + 1
+    assert errors[-1] in runner.run.call_args_list[-1].kwargs["prompt"]
+    assert any(
+        f"InvalidOperationException: {errors[-1]}" in item
+        for item in _signature_diagnostics(outcomes[-2].unity_log)
     )
 
 

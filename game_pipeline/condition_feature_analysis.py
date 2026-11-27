@@ -30,8 +30,9 @@ CODEX_MAX_FEATURES_PER_REQUEST = 4
 CONDITION_FEATURE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["features"],
+    "required": ["features", "project_name"],
     "properties": {
+        "project_name": {"type": "string"},
         "features": {
             "type": "array",
             "minItems": 1,
@@ -70,7 +71,7 @@ CONDITION_FEATURE_SCHEMA: dict[str, Any] = {
                     },
                 },
             },
-        }
+        },
     },
 }
 
@@ -105,6 +106,7 @@ class ConditionFeatureAnalyzer:
         failed_segments: list[dict[str, object]] = []
         truncated_segments: list[dict[str, object]] = []
         condition_segments = _split_condition(condition)
+        project_name = ""
         if self.provider == "codex_cli":
             request_segments = [
                 "\n".join(condition_segments[index : index + CODEX_SEGMENTS_PER_REQUEST])
@@ -115,10 +117,11 @@ class ConditionFeatureAnalyzer:
             schema = {
                 **CONDITION_FEATURE_SCHEMA,
                 "properties": {
+                    **CONDITION_FEATURE_SCHEMA["properties"],
                     "features": {
                         **CONDITION_FEATURE_SCHEMA["properties"]["features"],
                         "maxItems": request_feature_limit,
-                    }
+                    },
                 },
             }
         else:
@@ -153,6 +156,9 @@ class ConditionFeatureAnalyzer:
                     }
                 )
                 continue
+            proposed_name = response.get("project_name")
+            if not project_name and isinstance(proposed_name, str):
+                project_name = " ".join(proposed_name.split())[:50]
             raw_features = response.get("features")
             if not isinstance(raw_features, list):
                 raise TypeError("Condition feature analysis must return a features array")
@@ -231,6 +237,7 @@ class ConditionFeatureAnalyzer:
             features=features,
             report={
                 "provider": self.provider,
+                "project_name": project_name,
                 "model_role": "condition_feature_analysis",
                 "detected_feature_count": len(detected_features),
                 "explicit_feature_count": len(features),
@@ -284,6 +291,9 @@ class ConditionFeatureAnalyzer:
         }
         return (
             "You are the requirements parser for a Unity game generator. Analyze only "
+            "the current segment for features, and also propose a short memorable Korean game "
+            "title (2–20 characters) in project_name using the ENTIRE full_condition. "
+            "Return the title alongside features; do not add naming as a gameplay feature. Analyze only "
             "condition_segment while using full_condition for context. Decompose EVERY "
             "explicitly requested behavior, object, interaction, rule, success condition, and "
             "failure condition in the user's condition. Group clauses that share one runtime "

@@ -77,12 +77,26 @@ class UnityTemplateTest(unittest.TestCase):
         self.assertIn("legacyDebugUi.enabled && hasLegacyOnGui", source)
         self.assertIn("UNITY_UI_QUALITY_OK", source)
         self.assertIn("layoutIssues.Add(", source)
-        self.assertIn("HUD panel '{image.name}' must have an opaque backing", source)
-        self.assertIn("alpha={image.color.a:0.###}, required=1", source)
-        opacity_scan = source.split("foreach (var image in panelBackings)", 1)[1].split(
-            "var artPanels", 1
-        )[0]
-        self.assertNotIn("return false", opacity_scan)
+        self.assertNotIn("must have an opaque backing", source)
+        self.assertNotIn("alpha={image.color.a:0.###}, required=1", source)
+        self.assertIn("HUD content '{graphic.name}' escapes decorated panel", source)
+
+    def test_compact_platformer_does_not_require_unrequested_collectibles(self) -> None:
+        assembler = (
+            TEMPLATE_ROOT / "Assets/GameTemplate/Editor/PrefabSceneAssembler.cs"
+        ).read_text(encoding="utf-8")
+        smoke = (TEMPLATE_ROOT / "Assets/GameTemplate/Editor/RuntimeSmokeValidator.cs").read_text(
+            encoding="utf-8"
+        )
+
+        level_plan = (TEMPLATE_ROOT / "Assets/GameTemplate/Editor/LevelPlan.cs").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('plan.zones.Count == 1 && plan.zones[0].purpose == "mastery"', level_plan)
+        self.assertIn("levelPlan.zones.Any(zone => zone.collectibles.Count > 0)", assembler)
+        self.assertIn("compactPlatformer =", smoke)
+        self.assertIn("runtime.fall_respawn:", smoke)
+        self.assertIn('MarkScenarioPassed("checkpoint_recovery")', smoke)
 
     def test_template_metadata_matches_pipeline_contract(self) -> None:
         metadata = json.loads((TEMPLATE_ROOT / "template.json").read_text(encoding="utf-8"))

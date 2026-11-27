@@ -1017,10 +1017,21 @@ namespace TeamIdle.GameTemplate.Editor
                 kind == "background" ? Mathf.Max(box.x / natural.x, box.y / natural.y)
                 : GroundedAssetIds.Contains(entry.asset_id) ? box.y / natural.y
                 : Mathf.Min(box.x / natural.x, box.y / natural.y);
+            var visualSize = natural * fit;
+            // The gameplay collider stays at its authored size. Give tiny pickups and
+            // traps a readable visual footprint without resizing that collider.
+            var minimumVisual = entry.asset_id switch
+            {
+                "platformer_collectible" => new Vector2(0.75f, 0.75f),
+                "platformer_hazard" => new Vector2(1.25f, 0.55f),
+                _ => Vector2.zero,
+            };
+            visualSize.x = Mathf.Max(visualSize.x, minimumVisual.x);
+            visualSize.y = Mathf.Max(visualSize.y, minimumVisual.y);
             renderer.drawMode = SpriteDrawMode.Sliced;
             renderer.size = new Vector2(
-                natural.x * fit / Mathf.Abs(scale.x),
-                natural.y * fit / Mathf.Abs(scale.y)
+                visualSize.x / Mathf.Abs(scale.x),
+                visualSize.y / Mathf.Abs(scale.y)
             );
         }
 

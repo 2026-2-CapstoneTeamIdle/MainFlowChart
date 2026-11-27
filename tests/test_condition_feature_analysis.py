@@ -25,6 +25,34 @@ class FakeStructuredClient:
 
 
 class ConditionFeatureAnalysisTest(unittest.TestCase):
+    def test_first_analysis_returns_project_title_alongside_features(self) -> None:
+        client = FakeStructuredClient(
+            {
+                "project_name": "  별빛   산책  ",
+                "features": [
+                    {
+                        "name": "플레이어 이동",
+                        "description": "플레이어가 이동한다.",
+                        "source_text": "플레이어가 이동한다",
+                        "acceptance_criteria": "방향 입력으로 이동한다.",
+                        "acceptance_items": ["방향 입력으로 이동한다."],
+                        "implementation_kind": "generate_code",
+                    }
+                ],
+            }
+        )
+        result = ConditionFeatureAnalyzer(client, "codex_cli").analyze(
+            genre="플랫포머",
+            viewpoint="사이드뷰",
+            condition="플레이어가 이동한다.",
+            detected_features=[],
+        )
+        self.assertEqual(result.report["project_name"], "별빛 산책")
+        self.assertIn("project_name", client.schema["required"])
+        self.assertIn("project_name", client.schema["properties"])
+        self.assertEqual(len(client.prompts), 1)
+        self.assertIn("ENTIRE full_condition", client.prompts[0])
+
     def test_undercovered_group_falls_back_to_original_condition(self) -> None:
         condition = (
             "플레이어는 이동한다. 적이 추격한다. 적이 사망하면 보석을 떨어뜨린다. "

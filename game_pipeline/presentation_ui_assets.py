@@ -13,9 +13,9 @@ HUD_ART: tuple[tuple[str, str, str, str], ...] = (
         "hud_panel_frame",
         "HudArt_",
         "Reusable HUD panel decoration",
-        "A reusable nine-slice dark game UI panel frame. Draw the border all the way to "
-        "the four canvas edges, with no transparent outer margin. Reserve the central "
-        "70 percent of the panel as a quiet opaque dark area for live Unity text. "
+        "A reusable nine-slice game UI panel frame with transparent space outside its "
+        "ornamental silhouette. Keep the decorative border narrow and the central "
+        "84 percent of the panel as a quiet opaque dark area for live Unity text. "
         "No words, letters, digits, symbols, buttons, or controls. This is decoration "
         "behind separately laid-out text, not a complete HUD screenshot.",
     ),
@@ -88,8 +88,9 @@ def with_presentation_ui_assets(
             purpose, description, asset_id, kind_override="ui"
         )
         if asset_id == "hud_panel_frame":
-            # The frame postprocessor fills the whole rectangle with an opaque backing.
-            generation_spec["transparent"] = False
+            # Preserve transparent pixels outside the ornament; postprocessing makes
+            # only the content area opaque for legible live text.
+            generation_spec["transparent"] = True
         assets.append(
             cast(
                 AssetGenerationItem,

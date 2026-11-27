@@ -62,7 +62,8 @@ def apply_assets_to_game_node(
 
     manager = ArtifactManager()
     game_draft = cast(GameLogicDraft, manager.read_json(state["game_logic_draft"]))
-    if game_draft["status"] == "failed":
+    diagnostic_project = game_draft["status"] == "failed"
+    if diagnostic_project and not game_draft.get("diagnostic_compile_passed", False):
         log("게임 구현 실패로 에셋 복사와 중간 Unity ZIP 생성을 생략합니다.")
         integrated_game = {
             "contract_version": CONTRACT_VERSION,
@@ -151,13 +152,18 @@ def apply_assets_to_game_node(
             else None
         )
         notes = ["검증을 통과한 에셋을 Unity 프로젝트에 복사하고 바인딩 manifest를 생성함"]
+        if diagnostic_project:
+            notes.append(
+                "컴파일을 통과한 진단용 프로젝트에 에셋을 적용함; 게임 로직 검증 실패는 유지"
+            )
+            log("컴파일을 통과한 진단용 Unity 프로젝트에 생성 에셋을 적용합니다.")
         if archive_reference is None:
             notes.append("최종 검증 후 Unity 프로젝트 ZIP을 생성함")
         notes.append("Unity Editor가 프로젝트를 열 때 importer 설정과 씬 바인딩을 적용함")
         notes.extend(application.manifest["warnings"])
         integrated_game = {
             "contract_version": CONTRACT_VERSION,
-            "status": "integrated",
+            "status": "failed" if diagnostic_project else "integrated",
             "entry_artifact": archive_reference,
             "game_artifacts": [manifest_reference]
             + ([archive_reference] if archive_reference is not None else []),

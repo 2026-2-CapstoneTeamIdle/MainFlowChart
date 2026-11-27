@@ -64,7 +64,7 @@ namespace TeamIdle.GameTemplate.Editor
             );
             Anchor(feedbackPanel.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f));
             feedbackPanel.rectTransform.pivot = new Vector2(0.5f, 1f);
-            feedbackPanel.rectTransform.anchoredPosition = new Vector2(0f, -46f);
+            feedbackPanel.rectTransform.anchoredPosition = new Vector2(0f, -172f);
             feedbackPanel.rectTransform.sizeDelta = new Vector2(744f, 86f);
             feedbackPanel.raycastTarget = false;
 

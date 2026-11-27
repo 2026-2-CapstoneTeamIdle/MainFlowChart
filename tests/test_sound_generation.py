@@ -192,6 +192,57 @@ class PlannerTest(unittest.TestCase):
 
 
 class ProviderTest(unittest.TestCase):
+    def test_elevenlabs_records_reported_sfx_cost_and_unreported_music(self):
+        (sfx, bgm) = plan_sound_assets(
+            request(item("s", "UI", "클릭"), item("b", "배경음악", "전투 음악")), PARSED
+        )
+        events = []
+
+        def fake_urlopen(req, timeout):
+            response = FakeResponse(bytes([0, 1, 0, 2]) * 24000)
+            response.headers = (
+                {"request-id": "sfx-1", "character-cost": "37"}
+                if "/sound-generation" in req.full_url
+                else {"request-id": "music-1", "song-id": "song-1"}
+            )
+            return response
+
+        provider = ElevenLabsSoundProvider(api_key="k")
+        provider.usage_recorder = events.append
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            provider.generate(sfx)
+            provider.generate(bgm)
+
+        self.assertEqual([event["asset_id"] for event in events], ["s", "b"])
+        self.assertEqual(events[0]["character_cost"], "37")
+        self.assertEqual(events[0]["usage_status"], "reported")
+        self.assertEqual(events[1]["usage_status"], "missing")
+        self.assertEqual(events[1]["song_id"], "song-1")
+        self.assertNotIn("prompt", events[0])
+
+    def test_elevenlabs_records_rejected_attempt_before_retry(self):
+        (sfx,) = plan_sound_assets(request(item("s", "UI", "클릭")), PARSED)
+        events = []
+        attempts = 0
+
+        def fake_urlopen(req, timeout):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise http_error(403, b"{}")
+            response = FakeResponse(bytes([0, 1, 0, 2]) * 24000)
+            response.headers = {"request-id": "retry-1", "character-cost": "12"}
+            return response
+
+        provider = ElevenLabsSoundProvider(api_key="k")
+        provider.usage_recorder = events.append
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            provider.generate(sfx)
+
+        self.assertEqual([event["status"] for event in events], ["error", "success"])
+        self.assertEqual(events[0]["http_status"], 403)
+        self.assertEqual(events[1]["character_cost"], "12")
+
     def test_procedural_output_is_valid_and_mood_dependent(self):
         plans = plan_sound_assets(request(item("s", "UI", "선택 효과음")), PARSED)
         horror = ProceduralSoundProvider().generate(plans[0]).audio
@@ -453,6 +504,34 @@ class GenerateSoundNodeTest(unittest.TestCase):
         self.env.stop()
         self.tmp.cleanup()
 
+    def test_failed_game_without_compilation_skips_sounds(self):
+        self.state["game_logic_draft"] = self.manager.write_json(
+            self.project,
+            "game",
+            "game_logic_draft.json",
+            {"status": "failed", "diagnostic_compile_passed": False},
+            producer="test",
+        )
+        with mock.patch("mainflow.nodes.generate_sound.primary_provider") as provider:
+            draft = self.manager.read_json(generate_sound_node(self.state)["sound_draft"])
+        provider.assert_not_called()
+        self.assertEqual(draft["status"], "failed")
+        self.assertEqual(draft["assets"], [])
+
+    def test_failed_but_compilable_game_skips_sounds(self):
+        self.state["game_logic_draft"] = self.manager.write_json(
+            self.project,
+            "game",
+            "game_logic_draft.json",
+            {"status": "failed", "diagnostic_compile_passed": True},
+            producer="test",
+        )
+        with mock.patch("mainflow.nodes.generate_sound.primary_provider") as provider:
+            draft = self.manager.read_json(generate_sound_node(self.state)["sound_draft"])
+        provider.assert_not_called()
+        self.assertEqual(draft["status"], "failed")
+        self.assertEqual(draft["assets"], [])
+
     def test_node_writes_wav_artifacts_and_draft(self):
         output = generate_sound_node(self.state)
         draft = self.manager.read_json(output["sound_draft"])
@@ -521,6 +600,13 @@ class GenerateSoundNodeTest(unittest.TestCase):
             self.assertEqual(asset["artifact"]["media_type"], "audio/mpeg")
             self.assertTrue(asset["artifact"]["relative_path"].endswith(".mp3"))
             self.assertAlmostEqual(asset["duration_seconds"], 2.0, delta=0.05)
+        usage_path = (
+            self.manager.ensure_project(self.project)
+            / "validation"
+            / "api_usage"
+            / "elevenlabs.jsonl"
+        )
+        self.assertEqual(len(usage_path.read_text(encoding="utf-8").splitlines()), 3)
         self.assertTrue(any("actual=" in note and "format=mp3" in note for note in draft["notes"]))
 
     def test_api_failure_falls_back_to_procedural(self):

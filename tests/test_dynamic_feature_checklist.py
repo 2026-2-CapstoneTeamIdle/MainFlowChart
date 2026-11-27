@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
@@ -14,7 +15,9 @@ from game_pipeline.dynamic_feature_checklist import (
     TEST_METHOD_BATCH_COUNT,
     TEST_METHOD_BATCH_SIZE,
     DynamicFeatureChecklistGenerator,
+    checklist_matches_approved_features,
     UnityChecklistTestGenerator,
+    _validate_test_method_source,
     load_generated_checklist,
     persist_generated_checklist,
     persist_generated_feature_test,
@@ -74,7 +77,162 @@ def _logic_analysis() -> LogicAnalysis:
     }
 
 
+def _logic_analysis_with_thirty_items() -> LogicAnalysis:
+    logic = _logic_analysis()
+    logic["features"] = [
+        {**feature, "acceptance_items": [f"규칙 {index}" for index in range(21)]}
+        for feature in logic["features"]
+    ]
+    return logic
+
+
 class DynamicFeatureChecklistTest(unittest.TestCase):
+    def test_unity_method_accepts_equivalent_enumerator_and_attribute_layout(self) -> None:
+        source = (
+            "[Timeout(1000)]\n"
+            "[UnityTest]\n"
+            "public System.Collections.IEnumerator DFC001_01_Check() "
+            "{ yield return null; Assert.That(true); }"
+        )
+
+        normalized = _validate_test_method_source(source, "DFC001_01")
+
+        self.assertIn("[UnityTest]\npublic IEnumerator DFC001_01_Check()", normalized)
+        self.assertIn("[Timeout(1000)]", normalized)
+
+    def test_unity_method_adds_missing_attribute_only_for_expected_method(self) -> None:
+        source = "public IEnumerator DFC001_01_Check() { yield return null; Assert.That(true); }"
+        self.assertTrue(
+            _validate_test_method_source(source, "DFC001_01").startswith("[UnityTest]\n")
+        )
+        with self.assertRaisesRegex(ValueError, "must implement only"):
+            _validate_test_method_source(source, "DFC001_02")
+
+    def test_unity_method_rejects_regular_nunit_test_attribute(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must use \\[UnityTest\\]"):
+            _validate_test_method_source(
+                "[Test] public IEnumerator DFC001_01_Check() { yield return null; }",
+                "DFC001_01",
+            )
+
+    def test_test_body_receives_host_owned_unity_method(self) -> None:
+        source = _validate_test_method_source("yield return null; Assert.That(true);", "DFC001_01")
+        self.assertIn("[UnityTest]\npublic IEnumerator DFC001_01_Check()", source)
+        self.assertIn("Assert.That(true)", source)
+        with self.assertRaisesRegex(ValueError, "requires an executable assertion"):
+            _validate_test_method_source("yield return null;", "DFC001_01")
+
+    def test_partial_and_stale_checklists_regenerate_only_affected_feature(self) -> None:
+        class CriterionClient:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def generate_json(self, prompt, _schema):
+                target = json.loads(prompt.split("INPUT=", 1)[1])["target_feature"]["feature_id"]
+                self.calls.append(target)
+                return {
+                    "criteria": [
+                        {
+                            "feature_ids": [target],
+                            "title": f"{target} rule {index}",
+                            "category": "runtime",
+                            "setup": f"Setup {index}",
+                            "action": f"Action {index}",
+                            "expected": f"Expected {index}",
+                            "evidence": f"Evidence {index}",
+                        }
+                        for index in range(10)
+                    ]
+                }
+
+        logic = _logic_analysis()
+        first_only = {**logic, "features": logic["features"][:1]}
+        client = CriterionClient()
+        generator = DynamicFeatureChecklistGenerator(client, "test")
+        partial = generator.generate(
+            project_id="project", logic_analysis=first_only, source_root=Path("missing")
+        )
+        assert len(client.calls) == 1
+        completed = generator.generate(
+            project_id="project",
+            logic_analysis=logic,
+            source_root=Path("missing"),
+            existing=partial,
+        )
+        self.assertEqual(client.calls, ["feature-01", "requirement-dependency-01"])
+        self.assertTrue(checklist_matches_approved_features(completed, logic, "project"))
+        changed = {
+            **logic,
+            "features": [
+                {**logic["features"][0], "description": "Changed jump behavior"},
+                logic["features"][1],
+            ],
+        }
+        regenerated = generator.generate(
+            project_id="project",
+            logic_analysis=changed,
+            source_root=Path("missing"),
+            existing=completed,
+        )
+        self.assertEqual(client.calls[-1], "feature-01")
+        self.assertTrue(checklist_matches_approved_features(regenerated, changed, "project"))
+
+    def test_missing_acceptance_items_uses_ten_checks_per_feature(self) -> None:
+        criteria = [
+            {
+                "feature_ids": ["feature-01", "requirement-dependency-01"],
+                "title": f"기본 점프 검증 {index}",
+                "category": "runtime",
+                "setup": "플레이어와 지면을 생성한다.",
+                "action": "점프 입력을 보낸다.",
+                "expected": "플레이어가 상승한다.",
+                "evidence": "위치 전후 비교",
+            }
+            for index in range(1, 11)
+        ]
+        client = FakeStructuredClient({"criteria": criteria})
+        checklist = DynamicFeatureChecklistGenerator(client, "test").generate(
+            project_id="20261122_01",
+            logic_analysis=_logic_analysis(),
+            source_root=Path("missing"),
+        )
+        self.assertEqual(len(client.prompts), 2)
+        self.assertEqual(len(checklist.feature_checklists), 2)
+        self.assertEqual(len(checklist.criteria), 20)
+        self.assertTrue(all(len(item.criteria) == 10 for item in checklist.feature_checklists))
+
+    def test_duplicate_batch_is_regenerated_without_losing_valid_items(self) -> None:
+        logic = _logic_analysis()
+        logic["features"] = [{**logic["features"][0], "acceptance_items": ["점프가 동작한다."]}]
+        valid = [
+            {
+                "feature_ids": ["feature-01"],
+                "title": f"점프 검증 {index}",
+                "category": "runtime",
+                "setup": "플레이어와 지면을 생성한다.",
+                "action": "점프 입력을 보낸다.",
+                "expected": "플레이어가 상승한다.",
+                "evidence": "위치 전후 비교",
+            }
+            for index in range(1, 11)
+        ]
+
+        class RetryClient:
+            prompts: list[str] = []
+
+            def generate_json(self, prompt, _schema):
+                self.prompts.append(prompt)
+                return {"criteria": [valid[0]] * 10 if len(self.prompts) == 1 else valid}
+
+        client = RetryClient()
+        checklist = DynamicFeatureChecklistGenerator(client, "test").generate(
+            project_id="20261120_03", logic_analysis=logic, source_root=Path("missing")
+        )
+        self.assertEqual(len(client.prompts), 2)
+        self.assertIn("previous batch was rejected", client.prompts[1])
+        self.assertEqual(len(checklist.criteria), 10)
+        self.assertEqual(len({item.title for item in checklist.criteria}), 10)
+
     def test_grouped_feature_generates_one_batch_for_eight_rules(self) -> None:
         logic = _logic_analysis()
         logic["features"] = [
@@ -163,7 +321,7 @@ class DynamicFeatureChecklistTest(unittest.TestCase):
         checklist_client = FakeStructuredClient({"criteria": criteria})
         checklist = DynamicFeatureChecklistGenerator(checklist_client, "test").generate(
             project_id="20261102_01",
-            logic_analysis=_logic_analysis(),
+            logic_analysis=_logic_analysis_with_thirty_items(),
             source_root=Path("missing"),
         )
         self.assertEqual(len(checklist_client.prompts), 2 * CHECKLIST_BATCH_COUNT)
@@ -256,7 +414,7 @@ class DynamicFeatureChecklistTest(unittest.TestCase):
             FakeStructuredClient({"criteria": criteria}), "test"
         ).generate(
             project_id="20261102_01",
-            logic_analysis=_logic_analysis(),
+            logic_analysis=_logic_analysis_with_thirty_items(),
             source_root=Path("missing"),
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -297,7 +455,7 @@ class DynamicFeatureChecklistTest(unittest.TestCase):
             DynamicFeatureChecklistGenerator(FakeStructuredClient({"criteria": criteria}), "test")
             .generate(
                 project_id="20261103_01",
-                logic_analysis=_logic_analysis(),
+                logic_analysis=_logic_analysis_with_thirty_items(),
                 source_root=Path("missing"),
             )
             .feature_checklists[0]

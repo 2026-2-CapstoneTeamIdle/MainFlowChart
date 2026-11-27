@@ -21,8 +21,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import wave
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from sound_pipeline import procedural
 from sound_pipeline.planner import SOUND_EFFECTS_MAX_SECONDS, SoundPlan
@@ -199,11 +200,43 @@ class ElevenLabsSoundProvider:
         self.sfx_model = os.environ.get("ELEVENLABS_SFX_MODEL", "")
         self.music_model = os.environ.get("ELEVENLABS_MUSIC_MODEL", "")
         self.timeout = timeout or float(os.environ.get("SOUND_TIMEOUT_SECONDS", "90"))
+        self.usage_recorder: Callable[[dict[str, Any]], None] | None = None
         if not (self.output_format.startswith("mp3_") or self.output_format.startswith("pcm_")):
             raise ValueError("ELEVENLABS_OUTPUT_FORMAT must be an mp3_* or pcm_* format")
 
+    def _record_usage(
+        self,
+        path: str,
+        asset_id: str,
+        body: dict[str, object],
+        status: str,
+        headers: dict[str, str] | None = None,
+        http_status: int | None = None,
+    ) -> None:
+        if self.usage_recorder is None:
+            return
+        headers = headers or {}
+        character_cost = headers.get("character-cost")
+        self.usage_recorder(
+            {
+                "provider": "elevenlabs",
+                "asset_id": asset_id,
+                "endpoint": path,
+                "model": body.get("model_id")
+                or ("music_api_default" if path == MUSIC_PATH else "sound_effects_api_default"),
+                "requested_duration_seconds": body.get("duration_seconds")
+                or (body.get("music_length_ms") or 0) / 1000,
+                "status": status,
+                "usage_status": "reported" if character_cost is not None else "missing",
+                "character_cost": character_cost,
+                "request_id": headers.get("request-id") or headers.get("x-request-id"),
+                "song_id": headers.get("song-id"),
+                "http_status": http_status,
+            }
+        )
+
     def _post(
-        self, path: str, body: dict[str, object], retry: bool = True
+        self, path: str, body: dict[str, object], asset_id: str, retry: bool = True
     ) -> tuple[bytes, str | None]:
         if not self.api_key:
             raise SoundProviderError("ELEVENLABS_API_KEY is not set")
@@ -217,8 +250,14 @@ class ElevenLabsSoundProvider:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 headers = {key.lower(): value for key, value in response.headers.items()}
-                return response.read(), headers.get("request-id") or headers.get("x-request-id")
+                payload = response.read()
+                self._record_usage(
+                    path, asset_id, body, "success", headers, getattr(response, "status", 200)
+                )
+                return payload, headers.get("request-id") or headers.get("x-request-id")
         except urllib.error.HTTPError as error:
+            response_headers = {key.lower(): value for key, value in (error.headers or {}).items()}
+            self._record_usage(path, asset_id, body, "error", response_headers, error.code)
             detail = error.read().decode("utf-8", errors="replace")
             reason = _error_status(detail)
             if (
@@ -230,7 +269,7 @@ class ElevenLabsSoundProvider:
                 # Maybe the plan tier rejects this PCM rate (error text is not a stable API), so
                 # retry at the free-tier rate; a second 401/403 is a real key/permission error.
                 self.output_format = FREE_TIER_PCM
-                return self._post(path, body, retry)
+                return self._post(path, body, asset_id, retry)
             if error.code == 429 and reason != "quota_exceeded" and retry:
                 # Concurrency/rate limit (e.g. a teammate on the same key) is transient.
                 try:
@@ -239,19 +278,21 @@ class ElevenLabsSoundProvider:
                 except (ValueError, AttributeError):  # HTTP-date form, or no headers
                     wait = 1.0
                 time.sleep(wait)
-                return self._post(path, body, retry=False)
+                return self._post(path, body, asset_id, retry=False)
             raise SoundProviderError(
                 f"ElevenLabs HTTP {error.code} ({path}): {detail[:300]}",
                 error.code,
                 fatal=error.code in RUN_FATAL_STATUSES or reason == "quota_exceeded",
             ) from error
         except urllib.error.URLError as error:  # connect phase: DNS, refused, connect timeout
+            self._record_usage(path, asset_id, body, "error")
             raise SoundProviderError(
                 f"Cannot reach ElevenLabs: {error.reason}", fatal=True
             ) from error
         # Waiting for/reading the response: TimeoutError, reset, IncompleteRead, BadStatusLine.
         # Long music can legitimately outlast the timeout, so only that endpoint stays per-asset.
         except (OSError, http.client.HTTPException) as error:
+            self._record_usage(path, asset_id, body, "error")
             raise SoundProviderError(
                 f"ElevenLabs connection failed ({path}): {error!r}", fatal=path != MUSIC_PATH
             ) from error
@@ -268,7 +309,9 @@ class ElevenLabsSoundProvider:
         mp3_duration(payload)  # validates the stream before it is stored
         return ProviderResult(payload, model, request_id, "mp3", endpoint)
 
-    def _sound_effects(self, prompt: str, seconds: float, loop: bool) -> ProviderResult:
+    def _sound_effects(
+        self, asset_id: str, prompt: str, seconds: float, loop: bool
+    ) -> ProviderResult:
         body: dict[str, object] = {
             "text": prompt,
             "duration_seconds": min(max(seconds, 0.5), SOUND_EFFECTS_MAX_SECONDS),
@@ -278,7 +321,7 @@ class ElevenLabsSoundProvider:
             body["model_id"] = self.sfx_model
         if loop:
             body["loop"] = True
-        payload, request_id = self._post("/v1/sound-generation", body)
+        payload, request_id = self._post("/v1/sound-generation", body, asset_id)
         model = self.sfx_model or "sound_effects_api_default"
         return self._result(payload, model, request_id, "sound-generation")
 
@@ -289,13 +332,13 @@ class ElevenLabsSoundProvider:
         }
         if self.music_model:
             body["model_id"] = self.music_model
-        payload, request_id = self._post(MUSIC_PATH, body)
+        payload, request_id = self._post(MUSIC_PATH, body, plan.asset_id)
         return self._result(payload, self.music_model or "music_api_default", request_id, "music")
 
     def generate(self, plan: SoundPlan) -> ProviderResult:
         if plan.kind == "bgm":
             return self._music(plan)
-        return self._sound_effects(plan.prompt, plan.duration_seconds, plan.loop)
+        return self._sound_effects(plan.asset_id, plan.prompt, plan.duration_seconds, plan.loop)
 
 
 def primary_provider() -> SoundProvider:

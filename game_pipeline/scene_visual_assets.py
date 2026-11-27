@@ -44,7 +44,7 @@ _PLATFORMER_OBJECT_VISUALS: tuple[tuple[str, str, str, str], ...] = (
         "platformer_collectible",
         "collectibles",
         "수집물",
-        "획득하면 점수가 오르는 작고 반짝이는 보석 아이템 하나",
+        "획득하면 점수가 오르는 반짝이는 보석 아이템 하나. 게임 화면에서 쉽게 식별될 만큼 크게, 뚜렷한 실루엣으로",
     ),
     (
         "platformer_checkpoint",

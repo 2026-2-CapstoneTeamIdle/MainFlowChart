@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using TeamIdle.GameTemplate.Card;
 using TeamIdle.GameTemplate.Common;
 using TeamIdle.GameTemplate.Core;
@@ -237,7 +238,9 @@ namespace TeamIdle.GameTemplate.Editor
 
             var expectedObjects = new Dictionary<string, string[]>
             {
-                ["Platformer"] = new[] { "Player", "Ground", "StageGoal", "Collectible_1" },
+                ["Platformer"] = levelPlan.zones.Any(zone => zone.collectibles.Count > 0)
+                    ? new[] { "Player", "Ground", "StageGoal", "Collectible_1" }
+                    : new[] { "Player", "Ground", "StageGoal" },
                 ["TowerDefense"] = new[] { "EnemyPath", "Tower", "Base" },
                 ["CardGame"] = new[] { "OpponentArea", "PlayerArea", "CardSlot_1" },
                 ["VisualNovel"] = new[] { "SceneBackground", "CharacterLeft", "CharacterRight" },

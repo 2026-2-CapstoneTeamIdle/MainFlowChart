@@ -5,6 +5,13 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
+from game_pipeline.dynamic_feature_checklist import (
+    ChecklistCriterion,
+    FeatureChecklist,
+    ProjectFeatureChecklist,
+    persist_generated_checklist,
+    _feature_source_fingerprint,
+)
 from game_pipeline.feature_checklist_validation import (
     ChecklistResult,
     FeatureChecklistRepairAI,
@@ -13,6 +20,266 @@ from game_pipeline.feature_checklist_validation import (
 
 
 class FeatureChecklistValidationTest(unittest.TestCase):
+    def test_rejected_unity_test_response_is_saved_for_diagnosis(self) -> None:
+        feedbacks: list[str] = []
+
+        class BadTestGenerator:
+            def __init__(self) -> None:
+                self.last_response = {
+                    "methods": [
+                        {
+                            "criterion_id": "DFC001_01",
+                            "source_code": "public void WrongMethod() {}",
+                        }
+                    ]
+                }
+                self.last_expected_ids = ["DFC001_01"]
+
+            def generate(self, **_kwargs):
+                feedbacks.append(_kwargs["feedback"])
+                raise ValueError(
+                    "Generated Unity test method must implement only DFC001_01; got []"
+                )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory) / "workspace"
+            project = workspace / "game" / "unity_project"
+            project.mkdir(parents=True)
+            criteria = tuple(
+                ChecklistCriterion(
+                    criterion_id=f"DFC001_{index:02d}",
+                    feature_ids=("feature-01",),
+                    title=f"Test {index}",
+                    category="runtime",
+                    setup="Setup",
+                    action="Action",
+                    expected="Expected",
+                    evidence="Evidence",
+                )
+                for index in range(1, 11)
+            )
+            checklist = ProjectFeatureChecklist(
+                checklist_version="1.2.0",
+                project_id="test-project",
+                model_role="test",
+                feature_checklists=(
+                    FeatureChecklist(
+                        checklist_version="1.2.0",
+                        checklist_id="checklist-1",
+                        project_id="test-project",
+                        feature_id="feature-01",
+                        feature_name="Movement",
+                        feature_description="Move left and right",
+                        feature_origin="user",
+                        model_role="test",
+                        criteria=criteria,
+                        source_fingerprint=_feature_source_fingerprint(
+                            {
+                                "feature_id": "feature-01",
+                                "name": "Movement",
+                                "description": "Move left and right",
+                            }
+                        ),
+                    ),
+                ),
+            )
+            persist_generated_checklist(checklist, workspace_root=workspace)
+            workflow = FeatureChecklistWorkflow(
+                unity_editor="Unity.exe",
+                timeout_seconds=30,
+                test_generator_factory=BadTestGenerator,
+            )
+            logic_analysis = {
+                "features": [
+                    {
+                        "feature_id": "feature-01",
+                        "name": "Movement",
+                        "description": "Move left and right",
+                    }
+                ]
+            }
+
+            with (
+                patch.dict("os.environ", {"MAINFLOW_DYNAMIC_TEST_GENERATION_ATTEMPTS": "2"}),
+                self.assertRaisesRegex(
+                    RuntimeError, "response: validation/dynamic_test_generation"
+                ),
+            ):
+                workflow._generate_dynamic_tests(
+                    project_id="test-project",
+                    logic_analysis=logic_analysis,  # type: ignore[arg-type]
+                    project_root=project,
+                    workspace_root=workspace,
+                    source_root=workspace,
+                    compile_validation=lambda _root: None,
+                )
+
+            diagnostic = workspace / "validation/dynamic_test_generation/feature-01/attempt_1.json"
+            payload = json.loads(diagnostic.read_text(encoding="utf-8"))
+            self.assertEqual(payload["expected_ids"], ["DFC001_01"])
+            self.assertEqual(
+                payload["response"]["methods"][0]["source_code"],
+                "public void WrongMethod() {}",
+            )
+            self.assertIn("public void WrongMethod() {}", feedbacks[1])
+            self.assertTrue(diagnostic.with_name("attempt_2.json").is_file())
+
+    def test_nunit_setup_and_missing_tests_are_not_gameplay_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            report = Path(temporary_directory) / "results.xml"
+            report.write_text(
+                '<test-run><test-case fullname="Tests.DFC001_01_Check" result="Failed">'
+                "<failure><message>SetUp : Unhandled log message</message></failure>"
+                "</test-case>"
+                '<test-case fullname="Tests.DFC001_02_Check" result="Inconclusive" />'
+                "</test-run>",
+                encoding="utf-8",
+            )
+            criteria = tuple(
+                ChecklistCriterion(
+                    criterion_id=f"DFC001_{index:02d}",
+                    feature_ids=("feature-01",),
+                    title=f"Rule {index}",
+                    category="runtime",
+                    setup="setup",
+                    action="action",
+                    expected="expected",
+                    evidence="evidence",
+                )
+                for index in range(1, 3)
+            )
+            checklist = ProjectFeatureChecklist(
+                checklist_version="1.2.0",
+                project_id="project",
+                model_role="test",
+                feature_checklists=(
+                    FeatureChecklist(
+                        checklist_version="1.2.0",
+                        checklist_id="checklist-1",
+                        project_id="project",
+                        feature_id="feature-01",
+                        feature_name="Movement",
+                        feature_description="Move",
+                        feature_origin="user",
+                        model_role="test",
+                        criteria=criteria,
+                    ),
+                ),
+            )
+            results = FeatureChecklistWorkflow._parse_nunit(report, checklist)
+        self.assertEqual([item.failure_kind for item in results], ["test_source", "test_source"])
+
+    def test_only_invalid_feature_test_is_regenerated(self) -> None:
+        criteria = [
+            ChecklistCriterion(
+                criterion_id=f"DFC{index:03d}_01",
+                feature_ids=(f"feature-{index:02d}",),
+                title=f"Rule {index}",
+                category="runtime",
+                setup="setup",
+                action="action",
+                expected="expected",
+                evidence="evidence",
+            )
+            for index in (1, 2)
+        ]
+        checklist = ProjectFeatureChecklist(
+            checklist_version="1.2.0",
+            project_id="project",
+            model_role="test",
+            feature_checklists=tuple(
+                FeatureChecklist(
+                    checklist_version="1.2.0",
+                    checklist_id=f"checklist-{index}",
+                    project_id="project",
+                    feature_id=f"feature-{index:02d}",
+                    feature_name=f"Feature {index}",
+                    feature_description="description",
+                    feature_origin="user",
+                    model_role="test",
+                    criteria=(criterion,),
+                )
+                for index, criterion in enumerate(criteria, start=1)
+            ),
+        )
+        generated: list[str] = []
+
+        class TestGenerator:
+            def generate(self, *, checklist, project_root, feedback):
+                generated.append(checklist.feature_id)
+                return "generated source"
+
+        class CompileOutcome:
+            status = "passed"
+            issues = []
+            unity_log = "compiled"
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            workflow = FeatureChecklistWorkflow(
+                unity_editor="Unity.exe",
+                timeout_seconds=30,
+                test_generator_factory=TestGenerator,
+            )
+            workflow._regenerate_invalid_tests(
+                checklist=checklist,
+                invalid_tests=[
+                    ChecklistResult(
+                        "DFC002_01",
+                        "Rule 2",
+                        "error",
+                        "SetUp : bad fixture",
+                        "DFC002_01_Check",
+                        "test_source",
+                    )
+                ],
+                project_root=root / "unity",
+                workspace_root=root / "workspace",
+                compile_validation=lambda _root: CompileOutcome(),
+            )
+            self.assertTrue(
+                (
+                    root
+                    / "workspace/validation/feature_checklists/generated/feature-02"
+                    / "GeneratedFeatureChecklist_DFC002.cs"
+                ).is_file()
+            )
+        self.assertEqual(generated, ["feature-02"])
+
+    def test_framework_failure_never_calls_game_repair(self) -> None:
+        class InfrastructureFailure(FeatureChecklistWorkflow):
+            def _run_tests(self, *_args, **_kwargs):
+                return (
+                    [
+                        ChecklistResult(
+                            "FRAMEWORK",
+                            "Unity Test Framework",
+                            "error",
+                            "Unity produced no NUnit result",
+                            "FeatureChecklist",
+                            "infrastructure",
+                        )
+                    ],
+                    "Unity failed",
+                )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            workflow = InfrastructureFailure(
+                unity_editor="Unity.exe",
+                timeout_seconds=30,
+                repair_ai_factory=lambda: self.fail("game repair must not run"),
+            )
+            outcome = workflow.run(
+                project_root=root / "unity",
+                workspace_root=root / "workspace",
+                source_root=root / "docs",
+                compile_validation=lambda _root: self.fail("compile must not run"),
+            )
+        self.assertEqual(outcome.status, "failed")
+        self.assertEqual(outcome.issues[0]["code"], "DYNAMIC_TEST_INFRASTRUCTURE_FAILED")
+        self.assertEqual(outcome.attempts, 1)
+
     def test_retry_limit_is_capped_at_ten(self) -> None:
         with self.assertRaises(ValueError):
             FeatureChecklistWorkflow(

@@ -116,6 +116,35 @@ def make_request(
 
 
 class OpenAIImageGeneratorTest(unittest.TestCase):
+    def test_usage_records_base_image_and_animation_edit_without_image_bytes(self) -> None:
+        class UsageClient(FakeImagesClient):
+            def _respond(self, kwargs: dict[str, Any]) -> SimpleNamespace:
+                response = super()._respond(kwargs)
+                response.usage = {
+                    "input_tokens": 10,
+                    "input_tokens_details": {"text_tokens": 4, "image_tokens": 6},
+                    "output_tokens": 30,
+                    "output_tokens_details": {"image_tokens": 30},
+                    "total_tokens": 40,
+                }
+                return response
+
+        events: list[dict[str, Any]] = []
+        generator = OpenAIImageGenerator("test-model", client=UsageClient())
+        generator.usage_recorder = events.append
+        request = make_request()
+
+        generator.generate(request)
+        generator.generate_animation_strip(request, sprite_png(), "run", 4, "running")
+
+        self.assertEqual(
+            [event["endpoint"] for event in events], ["images.generate", "images.edit"]
+        )
+        self.assertEqual([event["usage"]["total_tokens"] for event in events], [40, 40])
+        self.assertEqual(events[1]["animation"], "run")
+        self.assertNotIn("prompt", events[0])
+        self.assertNotIn("image", events[1])
+
     def test_request_parameters_follow_asset_kind(self) -> None:
         client = FakeImagesClient()
         generator = OpenAIImageGenerator("test-model", client=client, quality="high")
@@ -231,7 +260,7 @@ class ModerationRetryTest(unittest.TestCase):
 
 
 class PostprocessTest(unittest.TestCase):
-    def test_hud_frame_fills_canvas_without_transparent_outer_margin(self) -> None:
+    def test_hud_frame_keeps_exterior_transparent_and_content_opaque(self) -> None:
         item = asset_item("hud_panel_frame", "UI frame", "Dark panel frame", required=False)
         request = image_asset_request([item])
         plan = plan_assets(request)[0]
@@ -246,13 +275,43 @@ class PostprocessTest(unittest.TestCase):
             prompt=build_prompt(plan, request),
         )
         source = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
-        ImageDraw.Draw(source).rectangle((120, 430, 904, 594), fill=(220, 220, 220, 255))
+        ImageDraw.Draw(source).rounded_rectangle(
+            (80, 80, 944, 944), radius=120, outline=(85, 175, 220, 255), width=35
+        )
 
         with Image.open(io.BytesIO(postprocess(_encode(source), image_request))) as output:
             self.assertEqual(output.size, plan.size)
-            self.assertEqual(output.getchannel("A").getbbox(), (0, 0, *plan.size))
-            self.assertEqual(output.getchannel("A").getextrema(), (255, 255))
+            self.assertEqual(output.getpixel((0, 0))[3], 0)
+            self.assertEqual(output.getchannel("A").getextrema(), (0, 255))
+            self.assertEqual(output.getpixel((plan.size[0] // 2, plan.size[1] // 2))[3], 255)
             self.assertLess(max(output.getpixel((plan.size[0] // 2, plan.size[1] // 2))[:3]), 60)
+
+    def test_hud_frame_removes_opaque_corner_matte(self) -> None:
+        item = asset_item("hud_panel_frame", "UI frame", "Dark panel frame", required=False)
+        request = image_asset_request([item])
+        plan = plan_assets(request)[0]
+        image_request = ImageRequest(
+            plan=plan,
+            style=request["image_style"],
+            mood_style=request["mood_style"],
+            viewpoint=request["viewpoint"],
+            genre=request["genre"],
+            width=plan.size[0],
+            height=plan.size[1],
+            prompt=build_prompt(plan, request),
+        )
+        source = Image.new("RGBA", (256, 256), (12, 18, 24, 255))
+        ImageDraw.Draw(source).rounded_rectangle(
+            (12, 12, 243, 243),
+            radius=32,
+            fill=(18, 26, 35, 255),
+            outline=(85, 175, 220, 255),
+            width=12,
+        )
+
+        with Image.open(io.BytesIO(postprocess(_encode(source), image_request))) as output:
+            self.assertEqual(output.getpixel((0, 0))[3], 0)
+            self.assertEqual(output.getpixel((plan.size[0] // 2, plan.size[1] // 2))[3], 255)
 
     def test_sprite_is_resized_and_keeps_transparency(self) -> None:
         request = make_request("hero")
@@ -340,6 +399,13 @@ class OpenAIGraphNodeTest(unittest.TestCase):
         )["image_draft"]
 
         self.assertEqual(len(client.calls), len(ASSETS))
+        usage_path = (
+            self.manager.ensure_project(self.project_id)
+            / "validation"
+            / "api_usage"
+            / "openai_image.jsonl"
+        )
+        self.assertEqual(len(usage_path.read_text(encoding="utf-8").splitlines()), len(ASSETS) + 1)
         result = self.manager.read_json(validate_image_node(state)["image_validation_result"])
         self.assertEqual(result["status"], "passed", result["issues"])
         self.assertEqual(result["validated_asset_ids"], [item["asset_id"] for item in ASSETS])

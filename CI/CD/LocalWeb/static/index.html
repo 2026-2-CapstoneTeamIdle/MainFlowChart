@@ -5,10 +5,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Team Idle · Game Workflow</title>
     <link rel="stylesheet" href="/static/styles.css" />
-    <script src="/static/app.js" defer></script>
+    <script src="/static/app.js?v=20261127-preview-isolation" defer></script>
+    <link rel="stylesheet" href="/static/conversation.css?v=20261127-settings" />
+    <script src="/static/conversation.js?v=20261127-export-snapshot" defer></script>
+    <script src="/static/sidebar-chick.js?v=20261127-toggle" defer></script>
   </head>
   <body>
+    <aside class="project-sidebar" aria-label="프로젝트">
+      <a class="comic-brand" href="/" aria-label="겜만툴 홈"><img src="/static/assets/gamman-tool-logo.png" alt="겜만툴" /><span>YOUR GAME, NEXT PANEL.</span></a>
+      <button id="new-conversation" type="button">＋ 새 프로젝트</button>
+      <p class="sidebar-label">PROJECTS / 프로젝트 대화</p>
+      <nav id="project-conversations" aria-label="프로젝트 대화 목록"></nav>
+      <div class="chick-lane" aria-label="선글라스를 쓰고 돌아다니는 흑백 병아리" role="img">
+        <div id="sidebar-chick" class="sidebar-chick" data-motion="idle">
+          <div class="chick-facing chick-sprite" aria-hidden="true"></div>
+        </div>
+      </div>
+      <button id="open-settings" class="settings-button" type="button">설정</button>
+    </aside>
     <main class="page-shell">
+      <div class="conversation-heading"><div><p class="section-label">GAME MAKER / WORKSPACE</p><h1 id="conversation-title">새 프로젝트</h1></div><span class="comic-stamp">MAKE IT PLAY.</span></div>
       <header class="hero">
         <img
           class="hero-logo"
@@ -120,6 +136,10 @@
         </div>
 
         <form id="request-form" class="request-grid">
+          <label class="wide-field">Unity 프로젝트 저장 경로 (선택)
+            <span class="output-path-row"><input name="output_directory" id="output-directory" readonly placeholder="기본 저장 위치 사용" /><button id="choose-output-directory" class="secondary-button" type="button">폴더 선택</button><button id="reset-output-directory" class="secondary-button" type="button">기본 위치</button></span>
+            <small id="local-folder-status" aria-live="polite">폴더 선택 버튼으로 내 컴퓨터의 저장 위치를 선택하세요.</small>
+          </label>
           <label>
             이미지 스타일
             <select id="image-style" name="image_style">
@@ -188,11 +208,6 @@
           <div class="action-row wide-field">
             <button id="generate-button" class="primary-button" type="button">Generate</button>
             <button id="test-generate-button" class="test-button" type="button">test-Generate</button>
-            <label class="notification-toggle" title="Feature 분석과 게임 생성이 끝나면 소리와 Chrome 알림을 보냅니다.">
-              <input id="completion-notifications" type="checkbox" />
-              <span>완료 알림</span>
-              <small id="notification-status" aria-live="polite">소리 · Chrome 알림 권한 요청</small>
-            </label>
             <button id="stop-button" class="danger-button is-hidden" type="button">Stop · 생성 중단</button>
           </div>
           <p class="mode-help wide-field">
@@ -251,36 +266,52 @@
         </div>
       </section>
 
-      <section class="panel log-panel" aria-labelledby="progress-heading">
-        <div class="panel-heading">
-          <div>
-            <p class="section-label">LIVE WORKFLOW</p>
-            <h2 id="progress-heading">개발 로그</h2>
-          </div>
-          <div class="panel-heading-actions">
-            <button id="copy-log-button" class="secondary-button compact-button" type="button">로그 복사</button>
-            <span id="job-state" class="phase-badge">실행 전</span>
-          </div>
-        </div>
-        <div class="workflow-progress" aria-live="polite">
-          <div class="workflow-progress__summary">
-            <span id="progress-label">실행 준비</span>
-            <strong id="progress-percent">0%</strong>
-          </div>
-          <div class="workflow-progress__track" role="progressbar" aria-label="게임 생성 진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-            <span id="progress-fill" class="workflow-progress__fill"></span>
-          </div>
-          <p id="progress-time" class="workflow-progress__time">처리 시간 00:00 / 예상 시간 계산 중</p>
-        </div>
-        <p class="log-help">버튼을 누르거나 로그 영역에 포커스한 뒤 <kbd>Ctrl</kbd>+<kbd>C</kbd>로 전체 로그를 복사합니다.</p>
-        <pre id="workflow-log" class="workflow-log" aria-live="polite" tabindex="0">아직 실행된 프로젝트가 없습니다.</pre>
-        <div class="action-row">
-          <button id="preview-button" class="preview-button is-hidden" type="button">Preview 플레이</button>
-          <button id="open-unity-button" class="primary-button is-hidden" type="button">Unity Editor 열기</button>
+      <section class="log-panel conversation-activity" aria-label="개발 로그">
+        <div class="activity-caption">작업 기록</div>
+        <div id="workflow-log" class="workflow-log" aria-live="polite" tabindex="0">아직 실행된 프로젝트가 없습니다.</div>
+        <div class="log-view-actions">
+          <button id="toggle-log-view" class="secondary-button compact-button" type="button" aria-controls="workflow-log" aria-expanded="true">간단히 보기</button>
+          <button id="copy-log-button" class="secondary-button compact-button" type="button">전체 로그 복사</button>
         </div>
       </section>
 
       <div id="toast" class="toast" role="status" aria-live="polite"></div>
     </main>
+    <div class="chat-composer">
+      <div id="composer-workflow-bar" class="composer-workflow-bar" hidden>
+      <div id="project-tools" class="project-tools" aria-label="생성된 게임 실행" hidden>
+        <button id="preview-button" class="preview-button is-hidden" type="button">Preview 플레이</button>
+        <button id="open-unity-button" class="primary-button is-hidden" type="button">Unity Editor 열기</button>
+      </div>
+      <div class="compact-progress" aria-live="polite">
+        <div class="compact-progress-heading"><span id="progress-label">실행 준비</span><strong id="progress-percent">0%</strong><span id="job-state" hidden>실행 전</span></div>
+        <span id="progress-time">처리 시간 00:00 / 예상 시간 계산 중</span>
+        <div class="workflow-progress__track" role="progressbar" aria-label="게임 생성 진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><span id="progress-fill" class="workflow-progress__fill"></span></div>
+      </div>
+      </div>
+      <textarea id="project-message" disabled aria-label="프로젝트 채팅" placeholder="상단 게임 생성 요청을 입력하고 Generate를 눌러 시작하세요."></textarea><button id="send-project-message" disabled type="button" aria-label="메시지 보내기"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false"><path d="M12 19V5m-6 6 6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" /></svg></button><small id="composer-help">게임 생성이 완료되면 추가 요청을 보낼 수 있습니다.</small>
+    </div>
+    <dialog id="delete-project-dialog" aria-labelledby="delete-project-title" aria-describedby="delete-project-description">
+      <p class="section-label">PROJECT / DELETE</p>
+      <h2 id="delete-project-title">대화를 삭제할까요?</h2>
+      <p id="delete-project-name"></p>
+      <p id="delete-project-description">대화 목록에서 제거됩니다. 생성된 프로젝트 파일과 실행 중인 서버 작업은 유지됩니다.</p>
+      <div class="delete-dialog-actions"><button id="cancel-delete-project" class="secondary-button" type="button" autofocus>취소</button><button id="confirm-delete-project" class="primary-button" type="button">삭제</button></div>
+    </dialog>
+    <dialog id="settings-dialog" aria-labelledby="settings-title">
+      <div class="settings-heading"><div><p class="section-label">CONTROL ROOM</p><h2 id="settings-title">설정</h2></div><button id="close-settings" type="button">닫기 ×</button></div>
+      <p id="first-visit-help">처음 오셨나요? 사용할 에이전트와 API를 설정한 뒤 프로젝트를 시작하세요.</p>
+      <label class="settings-switch"><input id="dark-mode-toggle" type="checkbox" role="switch" /> <span>다크모드</span></label>
+      <label class="settings-switch"><input id="chick-enabled-toggle" type="checkbox" role="switch" checked /> <span>병아리 표시</span></label>
+      <label class="notification-toggle settings-notifications settings-switch" title="Feature 분석·게임 생성·추가 수정이 끝나면 소리와 Chrome 알림을 보냅니다.">
+        <input id="completion-notifications" type="checkbox" role="switch" />
+        <span>완료 알림</span>
+        <small id="notification-status" aria-live="polite">소리 · Chrome 알림 권한 요청</small>
+      </label>
+      <div class="connection-tabs" role="tablist" aria-label="에이전트 연결"><button id="codex-tab" role="tab" aria-selected="true" aria-controls="codex-auth-panel" type="button">Codex 연결</button><button id="claude-tab" role="tab" aria-selected="false" aria-controls="claude-connection" type="button">Claude Code 연결</button></div>
+      <div id="connection-settings"></div>
+      <section id="claude-connection" class="panel" role="tabpanel" aria-labelledby="claude-tab" hidden><h2>Claude Code 연결</h2><p>게임 생성 서버와 같은 환경에서 Claude Code CLI에 로그인하세요.</p><pre>claude auth login</pre><p>로그인 후 게임 구현 방식에서 Claude Code Agent Harness를 선택할 수 있습니다. 이 화면에서는 아직 Claude 로그인 상태 확인 및 브라우저 인증을 지원하지 않습니다.</p></section>
+      <div id="ai-settings"></div>
+    </dialog>
   </body>
 </html>

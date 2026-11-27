@@ -43,7 +43,15 @@ def main() -> int:
     manager = ArtifactManager()
     logic = cast(LogicAnalysis, manager.read_json(state["logic_analysis"]))
     project_root = manager.ensure_project(state["project_id"])
+    title_report_path = project_root / "data" / "condition_feature_analysis.json"
+    try:
+        suggested_name = json.loads(title_report_path.read_text(encoding="utf-8")).get(
+            "project_name", ""
+        )
+    except (OSError, ValueError, TypeError):
+        suggested_name = ""
     payload = {
+        "suggested_project_name": suggested_name,
         "project_id": state["project_id"],
         "logic_analysis_path": str(project_root / "data" / "logic_analysis.json"),
         "features": [
@@ -59,6 +67,10 @@ def main() -> int:
             }
             for feature in logic["features"]
         ],
+        "acceptance_item_count": sum(
+            len(feature.get("acceptance_items") or [feature["description"]])
+            for feature in logic["features"]
+        ),
     }
     arguments.output_file.parent.mkdir(parents=True, exist_ok=True)
     arguments.output_file.write_text(

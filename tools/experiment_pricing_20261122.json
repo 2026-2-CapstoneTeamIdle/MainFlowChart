@@ -1,0 +1,29 @@
+{
+  "as_of": "2026-11-22",
+  "currency": "USD",
+  "openai_image_standard_per_million_tokens": {
+    "gpt-image-2": {
+      "input_text": "2.50",
+      "input_image": "4.00",
+      "output_image": "15.00"
+    },
+    "gpt-image-2.5-sunburst": {
+      "input_text": "5.00",
+      "input_image": "8.00",
+      "output_image": "30.00"
+    },
+    "gpt-image-2.5-flare": {
+      "input_text": "5.00",
+      "input_image": "8.00",
+      "output_image": "30.00"
+    }
+  },
+  "elevenlabs_api_usd_per_minute": {
+    "music": "0.15",
+    "sfx": "0.12"
+  },
+  "sources": {
+    "openai": "https://developers.openai.com/api/docs/pricing",
+    "elevenlabs": "https://elevenlabs.io/pricing/api"
+  }
+}

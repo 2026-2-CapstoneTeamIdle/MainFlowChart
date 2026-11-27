@@ -176,6 +176,36 @@ class ImageNodeTest(unittest.TestCase):
         reference = validate_image_node(state)["image_validation_result"]
         return self.manager.read_json(reference)
 
+    def test_failed_game_without_compilation_skips_images(self) -> None:
+        state = write_image_inputs(self.manager, self.project_id, image_asset_request())
+        state["game_logic_draft"] = self.manager.write_json(
+            self.project_id,
+            "game",
+            "game_logic_draft.json",
+            {"status": "failed", "diagnostic_compile_passed": False},
+            producer="test",
+        )
+        with mock.patch("mainflow.nodes.generate_image.create_image_generator") as provider:
+            draft = self.manager.read_json(generate_image_node(state)["image_draft"])
+        provider.assert_not_called()
+        self.assertEqual(draft["status"], "failed")
+        self.assertEqual(draft["assets"], [])
+
+    def test_failed_but_compilable_game_skips_images(self) -> None:
+        state = write_image_inputs(self.manager, self.project_id, image_asset_request())
+        state["game_logic_draft"] = self.manager.write_json(
+            self.project_id,
+            "game",
+            "game_logic_draft.json",
+            {"status": "failed", "diagnostic_compile_passed": True},
+            producer="test",
+        )
+        with mock.patch("mainflow.nodes.generate_image.create_image_generator") as provider:
+            draft = self.manager.read_json(generate_image_node(state)["image_draft"])
+        provider.assert_not_called()
+        self.assertEqual(draft["status"], "failed")
+        self.assertEqual(draft["assets"], [])
+
     def test_generate_and_validate_requested_assets(self) -> None:
         state = self._run()
         draft = self.manager.read_json(state["image_draft"])

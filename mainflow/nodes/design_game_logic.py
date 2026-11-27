@@ -34,13 +34,18 @@ from game_pipeline.agent_sound_assets import with_agent_sound_assets
 from game_pipeline.agent_visual_assets import with_agent_visual_assets
 from game_pipeline.condition_visual_assets import with_condition_visual_assets
 from game_pipeline.feature_contract import build_feature_contract
-from game_pipeline.gameplay_contracts import build_pacing_contract, build_ui_contract
+from game_pipeline.gameplay_contracts import (
+    build_pacing_contract,
+    build_ui_contract,
+    trim_compact_platformer_spec,
+)
 from game_pipeline.presentation_sound_assets import with_presentation_sound_assets
 from game_pipeline.presentation_ui_assets import with_presentation_ui_assets
 from game_pipeline.project_context_index import build_project_context_index
 from game_pipeline.repair_loop import validate_and_repair
 from game_pipeline.requirement_constraints import forbids_player_projectiles
 from game_pipeline.scene_visual_assets import with_scene_visual_assets
+from game_pipeline.unity_project_validator import UnityProjectValidator
 from mainflow.ArtifactManager import ArtifactManager
 from mainflow.contracts import (
     CONTRACT_VERSION,
@@ -87,6 +92,7 @@ def design_game_logic_node(
             "mechanics": mechanics,
         },
     )
+    game_spec = trim_compact_platformer_spec(game_spec, request["condition"])
     game_spec = with_condition_visual_assets(game_spec, request["condition"])
     variation_seed = os.environ.get("MAINFLOW_GENERATION_SEED", "").strip() or state["project_id"]
     log(f"이번 실행의 콘텐츠 변형 시드: {variation_seed}")
@@ -1025,9 +1031,9 @@ def design_game_logic_node(
             "notes": notes,
         }
     except Exception as error:  # noqa: BLE001 - intentional workflow failure boundary
-        # This node is a fan-out boundary.  Record game failure as data instead
-        # of aborting the graph so image and sound branches can still run.
-        log(f"게임 생성에 실패했지만 이미지/사운드 파이프라인은 계속합니다: {error}")
+        # Record the failure as data so downstream validation can report it.
+        # Asset-generation nodes skip API calls for any failed game draft.
+        log(f"게임 생성 실패를 기록하고 이미지/사운드 API 호출을 생략합니다: {error}")
         # Preserve every source-validated module in failure artifacts and in the diagnostic Unity
         # project. A failed sibling feature must not discard modules that were generated
         # successfully; Unity validation can then compile and inspect the usable subset.
@@ -1081,6 +1087,7 @@ def design_game_logic_node(
             producer="design_game_logic",
         )
         diagnostic_entry_scene = None
+        diagnostic_compile_passed = False
         diagnostic_references = []
         diagnostic_note = ""
         try:
@@ -1128,6 +1135,20 @@ def design_game_logic_node(
             diagnostic_entry_scene = str(
                 entry_scene_path.relative_to(workspace_project_root).as_posix()
             )
+            compile_outcome = UnityProjectValidator(mode="required").compile_sources(
+                unity_project_root, timeout_seconds=180
+            )
+            diagnostic_compile_passed = compile_outcome.status == "passed"
+            if not diagnostic_compile_passed and compile_outcome.checks:
+                log("진단용 Unity 소스 컴파일 결과: " + compile_outcome.checks[-1]["message"])
+            log(
+                "진단용 Unity 프로젝트 소스 컴파일 "
+                + (
+                    "통과: 진단용 프로젝트를 보존하고 이미지·사운드 API 호출을 생략합니다."
+                    if diagnostic_compile_passed
+                    else "실패: 이미지·사운드 API 호출을 생략합니다."
+                )
+            )
             diagnostic_references.append(
                 manager.import_file(
                     state["project_id"],
@@ -1158,6 +1179,7 @@ def design_game_logic_node(
             "status": "failed",
             "engine": "Unity",
             "entry_scene": diagnostic_entry_scene,
+            "diagnostic_compile_passed": diagnostic_compile_passed,
             "source_artifacts": [
                 design_reference,
                 failure_reference,
@@ -1177,7 +1199,7 @@ def design_game_logic_node(
                 "게임 생성 실패로 Unity 프로젝트를 완성하지 못했습니다.",
                 f"{type(error).__name__}: {error}",
                 diagnostic_note,
-                "이미지/사운드 요청은 독립적으로 생성되어 후속 파이프라인을 계속합니다.",
+                "진단용 Unity 소스 컴파일에 통과하면 이미지·사운드 생성과 적용을 계속합니다.",
             ],
         }
     return {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -307,6 +308,54 @@ class CodexGameHarness:
         self.preflight: CodexPreflightResult | None = None
         self.implementation: CodexCliResult | None = None
 
+    def _verify_initial_source_compilation(self, project_root: Path) -> None:
+        """Reject invalid copied source before spending an agent turn on implementation."""
+
+        editor = UnityProjectValidator.find_unity_editor(
+            UnityProjectValidator._read_project_version(project_root)
+        )
+        if editor is None or not editor.is_file():
+            return
+        cache_file = _initial_source_compile_cache_file(project_root, editor)
+        try:
+            cached = cache_file is not None and cache_file.read_text(encoding="utf-8") == "passed\n"
+        except OSError:
+            cached = False
+        if cached:
+            self._record(
+                f"{self.provider}_initial_source_preflight",
+                {"status": "passed", "cached": True},
+            )
+            return
+        compiler = UnityProjectValidator(
+            mode="required",
+            unity_editor=editor,
+            timeout_seconds=int(os.environ.get("MAINFLOW_UNITY_VALIDATION_TIMEOUT_SECONDS", "300")),
+        )
+        outcome = compiler.compile_sources(project_root)
+        self._record(
+            f"{self.provider}_initial_source_preflight",
+            {
+                "checks": outcome.checks,
+                "issues": outcome.issues,
+                "diagnostics": _signature_diagnostics(outcome.unity_log),
+            },
+        )
+        if any(issue["code"] == "UNITY_SOURCE_COMPILATION_FAILED" for issue in outcome.issues):
+            diagnostics = _signature_diagnostics(outcome.unity_log)
+            raise RuntimeError(
+                "UNITY_INITIAL_SOURCE_INVALID before agent implementation: "
+                + " | ".join(diagnostics or [issue["message"] for issue in outcome.issues])
+            )
+        if outcome.status == "passed" and cache_file is not None:
+            try:
+                cache_file.parent.mkdir(parents=True, exist_ok=True)
+                temporary = cache_file.with_name(f"{cache_file.name}.{os.getpid()}.tmp")
+                temporary.write_text("passed\n", encoding="utf-8")
+                temporary.replace(cache_file)
+            except OSError:
+                pass
+
     def implement_project(
         self,
         *,
@@ -331,6 +380,7 @@ class CodexGameHarness:
             agent_label=self.agent_label,
             filename=self.instruction_filename,
         )
+        self._verify_initial_source_compilation(project_root)
         prompt = _implementation_prompt(
             design, request, instruction_filename=self.instruction_filename
         )
@@ -691,7 +741,8 @@ Return the required structured report.
         deadline = started + phase_budget
         attempts: list[dict[str, Any]] = []
         repairs: list[CodexCliResult] = []
-        signature_counts: dict[str, int] = {}
+        previous_signature: str | None = None
+        signature_streak = 0
         distinct_signatures: set[str] = set()
         best_ui_metrics: _UiQualityMetrics | None = None
         improving_signatures: set[str] = set()
@@ -780,7 +831,8 @@ Return the required structured report.
                 if best_ui_metrics is not None and _ui_quality_improved(
                     best_ui_metrics, ui_metrics
                 ):
-                    signature_counts[signature] = 0
+                    if signature == previous_signature:
+                        signature_streak = 0
                     improving_signatures.add(signature)
                     self._record(
                         f"{self.provider}_{phase}_ui_layout_progress_{attempt}",
@@ -795,10 +847,10 @@ Return the required structured report.
                     )
                 if best_ui_metrics is None or _ui_quality_improved(best_ui_metrics, ui_metrics):
                     best_ui_metrics = ui_metrics
-            signature_count = signature_counts.get(signature, 0) + 1
-            signature_counts[signature] = signature_count
+            signature_streak = signature_streak + 1 if signature == previous_signature else 1
+            previous_signature = signature
             distinct_signatures.add(signature)
-            if signature_count >= 3:
+            if signature_streak >= 3:
                 raise RuntimeError(
                     f"{self.agent_label} repair stopped because the same root Unity failure "
                     "was found three times despite source repairs: "
@@ -820,7 +872,7 @@ Return the required structured report.
                         "previous_limit": previous_limit,
                         "extended_limit": active_repair_limit,
                         "hard_limit": hard_repair_limit,
-                        "failure_signature_count": signature_count,
+                        "failure_signature_count": signature_streak,
                         "distinct_failure_count": len(distinct_signatures),
                         "diagnostics": _signature_diagnostics(outcome.unity_log),
                     }
@@ -849,9 +901,6 @@ Return the required structured report.
             ui_guidance = _ui_layout_repair_guidance(outcome.unity_log)
             if ui_guidance:
                 feedback["ui_layout_corrections"] = ui_guidance
-            opacity_guidance = _ui_opacity_violations(outcome.unity_log)
-            if opacity_guidance:
-                feedback["ui_opacity_corrections"] = opacity_guidance
             if regression_evidence is not None:
                 feedback["rolled_back_regression"] = _bounded_feedback(regression_evidence)
                 feedback["repair_constraint"] = (
@@ -924,6 +973,43 @@ Return the required structured report.
     def _record(self, name: str, value: Any) -> None:
         if self.record is not None:
             self.record(name, value)
+
+
+def _initial_source_compile_cache_file(project_root: Path, editor: Path) -> Path | None:
+    """Cache successful source-only checks across identical generated projects."""
+
+    if os.environ.get("MAINFLOW_INITIAL_COMPILE_CACHE", "1") == "0":
+        return None
+    try:
+        digest = hashlib.sha256()
+        digest.update(str(editor.resolve()).encode("utf-8"))
+        digest.update(str(editor.stat().st_mtime_ns).encode("ascii"))
+        for directory_name in ("Assets", "Packages", "ProjectSettings"):
+            directory = project_root / directory_name
+            if not directory.is_dir():
+                continue
+            for source in sorted(directory.rglob("*")):
+                if not source.is_file():
+                    continue
+                if directory_name == "Assets":
+                    suffix = source.suffix.lower()
+                    if suffix == ".meta":
+                        if source.with_suffix("").suffix.lower() not in {
+                            ".asmdef",
+                            ".asmref",
+                            ".dll",
+                        }:
+                            continue
+                    elif suffix not in {".cs", ".asmdef", ".asmref", ".rsp", ".dll"}:
+                        continue
+                digest.update(source.relative_to(project_root).as_posix().encode("utf-8"))
+                digest.update(source.read_bytes())
+        workspace = Path(
+            os.environ.get("MAINFLOW_WORKSPACE", Path(__file__).resolve().parents[2] / "workspace")
+        )
+        return workspace / ".initial_source_compile_cache" / f"{digest.hexdigest()}.ok"
+    except OSError:
+        return None
 
 
 def _require_agent_completion(
@@ -1033,7 +1119,7 @@ def _is_host_validation_note(item: Any) -> bool:
         return False
     return (
         any(word in normalized for word in ("host", "project instruction"))
-        and "unity" in normalized
+        and ("unity" in normalized or "play mode" in normalized)
         and any(word in normalized for word in ("validat", "test", "compil", "play mode"))
         and any(
             word in normalized
@@ -1047,6 +1133,8 @@ def _is_host_validation_note(item: Any) -> bool:
                 "not been verified",
                 "not verified",
                 "unverified",
+                "rerun",
+                "re-run",
             )
         )
     )
@@ -1267,6 +1355,19 @@ Read every file below before editing code:
   coherent Unity uGUI hierarchy for every specified HUD region and state screen, with anchored
   layout, `CanvasScaler.ScaleWithScreenSize`, readable typography, progress bars/counters, clear
   primary actions, and palette-consistent panels. UI must remain readable at 1280x720 and 1920x1080.
+- Prefer several roomy HUD panels over one compact panel full of text. At the 1280x720
+  reference size, give a persistent panel enough space for its actual content, usually at
+  least 300x100 screen pixels, and put at most two related data groups in each panel.
+  Use a 1280x720 CanvasScaler reference for newly authored HUDs; when preserving an
+  existing scaler, verify equivalent on-screen sizes rather than copying raw coordinates.
+  `ui_contract.json` regions are logical groups and may become several physical panels
+  as long as all requested live values remain bound.
+  Put health/gauge, timer, objective, and inventory/score in separate anchored panels when
+  necessary. Leave at least 12 screen pixels between panels and preserve the play area.
+  Do not place a persistent panel behind another HUD panel or hide required values under art.
+- A transient feedback banner must hide its backing Image or its entire panel whenever
+  its live message is hidden. An empty dark rectangle is a UI defect. Keep the banner
+  outside other HUD panels while visible.
 - Treat `ui_contract.json` as an executable UI checklist: every HUD region has a live gameplay
   state source, every required state screen opens on its actual transition, and each primary
   action works. Inspect the game at both reference resolutions and keep world interaction
@@ -1286,21 +1387,20 @@ Read every file below before editing code:
 - Before finishing a HUD, calculate each label and gauge rectangle in the panel's local
   coordinates. Account for its anchors, pivot, width and height; the right edge of a
   left-anchored child is `anchoredPosition.x + sizeDelta.x` when its pivot.x is zero.
-  Reserve separate rows for status, gauges, and timers. If they do not all fit within
-  the panel's 15-percent border inset (capped at 40 screen pixels), split the panel
-  instead of placing a timer beyond its right edge. Check every child, not just the
+  Reserve separate rows for status, gauges, and timers. Use a narrow 8-percent
+  border inset (capped at 24 screen pixels). If the required content still does
+  not fit at readable size, create another anchored HUD panel elsewhere on screen
+  and move a complete text/gauge group into it. Do not place a timer beyond the
+  original panel's right edge. Check every child, not just the
   first one, at the CanvasScaler reference resolution.
 - Keep every live HUD label at least 14px. Set both Text overflow modes to Wrap or
   Truncate, never Overflow. Give wrapped text enough height to remain readable;
   shrinking the font below 14px or merely clipping required values is not a layout fix.
-  The safe width is panel width minus twice its 15-percent inset (capped at 40 screen
+  The safe width is panel width minus twice its 8-percent inset (capped at 24 screen
   pixels per side). Size status text, health/XP bars, and icons to that width before
   creating their RectTransforms; split a crowded panel into separate panels.
 - Put each live HUD text group and transient announcement inside an anchored uGUI panel with
-  a solid dark `UnityEngine.UI.Image` backing (alpha 1.0). HUD, menu and button backings
-  must be opaque even when initially inactive; do not use 0.95, 0.96, 0.97, or 0.99 for
-  `HudArt_` or text-bearing panel Images. Reserve alpha fades for transient effects only.
-  Keep text colors
+  a readable backing behind live text. Keep text colors
   high contrast, padding around every label, and panels inside the visible screen at both
   reference resolutions. Do not place white or warning text directly over world artwork.
   Keep decorative Images `raycastTarget = false`; interactive Button graphics alone receive
@@ -1317,12 +1417,16 @@ Read every file below before editing code:
   Image components must stay within their panel and must not consume pointer input. Preserve
   the dark panel fallback and legible text if generated artwork is unavailable or too bright.
   Treat the artwork as a nine-slice decoration: its source pixel dimensions do not define the
-  panel's layout. The image reserves the middle 70 percent for live content. Place every label,
-  gauge and button inside an inset content RectTransform, at least 15 percent of panel width
-  and height from the visible border (up to 40 screen pixels per side). Enlarge or split a panel
-  when its content cannot fit inside that safe rectangle; never let text or bars overlap frame
-  ornaments. The `HudArt_` image may be the panel itself or a child behind content. Keep this
-  safe rectangle and an opaque dark backing even when artwork is absent.
+  panel's layout. The image reserves the middle 84 percent for live content and keeps
+  its ornamental exterior transparent. Place labels, gauges and buttons within an
+  8-percent inset (up to 24 screen pixels per side). Minor pixel rounding is tolerated;
+  actual clipping and unreadable overlap are not. If several data groups crowd a panel,
+  create a second anchored decorated panel in free screen space and move one complete
+  group there. Do not shrink text or hide required data just to pass the audit.
+  The `HudArt_` image may be the panel itself or a child behind content. Keep a
+  readable fallback backing when artwork is absent, but hide a rectangular fallback
+  backing after transparent-edged artwork is bound.
+- When `pacing_contract.json` has `minimum_normal_play_seconds: 0`, the user requested a short prototype with no duration floor. Preserve its authored route and content exclusions; do not mark a reachable compact stage incomplete for finishing quickly.
 - Treat `pacing_contract.json` as the normal human-play contract. Author traversal, enemy,
   obstacle, wave, or decision content in each segment to reach its target duration. A long
   idle countdown, movement-against-a-wall gate, and a fast automated smoke test are not evidence
@@ -1374,6 +1478,11 @@ Read every file below before editing code:
   dependency is missing, build a visible degraded HUD and fail the action safely instead of
   throwing from `Update`. This is mandatory for tower-defense wave spawning and UI.
 - Preserve image and sound binding keys from the asset request files.
+- Size pickups and hazards for the actual Game view, not only for a world-space placeholder.
+  At 1280x720, important collectibles should have a clearly visible silhouette of roughly
+  24 screen pixels or more and floor hazards should have enough height and contrast to be
+  noticed before contact. Keep gameplay colliders aligned with the meaningful hit area;
+  enlarging artwork must not silently make an invisible damage region or block the route.
 - In the structured completion response, fill `visual_objects` with one entry per visually
   distinct object explicitly requested by the user or newly authored in this game that is
   absent from `image_asset_request.json`. Include enemies/variants, hazards, pickups,
@@ -1577,7 +1686,10 @@ Return an updated `sound_events` array for newly implemented audible transitions
 previously reported sound IDs and cues, and keep each cue wired to its runtime transition.
 
 Read the referenced source definitions before editing. Fix root causes across files and bindings,
-not only the first compiler line. Do not weaken tests or alter immutable generated design/manifest
+not only the first compiler line. Trace plan values through scene assembly into runtime components;
+preserve authored gameplay values such as damage and health instead of adding arbitrary caps or
+defaults. If a validator reports a mismatch, fix the source assignment, not the expected value.
+Do not weaken tests or alter immutable generated design/manifest
 JSON. Keep already working requested features intact. Do not create or modify `.meta` files or
 hand-edit `Bootstrap.unity`; let the host assembler regenerate bindings. Do not create or modify
 `.asmdef`/`.asmref` files and do not add dynamic `Assembly.Load` workarounds. Keep one public
@@ -1609,12 +1721,15 @@ that can move or respawn the player before the hazard's damage callback. Scope t
 hazard checks to their own zone and restore that zone's state on respawn. Confirm the ordinary
 hazard changes the authoritative player health; do not bypass contact damage or change the host
 smoke test to hide the failure.
-If `runtime.ui_quality` fails, fix every panel in `ui_opacity_corrections` in one edit.
-Set each named panel Image's
-color alpha to exactly 1.0; values such as 0.95 or 0.99 are insufficient for the
-opaque HUD contract. Keep the backing and verify its final color after helpers and
-artwork binders run, including panels initially inactive for level-ups or boss fights.
-Do not relax the validator or hide the panel to avoid the check.
+If `runtime.collectible_requirement` fails, compare the requested collectible count, the
+scene's live collectible objects, the collection callbacks, and the authoritative
+CollectedCount/RequiredCount. Preserve the requested count and restore missing reachable
+objects or event wiring instead of lowering the requirement or weakening the smoke test.
+If `runtime.checkpoint_respawn` fails, follow the actual lethal-health or fall transition from
+the authoritative HealthComponent through its death callback to the stage checkpoint recovery.
+Check that the runtime checkpoint is active, that both the player's Transform and Rigidbody2D
+are moved to it, and that a later Update does not teleport the player back into the hazard.
+Do not merely set a checkpoint variable or change the smoke-test expectation.
 Inspect the failing panel's actual RectTransform geometry before moving labels. Confirm
 that helper arguments use position plus width/height rather
 than position plus far corner; correct oversized or off-screen panels first. Then place
@@ -1751,12 +1866,14 @@ def _failure_signature(outcome: UnityValidationOutcome) -> str:
             if validation:
                 payload = {"issues": issue_codes, "validation": sorted(set(validation))[:5]}
             else:
-                exception = re.search(r"(?m)^([\w.]+Exception):", log)
+                exceptions = re.findall(r"(?m)^([\w.]+Exception):[ \t]*([^\r\n]*)", log)
                 method = re.search(r"executeMethod method ([\w.]+) threw exception", log)
-                if exception:
+                if exceptions:
+                    exception_name, message = exceptions[-1]
                     payload = {
                         "issues": issue_codes,
-                        "exception": exception.group(1),
+                        "exception": exception_name,
+                        "message": " ".join(message.split())[:500],
                         "method": method.group(1) if method else "",
                     }
                 else:
@@ -1833,6 +1950,13 @@ def _ui_layout_repair_guidance(log: str) -> list[dict[str, Any]]:
                     "width": round(max(0.0, safe_width - 16), 1),
                     "height": round(max(0.0, safe_height - 16), 1),
                 },
+                "required_action": (
+                    "Create a second anchored decorated HUD panel in free screen space "
+                    "and move this complete content group there; keep the original panel "
+                    "and all required values readable"
+                    if width > safe_width - 16 or height > safe_height - 16
+                    else "Move this content within the existing panel's safe area"
+                ),
             }
         )
     for match in re.finditer(
@@ -1882,26 +2006,8 @@ def _ui_layout_overflow(log: str) -> tuple[str, str, float] | None:
     return panel, content_name, overflow
 
 
-def _ui_opacity_violations(log: str) -> list[dict[str, str | float | None]]:
-    violations: list[dict[str, str | float | None]] = []
-    for match in re.finditer(
-        r"HUD panel '([^']+)' must have an opaque backing"
-        r"(?: \(alpha=([0-9.]+), required=1\))?",
-        log,
-    ):
-        violations.append(
-            {
-                "panel": match.group(1),
-                "alpha": float(match.group(2)) if match.group(2) else None,
-                "required_alpha": 1.0,
-            }
-        )
-    return violations
-
-
 @dataclass(frozen=True)
 class _UiQualityMetrics:
-    opacity_count: int
     geometry_count: int
     overflow_pixels: float
     text_overflow_count: int
@@ -1930,7 +2036,6 @@ def _ui_quality_metrics(log: str) -> _UiQualityMetrics | None:
         for horizontal, vertical in (*old_text_modes, *new_text_modes)
     )
     return _UiQualityMetrics(
-        opacity_count=len(_ui_opacity_violations(log)),
         geometry_count=len(geometry),
         overflow_pixels=overflow_pixels,
         text_overflow_count=text_overflow_count,
@@ -1940,14 +2045,12 @@ def _ui_quality_metrics(log: str) -> _UiQualityMetrics | None:
 
 def _ui_quality_improved(baseline: _UiQualityMetrics, candidate: _UiQualityMetrics) -> bool:
     return (
-        candidate.opacity_count <= baseline.opacity_count
-        and candidate.geometry_count <= baseline.geometry_count
+        candidate.geometry_count <= baseline.geometry_count
         and candidate.overflow_pixels <= baseline.overflow_pixels + 0.5
         and candidate.text_overflow_count <= baseline.text_overflow_count
         and candidate.undersized_text_count <= baseline.undersized_text_count
         and (
-            candidate.opacity_count < baseline.opacity_count
-            or candidate.geometry_count < baseline.geometry_count
+            candidate.geometry_count < baseline.geometry_count
             or candidate.overflow_pixels < baseline.overflow_pixels - 0.5
             or candidate.text_overflow_count < baseline.text_overflow_count
             or candidate.undersized_text_count < baseline.undersized_text_count
@@ -1999,7 +2102,7 @@ def _signature_diagnostics(log: str) -> list[str]:
                 "unknown_module",
                 "missing_module",
             )
-        ):
+        ) or re.match(r"[\w.]+Exception:", line):
             diagnostics.append(line[:1000])
     return sorted(set(diagnostics))[:40]
 
@@ -2082,8 +2185,6 @@ def _repair_is_regression(
     baseline_ui = _ui_quality_metrics(baseline.unity_log)
     candidate_ui = _ui_quality_metrics(candidate.unity_log)
     if baseline_ui is not None and candidate_ui is not None:
-        if candidate_ui.opacity_count > baseline_ui.opacity_count:
-            return True
         if candidate_ui.undersized_text_count > baseline_ui.undersized_text_count:
             return True
         if _ui_quality_improved(baseline_ui, candidate_ui):

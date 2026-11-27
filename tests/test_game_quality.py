@@ -39,6 +39,28 @@ class GameQualityTest(unittest.TestCase):
         self.assertEqual(report["score"], 100)
         self.assertEqual(parse_playtest_metrics(log)["last_reached_zone"], "mastery")
 
+    def test_compact_platformer_scores_its_requested_core_loop(self) -> None:
+        condition = "하나의 짧은 스테이지, 고정 발판 6개, 낙사 복귀, 출구 클리어"
+        design = build_game_logic_design(normalize_game_spec("플랫포머"), design_intent=condition)
+        payload = {
+            "completed": True,
+            "passed_scenarios": [
+                "feature_binding",
+                "checkpoint_recovery",
+                "start_to_goal",
+            ],
+            "passed_transitions": [
+                "platformer.fall_to_checkpoint",
+                "platformer.requirements_to_clear",
+            ],
+            "unused_requested_features": [],
+            "validation_failures": [],
+        }
+        report = evaluate_game_quality(design, "UNITY_PLAYTEST_METRICS:" + json.dumps(payload))
+
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["score"], 100)
+
     def test_validation_probe_failure_cannot_be_scored_as_passed(self) -> None:
         design = build_game_logic_design(
             normalize_game_spec("플랫포머", {"mechanics": ["movement", "jump"]})

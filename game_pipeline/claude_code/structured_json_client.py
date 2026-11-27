@@ -9,6 +9,7 @@ from typing import Any
 
 from game_pipeline.claude_code.config import ClaudeCodeHarnessSettings
 from game_pipeline.claude_code.runner import ClaudeCodeCliRunner
+from game_pipeline.codex_cli.structured_json_client import checklist_request_timeout
 
 
 class ClaudeStructuredJsonClient:
@@ -37,5 +38,6 @@ class ClaudeStructuredJsonClient:
                 / f"request_{request_number:03d}"
             ),
             sandbox="read-only",
+            timeout_seconds=checklist_request_timeout(self.role),
         )
         return result.final_response

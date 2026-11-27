@@ -21,6 +21,7 @@ from game_pipeline.dynamic_feature_checklist import (
     GENERATED_TEST_DIRECTORY,
     FeatureChecklist,
     ProjectFeatureChecklist,
+    checklist_matches_approved_features,
     create_checklist_generator_from_environment,
     create_unity_test_generator_from_environment,
     load_generated_checklist,
@@ -44,6 +45,7 @@ class ChecklistResult:
     status: ChecklistStatus
     message: str
     test_name: str
+    failure_kind: Literal["game", "test_source", "infrastructure"] = "game"
 
 
 @dataclass
@@ -409,7 +411,9 @@ class FeatureChecklistWorkflow:
                     ],
                     combined_log,
                 )
-        for attempt in range(self.max_retries + 1):
+        game_repairs = 0
+        test_regenerations = 0
+        for attempt in range(self.max_retries + 3):
             results, run_log = self._run_tests(
                 project_root, checklist, excluded_static_feature_ids=excluded_static_feature_ids
             )
@@ -429,8 +433,45 @@ class FeatureChecklistWorkflow:
             self._write_records(workspace_root, history, source_root)
             if not failures:
                 return FeatureChecklistOutcome("passed", attempt + 1, results, log=combined_log)
-            if attempt == self.max_retries:
+            invalid_tests = [item for item in failures if item.failure_kind == "test_source"]
+            infrastructure = [item for item in failures if item.failure_kind == "infrastructure"]
+            if infrastructure:
                 break
+            if invalid_tests:
+                if checklist is None or test_regenerations >= 2:
+                    break
+                test_regenerations += 1
+                try:
+                    regeneration_log = self._regenerate_invalid_tests(
+                        checklist=checklist,
+                        invalid_tests=invalid_tests,
+                        project_root=project_root,
+                        workspace_root=workspace_root,
+                        compile_validation=compile_validation,
+                    )
+                    combined_log += regeneration_log
+                    history[-1]["phase"] = "test_source_regeneration"
+                    history[-1]["regenerated_features"] = sorted(
+                        {item.feature_id for item in invalid_tests}
+                    )
+                    self._write_records(workspace_root, history, source_root)
+                    continue
+                except Exception as error:  # noqa: BLE001 - keep failed test evidence
+                    final_results = [
+                        *failures,
+                        ChecklistResult(
+                            "TEST_SOURCE",
+                            "동적 테스트 코드",
+                            "error",
+                            f"{type(error).__name__}: {error}",
+                            "feature_checklist.test_regeneration",
+                            "test_source",
+                        ),
+                    ]
+                    break
+            if game_repairs >= self.max_retries:
+                break
+            game_repairs += 1
 
             try:
                 repair_ai = self.repair_ai_factory()
@@ -490,7 +531,13 @@ class FeatureChecklistWorkflow:
 
         issues = [
             {
-                "code": "FEATURE_CHECKLIST_FAILED",
+                "code": (
+                    "DYNAMIC_TEST_SOURCE_FAILED"
+                    if item.failure_kind == "test_source"
+                    else "DYNAMIC_TEST_INFRASTRUCTURE_FAILED"
+                    if item.failure_kind == "infrastructure"
+                    else "FEATURE_CHECKLIST_FAILED"
+                ),
                 "severity": "error",
                 "message": f"{item.feature_id} {item.feature_name}: {item.message}",
             }
@@ -499,10 +546,60 @@ class FeatureChecklistWorkflow:
         ]
         return FeatureChecklistOutcome(
             "failed",
-            self.max_retries + 1,
+            len(history),
             final_results,
             issues,
             combined_log,
+        )
+
+    def _regenerate_invalid_tests(
+        self,
+        *,
+        checklist: ProjectFeatureChecklist,
+        invalid_tests: list[ChecklistResult],
+        project_root: Path,
+        workspace_root: Path,
+        compile_validation: Callable[[Path], Any],
+    ) -> str:
+        affected_ids = {item.feature_id for item in invalid_tests}
+        affected = [
+            feature
+            for feature in checklist.feature_checklists
+            if any(criterion.criterion_id in affected_ids for criterion in feature.criteria)
+        ]
+        if not affected:
+            raise ValueError("No Feature owns the invalid dynamic test")
+        feedback = "\n".join(f"{item.feature_id}: {item.message}" for item in invalid_tests)[-3000:]
+        for feature in affected:
+            generator = (
+                self.test_generator_factory(project_root)
+                if self.test_generator_factory is create_unity_test_generator_from_environment
+                else self.test_generator_factory()
+            )
+            source = generator.generate(
+                checklist=feature,
+                project_root=project_root,
+                feedback=feedback,
+            )
+            persist_generated_feature_test(
+                feature,
+                workspace_root=workspace_root,
+                project_root=project_root,
+                source_code=source,
+            )
+        outcome = compile_validation(project_root)
+        if outcome.status != "passed":
+            raise RuntimeError(
+                "Regenerated Unity tests did not compile: "
+                + "; ".join(
+                    issue["message"] for issue in outcome.issues if issue["severity"] == "error"
+                )
+            )
+        return (
+            "\n--- DYNAMIC TEST SOURCE REGENERATION ---\n"
+            + ", ".join(feature.feature_id for feature in affected)
+            + "\n"
+            + outcome.unity_log
         )
 
     def _generate_dynamic_tests(
@@ -516,20 +613,25 @@ class FeatureChecklistWorkflow:
         compile_validation: Callable[[Path], Any],
     ) -> tuple[ProjectFeatureChecklist, str]:
         checklist = load_generated_checklist(workspace_root)
-        if checklist is None:
+        if not checklist_matches_approved_features(checklist, logic_analysis, project_id):
             generator = (
                 self.checklist_generator_factory(project_root)
                 if self.checklist_generator_factory is create_checklist_generator_from_environment
                 else self.checklist_generator_factory()
             )
-            checklist = generator.generate(
-                project_id=project_id,
-                logic_analysis=logic_analysis,
-                source_root=source_root,
+            kwargs = {
+                "project_id": project_id,
+                "logic_analysis": logic_analysis,
+                "source_root": source_root,
+            }
+            if checklist is not None:
+                kwargs["existing"] = checklist
+            kwargs["on_feature_ready"] = lambda partial: persist_generated_checklist(
+                partial, workspace_root=workspace_root
             )
-        expected_ids = {feature["feature_id"] for feature in logic_analysis["features"]}
-        if {item.feature_id for item in checklist.feature_checklists} != expected_ids:
-            raise ValueError("Stored Checklist does not cover the approved Features")
+            checklist = generator.generate(**kwargs)
+        if not checklist_matches_approved_features(checklist, logic_analysis, project_id):
+            raise ValueError("Regenerated Checklist does not cover the approved Features")
         persist_generated_checklist(
             checklist,
             workspace_root=workspace_root,
@@ -543,7 +645,10 @@ class FeatureChecklistWorkflow:
         def generate_feature_test(feature_checklist: FeatureChecklist, feedback: str = "") -> None:
             nonlocal log
             last_error = feedback
+            last_feedback = feedback
+            last_diagnostic_path = ""
             for source_attempt in range(1, attempts + 1):
+                test_generator = None
                 try:
                     test_generator = (
                         self.test_generator_factory(project_root)
@@ -554,7 +659,7 @@ class FeatureChecklistWorkflow:
                     source_code = test_generator.generate(
                         checklist=feature_checklist,
                         project_root=project_root,
-                        feedback=last_error,
+                        feedback=last_feedback,
                     )
                     persist_generated_feature_test(
                         feature_checklist,
@@ -577,6 +682,44 @@ class FeatureChecklistWorkflow:
                     return
                 except Exception as error:  # noqa: BLE001 - bounded regeneration boundary
                     last_error = f"{type(error).__name__}: {error}"
+                    last_feedback = last_error
+                    response = getattr(test_generator, "last_response", None)
+                    if response is not None:
+                        diagnostic_dir = (
+                            workspace_root
+                            / "validation"
+                            / "dynamic_test_generation"
+                            / re.sub(r"[^A-Za-z0-9_-]+", "_", feature_checklist.feature_id)
+                        )
+                        try:
+                            diagnostic_dir.mkdir(parents=True, exist_ok=True)
+                            diagnostic_path = diagnostic_dir / f"attempt_{source_attempt}.json"
+                            diagnostic_path.write_text(
+                                json.dumps(
+                                    {
+                                        "error": last_error,
+                                        "expected_ids": getattr(
+                                            test_generator, "last_expected_ids", []
+                                        ),
+                                        "response": response,
+                                    },
+                                    ensure_ascii=False,
+                                    indent=2,
+                                    default=str,
+                                )
+                                + "\n",
+                                encoding="utf-8",
+                            )
+                            last_diagnostic_path = diagnostic_path.relative_to(
+                                workspace_root
+                            ).as_posix()
+                            log += f"\nRejected Unity test response: {diagnostic_path}\n"
+                        except OSError:
+                            log += "\nUnable to save rejected Unity test response.\n"
+                        last_feedback += (
+                            "\nRejected response excerpt: "
+                            + json.dumps(response, ensure_ascii=False, default=str)[:1800]
+                        )
                     append_pipeline_error(
                         f"dynamic_test_generation:{feature_checklist.feature_id}",
                         "DYNAMIC_TEST_GENERATION_FAILED",
@@ -590,6 +733,7 @@ class FeatureChecklistWorkflow:
             raise RuntimeError(
                 f"Unity test generation failed for {feature_checklist.feature_id} after "
                 f"{attempts} attempts: {last_error}"
+                + (f"; response: {last_diagnostic_path}" if last_diagnostic_path else "")
             )
 
         for feature_checklist in checklist.feature_checklists:
@@ -631,7 +775,12 @@ class FeatureChecklistWorkflow:
                 for item in checklist.feature_checklists
                 if item.test_filename in diagnostics or item.test_class_name in diagnostics
             ]
-            for feature_checklist in affected or list(checklist.feature_checklists):
+            if not affected:
+                raise RuntimeError(
+                    "Cannot attribute Unity test compile failure to a generated Feature test: "
+                    + diagnostics[:1000]
+                )
+            for feature_checklist in affected:
                 generate_feature_test(feature_checklist, diagnostics)
 
         append_pipeline_error(
@@ -693,6 +842,7 @@ class FeatureChecklistWorkflow:
                             "error",
                             f"Unity produced no NUnit result (exit={completed.returncode}).",
                             self.TEST_CATEGORY,
+                            "infrastructure",
                         )
                     ],
                     log,
@@ -707,6 +857,7 @@ class FeatureChecklistWorkflow:
                         "error",
                         str(error),
                         self.TEST_CATEGORY,
+                        "infrastructure",
                     )
                 ],
                 str(error),
@@ -751,14 +902,27 @@ class FeatureChecklistWorkflow:
                 if message_node is not None and message_node.text
                 else result
             )
+            failure_kind: Literal["game", "test_source", "infrastructure"] = "game"
             if feature_id in dynamic:
                 seen_dynamic.add(feature_id)
                 feature_name = dynamic[feature_id].title
-                if status == "failed" and result == "Skipped":
-                    message = "Dynamic checklist tests may not be skipped: " + message
+                if status == "failed" and result in {"Skipped", "Inconclusive"}:
+                    message = "Dynamic checklist test was not executed: " + message
+                    failure_kind = "test_source"
             else:
                 feature_name = FEATURES[feature_id]
-            results.append(ChecklistResult(feature_id, feature_name, status, message, full_name))
+                if result == "Inconclusive":
+                    failure_kind = "infrastructure"
+            if status == "failed" and re.search(r"\b(?:SetUp|TearDown)\s*:", message):
+                stack_node = case.find("./failure/stack-trace")
+                stack = stack_node.text or "" if stack_node is not None else ""
+                if "Assets/GameTemplate/Runtime/" in stack.replace("\\", "/"):
+                    failure_kind = "game"
+                else:
+                    failure_kind = "test_source" if feature_id in dynamic else "infrastructure"
+            results.append(
+                ChecklistResult(feature_id, feature_name, status, message, full_name, failure_kind)
+            )
         for feature_id, criterion in dynamic.items():
             if feature_id not in seen_dynamic:
                 results.append(
@@ -768,6 +932,7 @@ class FeatureChecklistWorkflow:
                         "error",
                         "Unity NUnit report did not contain this required dynamic checklist test.",
                         feature_id,
+                        "test_source",
                     )
                 )
         if not results:
@@ -778,6 +943,7 @@ class FeatureChecklistWorkflow:
                     "error",
                     "NUnit report contained no feature checklist tests.",
                     FeatureChecklistWorkflow.TEST_CATEGORY,
+                    "infrastructure",
                 )
             ]
         return results

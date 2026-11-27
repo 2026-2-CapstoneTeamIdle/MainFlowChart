@@ -323,6 +323,17 @@ def validate_game_node(
                 for repair_attempt in range(1, agent_repair_limit + 1):
                     if checklist_outcome.status == "passed":
                         break
+                    if any(
+                        issue["code"]
+                        in {
+                            "DYNAMIC_FEATURE_CHECKLIST_FAILED",
+                            "DYNAMIC_TEST_SOURCE_FAILED",
+                            "DYNAMIC_TEST_INFRASTRUCTURE_FAILED",
+                        }
+                        for issue in checklist_outcome.issues
+                    ):
+                        log("동적 테스트 생성·실행 문제는 게임 코드 수리 대상으로 보내지 않습니다.")
+                        break
                     checklist_failure = _checklist_failure_outcome(checklist_outcome)
                     log(
                         "Feature 체크리스트 실패를 CLI Agent Harness에 전달해 "

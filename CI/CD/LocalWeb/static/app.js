@@ -53,6 +53,7 @@ const codexAuthOutput = document.querySelector("#codex-auth-output");
 
 const providerLabels = { codex_cli: "Codex CLI", local: "LocalAI", openai: "OpenAI API", gemini: "Gemini API", vastai: "Vast.ai", placeholder: "Placeholder", procedural: "Procedural", elevenlabs: "ElevenLabs API" };
 const notificationSettingKey = "mainflow.completionNotifications";
+const notificationHistoryKey = "mainflow.notifiedMilestones.v1";
 const agentHarnessCatalog = {
   codex_cli: {
     models: [
@@ -90,12 +91,17 @@ let currentJob = null;
 let pollTimer = null;
 let notificationAudioContext = null;
 let notificationWorkerPromise = null;
-let notifiedMilestones = new Set();
+let notifiedMilestones = loadNotificationHistory();
+const observedNotificationStates = new Map();
 let toastTimer = null;
 let codexAuthPollTimer = null;
 let codexAuthenticated = false;
 let expandedFeatureIds = new Set();
+let openedCriteriaByFeature = new Map();
+let checklistScrollByFeature = new Map();
 let lastFeatureRenderKey = null;
+let pollRequestSequence = 0;
+let lastAppliedPollSequence = 0;
 let featureViewMode = "cards";
 let featureMergeTimer = null;
 
@@ -117,8 +123,9 @@ function replaceSelectOptions(select, entries, selectedValue) {
   });
 }
 
-function updateAgentHarnessSettings() {
-  if (activeAgentBuilder && agentHarnessCatalog[activeAgentBuilder]) {
+function updateAgentHarnessSettings(options = {}) {
+  const restored = options.restore;
+  if (!restored && activeAgentBuilder && agentHarnessCatalog[activeAgentBuilder]) {
     agentHarnessSelections[activeAgentBuilder] = {
       model: agentModel.value,
       effort: agentReasoningEffort.value,
@@ -131,7 +138,9 @@ function updateAgentHarnessSettings() {
     activeAgentBuilder = null;
     return;
   }
-  const saved = agentHarnessSelections[builder] || {};
+  const saved = restored
+    ? { model: restored.agent_model, effort: restored.agent_reasoning_effort }
+    : agentHarnessSelections[builder] || {};
   replaceSelectOptions(agentModel, catalog.models, saved.model || catalog.defaultModel);
   replaceSelectOptions(
     agentReasoningEffort,
@@ -280,16 +289,78 @@ async function showSystemNotification(title, body, tag) {
   }
 }
 
-function notifyJobMilestone(job, milestone) {
-  if (!notificationSettingEnabled()) return;
-  const key = `${job.job_id || currentJobId}:${milestone}`;
-  if (notifiedMilestones.has(key)) return;
+function loadNotificationHistory() {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(notificationHistoryKey) || "[]");
+    return new Set(Array.isArray(saved) ? saved.filter(key => typeof key === "string") : []);
+  } catch { return new Set(); }
+}
+
+function notificationMilestoneKey(job, milestone) {
+  return `${job.job_id || currentJobId}:${milestone}:${milestone === "feature" ? job.feature_revision || 0 : milestone === "revision" ? job.revision_messages?.length || 0 : ""}`;
+}
+
+function rememberNotificationMilestone(key) {
   notifiedMilestones.add(key);
+  try {
+    window.localStorage.setItem(notificationHistoryKey, JSON.stringify([...notifiedMilestones].slice(-2000)));
+  } catch { /* In-memory deduplication still works when browser storage is unavailable. */ }
+}
+
+function rememberJobMilestones(job) {
+  // Restored results are history, not new completion events.
+  if (job.status === "awaiting_confirmation") rememberNotificationMilestone(notificationMilestoneKey(job, "feature"));
+  if (["completed", "failed", "cancelled"].includes(job.status)) rememberNotificationMilestone(notificationMilestoneKey(job, "terminal"));
+  if (["completed", "failed"].includes(job.revision_status)) rememberNotificationMilestone(notificationMilestoneKey(job, "revision"));
+}
+
+function observeJobNotifications(job) {
+  const id = job.job_id;
+  if (!id) return;
+  const previous = observedNotificationStates.get(id);
+  observedNotificationStates.set(id, {
+    status: job.status,
+    revision_status: job.revision_status,
+    feature_revision: job.feature_revision || 0,
+  });
+  // The first snapshot on every page load is a baseline, even if storage is unavailable.
+  // Only a later observed transition can trigger sound or a system notification.
+  if (!previous) {
+    rememberJobMilestones(job);
+    return;
+  }
+  if (job.status === "awaiting_confirmation" && previous.status === "analyzing_features") {
+    notifyJobMilestone(job, "feature");
+  }
+  if (["completed", "failed", "cancelled"].includes(job.status)
+      && ["analyzing_features", "awaiting_confirmation", "running", "cancelling"].includes(previous.status)) {
+    notifyJobMilestone(job, "terminal");
+  }
+  if (["completed", "failed"].includes(job.revision_status) && previous.revision_status === "running") {
+    notifyJobMilestone(job, "revision");
+  }
+}
+
+function notifyJobMilestone(job, milestone) {
+  const key = notificationMilestoneKey(job, milestone);
+  if (notifiedMilestones.has(key)) return;
+  rememberNotificationMilestone(key);
+  if (!notificationSettingEnabled()) return;
+  if (milestone === "revision") {
+    const succeeded = job.revision_status === "completed";
+    void playNotificationTone(succeeded ? "success" : "failure");
+    void showSystemNotification(
+      succeeded ? "겜만툴 · 게임 수정 완료" : "겜만툴 · 게임 수정 실패",
+      `${job.conversation_name || job.project_id || "프로젝트"} · ${succeeded ? "추가 요청 처리가 완료되었습니다." : "추가 요청 처리에 실패했습니다. 대화를 확인하세요."}`,
+      key,
+    );
+    return;
+  }
   if (milestone === "feature") {
     void playNotificationTone("feature");
     void showSystemNotification(
       "겜만툴 · Feature 분석 완료",
-      `${job.features.length}개 Feature를 확인하고 Confirm 또는 Reject를 선택하세요.`,
+      `${job.conversation_name || job.project_id || "프로젝트"} · ${job.features.length}개 Feature를 확인하고 Confirm 또는 Reject를 선택하세요.`,
       key,
     );
     return;
@@ -322,8 +393,8 @@ function setModelSettingsExpanded(expanded) {
   modelSettingsToggle.textContent = expanded ? "설정 접기" : "설정 펼치기";
 }
 
-async function copyWorkflowLog() {
-  const text = workflowLog.textContent || "";
+async function copyWorkflowLog(logs = null) {
+  const text = Array.isArray(logs) ? logs.join("\n") : currentJob?.logs?.join("\n") || workflowLog.textContent || "";
   if (!text.trim()) {
     showToast("복사할 작업 로그가 없습니다.", true);
     return;
@@ -556,11 +627,13 @@ async function startJob(mode) {
   if (notificationSettingEnabled()) void prepareCompletionNotifications({ requestPermission: true });
   const form = new FormData(requestForm);
   if (form.get("game_builder") === "codex_cli" && !codexAuthenticated) {
+    window.dispatchEvent(new Event("mainflow:settings"));
     codexAuthPanel.scrollIntoView({ behavior: "smooth", block: "center" });
     showToast("Codex CLI를 선택하려면 먼저 Docker 내부 Codex에 로그인하세요.", true);
     return;
   }
   setRunButtons(true);
+  window.dispatchEvent(new CustomEvent("mainflow:submitting", { detail: true }));
   try {
     await saveModels({ quiet: true });
     const payload = {
@@ -572,13 +645,17 @@ async function startJob(mode) {
       image_style: form.get("image_style"), mood_style: form.get("mood_style"),
       genre: form.get("genre"), viewpoint: form.get("viewpoint"),
       condition: form.get("condition"),
+      output_directory: document.querySelector("#output-directory").dataset.localFolder === "true" ? null : form.get("output_directory")?.trim() || null,
       custom_image: await fileToPayload(customImage.files[0]),
     };
     const job = await api("/api/jobs", { method: "POST", body: JSON.stringify(payload) });
     currentJobId = job.job_id;
-    notifiedMilestones = new Set();
     expandedFeatureIds = new Set();
+    openedCriteriaByFeature = new Map();
+    checklistScrollByFeature = new Map();
     lastFeatureRenderKey = null;
+    pollRequestSequence = 0;
+    lastAppliedPollSequence = 0;
     featureViewMode = "cards";
     window.clearTimeout(featureMergeTimer);
     rejectFeedback.value = "";
@@ -590,6 +667,8 @@ async function startJob(mode) {
   } catch (error) {
     showToast(error.message, true);
     setRunButtons(false);
+  } finally {
+    window.dispatchEvent(new CustomEvent("mainflow:submitting", { detail: false }));
   }
 }
 
@@ -601,24 +680,155 @@ function startPolling() {
 
 async function refreshJob() {
   if (!currentJobId) return;
+  const requestedJobId = currentJobId;
+  const requestedFeatureIds = [...expandedFeatureIds].sort().join(",");
+  const sequence = ++pollRequestSequence;
   try {
-    const details = encodeURIComponent([...expandedFeatureIds].join(","));
-    const job = await api(`/api/jobs/${currentJobId}?detail_features=${details}`);
+    const details = encodeURIComponent(requestedFeatureIds);
+    const job = await api(`/api/jobs/${requestedJobId}?detail_features=${details}`);
+    if (requestedJobId !== currentJobId
+        || requestedFeatureIds !== [...expandedFeatureIds].sort().join(",")
+        || sequence < lastAppliedPollSequence) return;
+    lastAppliedPollSequence = sequence;
     renderJob(job);
-    const previewFinished = ["ready", "failed", "cancelled"].includes(job.preview_status);
+    const previewFinished = ["ready", "failed", "cancelled", "unavailable"].includes(job.preview_status);
+    if (job.revision_status === "running") return;
     if (job.status === "cancelled"
         || (job.status === "failed" && job.preview_status !== "building")
         || (job.status === "completed" && previewFinished)) {
       window.clearInterval(pollTimer);
     }
   } catch (error) {
+    if (requestedJobId !== currentJobId
+        || requestedFeatureIds !== [...expandedFeatureIds].sort().join(",")
+        || sequence < lastAppliedPollSequence) return;
     window.clearInterval(pollTimer);
+    setRunButtons(false);
+    stopButton.classList.add("is-hidden");
+    phaseBadge.textContent = "다시 생성 가능";
+    jobState.textContent = "이전 작업 연결 종료";
+    if (!currentJob || currentJob.job_id !== requestedJobId) {
+      workflowLog.textContent = "이전 작업 정보를 불러오지 못했습니다. 서버가 재시작되었거나 작업 파일이 없을 수 있습니다. 위의 Generate 버튼으로 다시 생성할 수 있습니다.";
+    }
+    window.dispatchEvent(new Event("mainflow:job-unavailable"));
     showToast(error.message, true);
   }
 }
 
+const compactLogJobs = new Set();
+
+function importantWorkflowLogs(logs) {
+  return logs.filter(line => /^\[(?:WEB(?:GL)?|FLOW|RESULT|CHAT)\]/.test(line)
+    || /^\[AGENT\]\[repair\]/.test(line)
+    || /error|exception|failed|failure|실패|오류|중단/i.test(line));
+}
+
+function latestWorkflowDescription(logs) {
+  const meaningful = logs.filter(line => /^\[(?:WEB(?:GL)?|FLOW|RESULT|CHAT|AGENT)\]/.test(line));
+  const line = meaningful.at(-1) || logs.filter(line => line.trim()).at(-1) || "작업 기록을 기다리고 있습니다…";
+  const description = line.replace(/^(?:\[[^\]]+\])+\s*/, "").replace(/\s+/g, " ").trim();
+  return description.length > 100 ? `${description.slice(0, 100)}…` : description;
+}
+
+function workflowLogTurns(job) {
+  const logs = job.logs || [];
+  const users = (job.revision_messages || []).map((message, index) => ({ message, index }))
+    .filter(item => item.message.role === "user");
+  const legacyStarts = logs.map((line, index) => line.startsWith("[CHAT] 기존 Unity 프로젝트 추가 요청") ? index : -1).filter(index => index >= 0);
+  const starts = users.map((item, index) => Number.isInteger(item.message.log_start)
+    ? Math.max(0, Math.min(logs.length, item.message.log_start - (job.log_offset || 0)))
+    : legacyStarts[index] ?? logs.length);
+  return { initial: logs.slice(0, starts[0] ?? logs.length),
+    revisions: new Map(users.map((item, index) => [item.index, logs.slice(starts[index], starts[index + 1] ?? logs.length)])) };
+}
+
+function groupWorkflowLogs(logs) {
+  const stages = new Map();
+  let stage = "기능 분석 및 검토";
+  for (const line of logs) {
+    const body = line.replace(/^(?:\[[^\]]+\])+\s*/, "");
+    if (/^\[RESULT\]/.test(line)) stage = "실행 결과";
+    else if (/^\[WEBGL\]/.test(line)) stage = "WebGL Preview 빌드";
+    else if (/^\[CHAT\]/.test(line)) stage = "추가 요청 수정";
+    else if (/^\[AGENT\]\[repair\]/.test(line)) stage = "Unity 검증 및 오류 수리";
+    else if (/^\[(?:FLOW|WEB)\]/.test(line)) {
+      if (/^(?:작업 .*Feature 분석|사용자 Condition|명시된 기능|Feature 구성을 거절)/.test(body)) stage = "기능 분석 및 검토";
+      else if (/^(?:승인된 Feature별 Checklist|Feature Checklist|모든 Feature Checklist)/.test(body)) stage = "체크리스트 작성";
+      else if (/^(?:게임 로직을 설계|이번 실행의 콘텐츠|설치된 .*(?:CLI|Code)|레벨에 배치된|HUD 패널)/.test(body)) stage = "게임 설계 및 구현";
+      else if (/^(?:Unity 컴파일|실행 검증에서|진단용 Unity|요청 기능 생성은)/.test(body)) stage = "Unity 검증 및 오류 수리";
+      else if (/^(?:이미지 에셋을 생성|사운드 에셋|게임 검증 결과를 바탕|유저 입력 \+|이미지 검증|사운드 검증)/.test(body)) stage = "이미지·사운드 생성 및 검증";
+      else if (/^(?:검증을 통과한 .*에셋|컴파일을 통과한 진단용|실제 이미지 백엔드|목표 화면과)/.test(body)) stage = "에셋 적용 및 화면 확인";
+      else if (/^(?:최종 에셋과|독립 Validator|독립 품질 평가|게임 생성 파이프라인이 완료)/.test(body)) stage = "최종 검증 및 품질 평가";
+      else if (/^\[WEB\]\[ERROR\]/.test(line)) stage = "실행 결과";
+    }
+    if (!stages.has(stage)) stages.set(stage, { title: stage, logs: [] });
+    stages.get(stage).logs.push(line);
+  }
+  return [...stages.values()];
+}
+
+const expandedLogRows = new Set();
+function renderActivityRows(container, logs, key) {
+  container.replaceChildren();
+  if (compactLogJobs.has(key)) {
+    const row = document.createElement("div"); row.className = "activity-latest";
+    const icon = document.createElement("span"); icon.className = "activity-icon"; icon.textContent = "›";
+    const text = document.createElement("span"); text.className = "activity-text";
+    text.textContent = latestWorkflowDescription(logs); text.title = text.textContent;
+    row.append(icon, text); container.append(row); return;
+  }
+  const visible = logs;
+  if (!visible.length) { container.textContent = "작업 기록을 기다리고 있습니다…"; return; }
+  groupWorkflowLogs(visible).forEach(group => {
+    const row = document.createElement("details"); row.className = "activity-row";
+    const id = `${key}:stage:${group.title}`;
+    row.open = expandedLogRows.has(id);
+    const summary = document.createElement("summary");
+    const icon = document.createElement("span"); icon.className = "activity-icon"; icon.textContent = "›";
+    const text = document.createElement("span"); text.className = "activity-text";
+    text.textContent = group.title;
+    const count = document.createElement("span"); count.className = "activity-count"; count.textContent = `${group.logs.length}개 기록`;
+    summary.title = latestWorkflowDescription(group.logs);
+    const detail = document.createElement("pre"); detail.className = "activity-raw"; detail.textContent = group.logs.join("\n");
+    summary.append(icon, text, count); row.append(summary, detail);
+    row.addEventListener("toggle", () => {
+      if (!row.isConnected) return;
+      if (row.open) expandedLogRows.add(id); else expandedLogRows.delete(id);
+    });
+    container.append(row);
+  });
+}
+
+function renderWorkflowLog(job) {
+  const compact = compactLogJobs.has(job.job_id);
+  renderActivityRows(workflowLog, workflowLogTurns(job).initial, job.job_id);
+  const toggle = document.querySelector("#toggle-log-view");
+  toggle.textContent = compact ? "자세히 보기" : "간단히 보기";
+  toggle.setAttribute("aria-expanded", String(!compact));
+  copyLogButton.hidden = compact;
+}
+
+document.querySelector("#toggle-log-view").addEventListener("click", () => {
+  if (!currentJob) return;
+  const toggle = document.querySelector("#toggle-log-view");
+  const before = toggle.getBoundingClientRect().top;
+  if (compactLogJobs.has(currentJob.job_id)) compactLogJobs.delete(currentJob.job_id);
+  else compactLogJobs.add(currentJob.job_id);
+  renderWorkflowLog(currentJob);
+  window.scrollBy({ top: toggle.getBoundingClientRect().top - before, behavior: "instant" });
+});
+
+const focusedFeatureReviews = new Set();
+
 function renderJob(job) {
+  if (job.job_id !== currentJobId) return;
+  const reviewKey = `${job.job_id}:${job.feature_revision || 0}`;
+  const needsReviewFocus = job.status === "awaiting_confirmation" && job.features?.length
+    && !focusedFeatureReviews.has(reviewKey);
+  const followLatest = document.documentElement.scrollHeight - window.scrollY - window.innerHeight < 160;
   currentJob = job;
+  window.dispatchEvent(new CustomEvent("mainflow:job", { detail: job }));
+  observeJobNotifications(job);
   const stateLabels = {
     analyzing_features: "Feature 분석 중", awaiting_confirmation: "사용자 승인 대기",
     running: "게임 생성 중", cancelling: "중단 중", cancelled: "취소됨",
@@ -627,31 +837,39 @@ function renderJob(job) {
   const label = stateLabels[job.status] || job.status;
   jobState.textContent = label;
   phaseBadge.textContent = label;
-  workflowLog.textContent = job.logs.length ? job.logs.join("\n") : "프로세스를 시작하는 중입니다...";
-  workflowLog.scrollTop = workflowLog.scrollHeight;
+  renderWorkflowLog(job);
   renderProgress(job);
   if (job.features?.length) {
     renderFeatureWorkspace(job);
     featurePanel.classList.remove("is-hidden");
-    if (job.status === "awaiting_confirmation") notifyJobMilestone(job, "feature");
   } else {
     featurePanel.classList.add("is-hidden");
   }
-  if (["completed", "failed", "cancelled"].includes(job.status)) {
-    notifyJobMilestone(job, "terminal");
-  }
   const previewBuilding = job.preview_status === "building";
-  const active = ["analyzing_features", "awaiting_confirmation", "running", "cancelling"].includes(job.status) || previewBuilding;
+  const active = ["analyzing_features", "awaiting_confirmation", "running", "cancelling"].includes(job.status) || previewBuilding || job.revision_status === "running";
   setRunButtons(active);
-  stopButton.classList.toggle("is-hidden", !active);
+  stopButton.classList.add("is-hidden");
   stopButton.disabled = job.status === "cancelling";
   document.querySelector("#confirm-button").disabled = job.status !== "awaiting_confirmation";
   document.querySelector("#reject-button").disabled = job.status !== "awaiting_confirmation";
   rejectFeedback.disabled = job.status !== "awaiting_confirmation";
   const canOpenUnity = ["completed", "failed"].includes(job.status) && Boolean(job.project_id) && !previewBuilding;
-  openUnityButton.classList.toggle("is-hidden", !canOpenUnity);
+  openUnityButton.classList.toggle("is-hidden", !["completed", "failed"].includes(job.status) || !job.project_id);
   openUnityButton.disabled = !canOpenUnity;
   renderPreviewButton(job);
+  document.querySelector("#composer-workflow-bar").hidden = false;
+  document.querySelector("#project-tools").hidden = !["completed", "failed"].includes(job.status) || !job.project_id;
+  openUnityButton.disabled = !canOpenUnity || job.revision_status === "running";
+  if (needsReviewFocus) requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (currentJobId !== job.job_id || currentJob?.status !== "awaiting_confirmation"
+        || (currentJob.feature_revision || 0) !== (job.feature_revision || 0)
+        || focusedFeatureReviews.has(reviewKey)) return;
+    focusedFeatureReviews.add(reviewKey);
+    featurePanel.scrollIntoView({ block: "start", behavior: "instant" });
+  }));
+  if (followLatest && !needsReviewFocus) requestAnimationFrame(() => {
+    if (currentJobId === job.job_id) window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" });
+  });
   if (job.status === "failed" && job.error) showToast(job.error, true);
 }
 
@@ -689,7 +907,7 @@ function renderProgress(job) {
 function renderPreviewButton(job) {
   const canPreview = ["completed", "failed"].includes(job.status) && Boolean(job.project_id);
   previewButton.classList.toggle("is-hidden", !canPreview);
-  previewButton.disabled = !canPreview || job.preview_status === "building";
+  previewButton.disabled = !canPreview || job.preview_status === "building" || job.revision_status === "running";
   if (job.preview_status === "ready") {
     previewButton.textContent = "Preview 플레이";
     previewButton.title = job.status === "failed"
@@ -706,13 +924,16 @@ function renderPreviewButton(job) {
 
 async function stopJob() {
   if (!currentJobId) return;
+  const requestedJobId = currentJobId;
   stopButton.disabled = true;
   try {
-    const job = await api(`/api/jobs/${currentJobId}/cancel`, { method: "POST", body: "{}" });
+    const job = await api(`/api/jobs/${requestedJobId}/cancel`, { method: "POST", body: "{}" });
+    if (requestedJobId !== currentJobId) return;
     renderJob(job);
     window.clearInterval(pollTimer);
     showToast("작업을 중단했습니다.");
   } catch (error) {
+    if (requestedJobId !== currentJobId) return;
     stopButton.disabled = false;
     showToast(error.message, true);
   }
@@ -743,17 +964,22 @@ async function openUnityEditor() {
 
 async function openOrBuildPreview() {
   if (!currentJobId || !currentJob) return;
+  const requestedJobId = currentJobId;
   if (currentJob.preview_status === "ready" && currentJob.preview_url) {
     window.open(currentJob.preview_url, "_blank", "noopener,noreferrer");
     return;
   }
   previewButton.disabled = true;
   try {
-    const job = await api(`/api/jobs/${currentJobId}/build-webgl`, { method: "POST", body: "{}" });
+    const job = await api(`/api/jobs/${requestedJobId}/build-webgl`, { method: "POST", body: "{}" });
+    window.dispatchEvent(new CustomEvent("mainflow:job-update", { detail: job }));
+    if (requestedJobId !== currentJobId) return;
+    lastAppliedPollSequence = ++pollRequestSequence;
     renderJob(job);
     startPolling();
     showToast("WebGL Preview 빌드를 시작했습니다.");
   } catch (error) {
+    if (requestedJobId !== currentJobId) return;
     previewButton.disabled = false;
     showToast(error.message, true);
   }
@@ -830,14 +1056,20 @@ function renderFeatures(features) {
       }
       return;
     }
-    const openCriteria = new Set(
-      previousCard
-        ? [...previousCard.querySelectorAll(".checklist-item details[open]")].map(
+    const previousCriteria = previousCard?.querySelectorAll(".checklist-item details");
+    if (previousCriteria?.length) {
+      openedCriteriaByFeature.set(featureId, new Set(
+        [...previousCriteria].filter((details) => details.open).map(
           (details) => details.closest(".checklist-item")?.dataset.criterionId,
-        )
-        : [],
-    );
-    const checklistScrollTop = previousCard?.querySelector(".feature-checklist ol")?.scrollTop || 0;
+        ).filter(Boolean),
+      ));
+      checklistScrollByFeature.set(
+        featureId,
+        previousCard.querySelector(".feature-checklist ol")?.scrollTop || 0,
+      );
+    }
+    const openCriteria = openedCriteriaByFeature.get(featureId) || new Set();
+    const checklistScrollTop = checklistScrollByFeature.get(featureId) || 0;
     const checklist = Array.isArray(feature.checklist) ? feature.checklist : [];
     const checklistItems = checklist.length
       ? checklist.map((criterion) => renderChecklistCriterion(criterion)).join("")
@@ -871,7 +1103,7 @@ function renderFeatures(features) {
       <div class="feature-checklist${expanded ? "" : " is-hidden"}">
         <div class="feature-checklist__heading">
           <strong>${checklistStatusLabel(feature.checklist_status)}</strong>
-          <span>${escapeHtml(feature.checklist_count || 0)} / 30</span>
+          <span>${escapeHtml(feature.checklist_count || 0)}개</span>
         </div>
         <ol>${checklistItems}</ol>
       </div>`;
@@ -939,7 +1171,7 @@ function checklistStatusLabel(status) {
 
 function checklistEmptyLabel(status) {
   return status === "writing"
-    ? "Feature에 맞는 30개 검증 항목을 작성하고 있습니다."
+    ? "Feature에 맞는 10~30개 검증 항목을 작성하고 있습니다."
     : "Checklist가 생성되면 이 영역에서 바로 확인할 수 있습니다.";
 }
 
@@ -1019,13 +1251,15 @@ async function decide(action) {
       return;
     }
     body = JSON.stringify({ feedback });
-    notifiedMilestones.delete(`${currentJobId}:feature`);
+    openedCriteriaByFeature.clear();
+    checklistScrollByFeature.clear();
   }
   document.querySelector("#confirm-button").disabled = true;
   document.querySelector("#reject-button").disabled = true;
   try {
     const job = await api(`/api/jobs/${currentJobId}/${action}`, { method: "POST", body });
     if (action === "reject") rejectFeedback.value = "";
+    lastAppliedPollSequence = ++pollRequestSequence;
     renderJob(job);
     startPolling();
   } catch (error) { showToast(error.message, true); }

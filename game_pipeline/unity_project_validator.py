@@ -196,6 +196,18 @@ class UnityProjectValidator:
                         digest.update(chunk)
         return digest.hexdigest()
 
+    def validate_revision(self, project_root: str | Path) -> UnityValidationOutcome:
+        """Verify edited scenes as saved, without rebuilding them from the original design."""
+        root = Path(project_root).resolve()
+        outcome = self.compile_sources(root)
+        if outcome.status == "failed":
+            return outcome
+        editor = self.unity_editor or self.find_unity_editor(self._read_project_version(root))
+        # compile_sources already fails when no Editor is available.
+        assert editor is not None
+        self._run_runtime_tests(outcome, root, editor)
+        return outcome
+
     def compile_sources(
         self, project_root: str | Path, *, timeout_seconds: float | None = None
     ) -> UnityValidationOutcome:
@@ -873,28 +885,15 @@ class UnityProjectValidator:
             key: f"Assets/GameTemplate/Generated/Design/{key}.json" for key in documents
         }
         design_v2 = design.get("design_v2")
-        level = documents["level_plan"]
-        zones = level.get("zones")
-        route_valid = True
-        if level.get("genre") == "Platformer":
-            route_valid = (
-                isinstance(zones, list)
-                and len(zones) >= 3
-                and {zone.get("purpose") for zone in zones if isinstance(zone, dict)}
-                == {"tutorial", "challenge", "mastery"}
-                and all(
-                    isinstance(platform, dict)
-                    and platform.get("width", 0) >= level.get("minimum_landing_width", 999)
-                    for zone in zones
-                    if isinstance(zone, dict)
-                    for platform in zone.get("platforms", [])
-                )
-            )
+        # The canonical validator handles compact stages and ordinary multi-zone routes.
+        # Duplicating its policy here previously rejected every valid single-stage design.
         contract_valid = True
+        contract_error = ""
         try:
             validate_design_v2(cast(DesignV2Bundle, documents))
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError) as error:
             contract_valid = False
+            contract_error = f"{type(error).__name__}: {error}"
         valid = (
             isinstance(design_v2, dict)
             and all(design_v2.get(key) == value for key, value in documents.items())
@@ -911,14 +910,26 @@ class UnityProjectValidator:
                     "validation_plan",
                 )
             )
-            and route_valid
             and contract_valid
         )
+        problems = []
+        if not isinstance(design_v2, dict):
+            problems.append("GameLogicDesign.design_v2 is missing")
+        elif any(design_v2.get(key) != value for key, value in documents.items()):
+            problems.append(
+                "design_v2 differs from serialized documents: "
+                + ", ".join(key for key, value in documents.items() if design_v2.get(key) != value)
+            )
+        if manifest.get("design_documents") != expected_paths:
+            problems.append("manifest.design_documents does not match the seven document paths")
+        if contract_error:
+            problems.append(contract_error)
         return (
             valid,
             "Seven design v2 documents are consistent and the level route is structurally safe"
             if valid
-            else "Design v2 documents are missing, inconsistent, or contain an unsafe level route",
+            else "Design v2 validation failed: "
+            + ("; ".join(problems) or "invalid design/plan version"),
         )
 
     @staticmethod

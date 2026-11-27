@@ -13,6 +13,15 @@ from game_pipeline.codex_cli.config import CodexHarnessSettings
 from game_pipeline.codex_cli.runner import CodexCliRunner
 
 
+def checklist_request_timeout(role: str) -> int | None:
+    if role != "feature_checklist_generation":
+        return None
+    value = int(os.environ.get("MAINFLOW_CHECKLIST_TIMEOUT_SECONDS", "90"))
+    if not 15 <= value <= 300:
+        raise ValueError("MAINFLOW_CHECKLIST_TIMEOUT_SECONDS must be between 15 and 300")
+    return value
+
+
 class CodexStructuredJsonClient:
     """Use Codex as a read-only requirements analyst with auditable responses."""
 
@@ -46,5 +55,6 @@ class CodexStructuredJsonClient:
                 / f"request_{request_number:03d}"
             ),
             sandbox="read-only",
+            timeout_seconds=checklist_request_timeout(self.role),
         )
         return result.final_response

@@ -641,6 +641,7 @@ class GameLogicDraft(TypedDict):
     status: DraftStatus
     engine: str
     entry_scene: str | None
+    diagnostic_compile_passed: NotRequired[bool]
     source_artifacts: list[ArtifactReference]
     required_image_asset_ids: list[str]
     required_sound_asset_ids: list[str]
