@@ -390,7 +390,17 @@ class ValidateSoundNodeTest(unittest.TestCase):
         self.assertEqual(profile["assets"][0]["decision"], "PASS")
         self.assertEqual(provider.generate.call_count, 1)
         selected = result["validated_assets"]["assets"][0]["artifact"]
-        self.assertIn("regenerated/attempt_1", selected["relative_path"])
+        self.assertEqual(selected["relative_path"], profile["assets"][0]["processed_path"])
+        self.assertIn("generated/sounds/processed/", selected["relative_path"])
+        self.assertTrue(self.manager.read_bytes(selected))
+        attempts = json.loads(
+            (
+                Path(self.tmp.name) / self.project / "validation/sound_regeneration_attempts.json"
+            ).read_text(encoding="utf-8")
+        )["attempts"]
+        self.assertEqual(
+            [(entry["asset_id"], entry["attempt"]) for entry in attempts], [("hit", 1)]
+        )
 
     def test_inverted_stereo_effect_is_applied_as_processed_mono(self):
         mono = impact()[:, 0]
@@ -420,14 +430,24 @@ class ValidateSoundNodeTest(unittest.TestCase):
             ),
             mock.patch("mainflow.nodes.validate_sound.primary_provider", return_value=provider),
         ):
-            result, _ = self.run_node(
+            result, profile = self.run_node(
                 [("bgm", np.column_stack([mono, -0.6 * mono]), "elevenlabs")],
                 [item("bgm", "엔딩 배경 음악", "엔딩 배경 음악")],
             )
         self.assertEqual(result["status"], "passed")
         self.assertEqual(provider.generate.call_count, 1)
         selected = result["validated_assets"]["assets"][0]["artifact"]
-        self.assertIn("regenerated/attempt_1", selected["relative_path"])
+        self.assertEqual(selected["relative_path"], profile["assets"][0]["processed_path"])
+        self.assertIn("generated/sounds/processed/", selected["relative_path"])
+        self.assertTrue(self.manager.read_bytes(selected))
+        attempts = json.loads(
+            (
+                Path(self.tmp.name) / self.project / "validation/sound_regeneration_attempts.json"
+            ).read_text(encoding="utf-8")
+        )["attempts"]
+        self.assertEqual(
+            [(entry["asset_id"], entry["attempt"]) for entry in attempts], [("bgm", 1)]
+        )
 
     def test_duplicate_and_placeholder_need_revision(self):
         same = impact()

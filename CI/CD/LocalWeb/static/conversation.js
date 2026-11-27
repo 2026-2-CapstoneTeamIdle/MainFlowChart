@@ -136,7 +136,9 @@
   });
   async function exportProject(project, job, retry = false) {
     const handle = localFolders.get(project.id);
-    if (!handle || job.status !== "completed" || job.preview_status === "building" || job.revision_status === "running" || pendingRevisionRequests.has(job.job_id)) return;
+    const revisionStatus = job.revision_status || "idle";
+    const validated = revisionStatus === "completed" || (revisionStatus === "idle" && job.status === "completed");
+    if (!handle || !validated || job.preview_status === "building" || pendingRevisionRequests.has(job.job_id)) return;
     let history = exports.get(handle);
     if (!history) { history = new Map(); exports.set(handle, history); }
     const version = `${job.job_id}:${job.revision_messages?.length || 0}`;

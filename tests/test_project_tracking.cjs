@@ -71,6 +71,30 @@ function folder(name, permission = async () => "granted") {
 
 const completed = { job_id: "J", project_id: "game", status: "completed", revision_messages: [] };
 
+test("a successful revision saves a game recovered from initial generation failure", async () => {
+  const context = exportContext();
+  const destination = folder("recovered");
+  context.localFolders.set("P", destination);
+  await context.exportProject({ id: "P" }, {
+    ...completed, status: "failed", revision_status: "completed",
+    revision_messages: [{ role: "user" }, { role: "assistant" }],
+  });
+  assert.deepEqual(destination.writes, [["file.txt", "project contents"]]);
+});
+
+test("failed and cancelled revisions never save partially modified projects", async () => {
+  const context = exportContext();
+  const destination = folder("unverified");
+  context.localFolders.set("P", destination);
+  for (const revision_status of ["running", "failed", "cancelled"]) {
+    await context.exportProject({ id: "P" }, {
+      ...completed, revision_status, revision_messages: [{ role: "user" }],
+    });
+  }
+  assert.deepEqual(destination.writes, []);
+  assert.deepEqual(context.requests, []);
+});
+
 test("selecting a new folder saves an already exported version there and avoids duplicate polling copies", async () => {
   const context = exportContext();
   const first = folder("first"), second = folder("second");
